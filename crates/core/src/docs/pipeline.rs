@@ -391,9 +391,11 @@ pub(crate) fn insurer_from(extract: &DocumentExtract) -> Option<String> {
             return false;
         }
         let words: Vec<&str> = l.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+        // German insurers end in "kasse"; English names say "health" or "health insurance" ("Evergreen Health").
         l.contains("kasse")
             || l.contains("krankenversicherung")
-            || words.iter().any(|w| ["aok", "bkk", "ikk", "barmer", "dak", "hkk", "knappschaft"].contains(w))
+            || l.contains("health insurance")
+            || words.iter().any(|w| ["aok", "bkk", "ikk", "barmer", "dak", "hkk", "knappschaft", "health"].contains(w))
     };
     let name = match extract.doc_type {
         DocType::AuBescheinigung if !extract.recipient.is_empty() => &extract.recipient,
@@ -733,11 +735,11 @@ mod tests {
     #[test]
     fn insurer_detection() {
         let mut e = extract(DocType::AuBescheinigung);
-        e.recipient = "Gesundkasse Beispielstadt".into();
-        assert_eq!(insurer_from(&e).as_deref(), Some("Gesundkasse Beispielstadt"));
+        e.recipient = "Evergreen Health".into();
+        assert_eq!(insurer_from(&e).as_deref(), Some("Evergreen Health"));
         let mut e = extract(DocType::Brief);
-        e.sender = "Gesundkasse".into();
-        assert_eq!(insurer_from(&e).as_deref(), Some("Gesundkasse"));
+        e.sender = "Evergreen Health".into();
+        assert_eq!(insurer_from(&e).as_deref(), Some("Evergreen Health"));
         assert_eq!(insurer_from(&extract(DocType::Bescheid)), None);
         e.sender = "AOK Beispielland".into();
         assert!(insurer_from(&e).is_some());

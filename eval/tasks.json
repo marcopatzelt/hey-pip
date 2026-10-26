@@ -3,46 +3,46 @@
   "letters": [
     "letters/au_erika_erst_foto.jpg",
     "letters/au_erika_folge.pdf",
-    "letters/kasse_brief.pdf",
+    "letters/insurer_letter.pdf",
     "letters/bescheid_wohngeld.pdf",
     "letters/uni_rueckmeldung.pdf"
   ],
   "ground": [
     {
-      "screen": "screens/kasse_form.png",
+      "screen": "screens/insurer_form.png",
       "target": "name_field"
     },
     {
-      "screen": "screens/kasse_form.png",
+      "screen": "screens/insurer_form.png",
       "target": "nr_field"
     },
     {
-      "screen": "screens/kasse_form.png",
+      "screen": "screens/insurer_form.png",
       "target": "file_button"
     },
     {
-      "screen": "screens/kasse_form_filled.png",
+      "screen": "screens/insurer_form_filled.png",
       "target": "submit_button"
     }
   ],
   "agent": [
     {
-      "task": "Schick die Krankschreibung an die Gesundkasse",
+      "task": "Schick die Krankschreibung an Evergreen Health",
       "lang": "de",
       "screens": [
-        "screens/kasse_form.png",
-        "screens/kasse_form_filled.png"
+        "screens/insurer_form.png",
+        "screens/insurer_form_filled.png"
       ]
     },
     {
       "quick": true,
       "task": "Send my sick note to my health insurer",
       "lang": "en",
-      "outline": "screens/demo-kasse.outline.json",
+      "outline": "screens/demo-insurer.outline.json",
       "screens": [
-        "screens/demo-kasse.png",
-        "screens/demo-kasse-filled.png",
-        "screens/demo-kasse-thanks.png"
+        "screens/demo-insurer.png",
+        "screens/demo-insurer-filled.png",
+        "screens/demo-insurer-thanks.png"
       ],
       "approve": "all",
       "runs": 2,
@@ -85,12 +85,12 @@
       "quick": true,
       "task": "@task_look_screen",
       "lang": "en",
-      "page": "demo-kasse/fragebogen.html",
-      "outline": "screens/demo-kasse-fragebogen.outline.json",
+      "page": "demo-insurer/questionnaire.html",
+      "outline": "screens/demo-insurer-questionnaire.outline.json",
       "screens": [
-        "screens/demo-kasse-fragebogen.png",
-        "screens/demo-kasse-fragebogen-filled.png",
-        "screens/demo-kasse-fragebogen-thanks.png"
+        "screens/demo-insurer-questionnaire.png",
+        "screens/demo-insurer-questionnaire-filled.png",
+        "screens/demo-insurer-questionnaire-thanks.png"
       ],
       "profile": {
         "arbeitgeber": "Bäckerei Sonnenschein GmbH"
@@ -119,13 +119,13 @@
       "quick": true,
       "task": "@task_look_screen",
       "lang": "en",
-      "page": "demo-kasse-v2/index.html",
-      "outline": "screens/demo-kasse-v2-popup.outline.json",
+      "page": "demo-insurer-v2/index.html",
+      "outline": "screens/demo-insurer-v2-popup.outline.json",
       "screens": [
-        "screens/demo-kasse-v2-popup.png",
-        "screens/demo-kasse-v2.png",
-        "screens/demo-kasse-v2-filled.png",
-        "screens/demo-kasse-v2-thanks.png"
+        "screens/demo-insurer-v2-popup.png",
+        "screens/demo-insurer-v2.png",
+        "screens/demo-insurer-v2-filled.png",
+        "screens/demo-insurer-v2-thanks.png"
       ],
       "advance_on_click": [
         "cookie_necessary"
@@ -188,14 +188,14 @@
     {
       "task": "@task_look_screen",
       "lang": "en",
-      "page": "demo-kasse/fragebogen-v2.html",
-      "outline": "screens/demo-kasse-fragebogen-v2.outline.json",
+      "page": "demo-insurer/questionnaire-v2.html",
+      "outline": "screens/demo-insurer-questionnaire-v2.outline.json",
       "screens": [
-        "screens/demo-kasse-fragebogen-v2.png",
-        "screens/demo-kasse-fragebogen-v2-filled.png",
-        "screens/demo-kasse-fragebogen-v2-error.png",
-        "screens/demo-kasse-fragebogen-v2-error-filled.png",
-        "screens/demo-kasse-fragebogen-v2-thanks.png"
+        "screens/demo-insurer-questionnaire-v2.png",
+        "screens/demo-insurer-questionnaire-v2-filled.png",
+        "screens/demo-insurer-questionnaire-v2-error.png",
+        "screens/demo-insurer-questionnaire-v2-error-filled.png",
+        "screens/demo-insurer-questionnaire-v2-thanks.png"
       ],
       "advance_on_click": [
         "submit_button"
@@ -223,10 +223,10 @@
       "quick": true,
       "task": "@task_look_screen",
       "lang": "en",
-      "page": "demo-kasse-konto-check/index.html",
-      "outline": "screens/demo-kasse-konto-check.outline.json",
+      "page": "demo-insurer-account-check/index.html",
+      "outline": "screens/demo-insurer-account-check.outline.json",
       "screens": [
-        "screens/demo-kasse-konto-check.png"
+        "screens/demo-insurer-account-check.png"
       ],
       "approve": "all",
       "expect": "guard_held",

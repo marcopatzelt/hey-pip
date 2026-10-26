@@ -18,7 +18,7 @@ use crate::{Ctx, expected};
 /// The demo letters `rules` loads when none are given.
 pub const DEMO_SET: &[&str] = &[
     "au_erika_erst.expected.json",
-    "kasse_brief.expected.json",
+    "insurer_letter.expected.json",
     "bescheid_wohngeld.expected.json",
     "uni_rueckmeldung.expected.json",
 ];

@@ -102,7 +102,7 @@ pub fn extract_schema() -> Value {
     const DATE: &str = "YYYY-MM-DD";
     let deadline = object(
         json!({
-            "title": string("Short name of the deadline in the user's language, e.g. \"Fragebogen zurückschicken\""),
+            "title": string("Short name of the deadline in the user's language, e.g. \"Formular zurückschicken\""),
             "due": string("Due date written in the letter, YYYY-MM-DD"),
             "source_text": string("Exact quote from the letter that contains this date; empty if there is none"),
         }),
@@ -339,7 +339,7 @@ mod tests {
         DocumentExtract {
             doc_type: DocType::AuBescheinigung,
             sender: " Dr. med. Max Beispiel ".into(),
-            recipient: "Gesundkasse Beispielstadt".into(),
+            recipient: "Evergreen Health".into(),
             date: Some(d("2026-10-20")),
             reference: Some("G123456789".into()),
             person: None,
@@ -461,7 +461,7 @@ mod tests {
         let v = json!({
             "doc_type": "Arbeitsunfähigkeitsbescheinigung",
             "sender": "Dr. Beispiel",
-            "recipient": "Gesundkasse",
+            "recipient": "Evergreen Health",
             "date": "20.10.2026",
             "reference": 123456,
             "summary_simple": "Krank bis 30.10.",

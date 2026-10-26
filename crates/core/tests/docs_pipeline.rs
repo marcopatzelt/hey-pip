@@ -43,7 +43,7 @@ fn au_args() -> Value {
     json!({
         "doc_type": "au_bescheinigung",
         "sender": "Dr. med. Max Beispiel",
-        "recipient": "Gesundkasse Beispielstadt",
+        "recipient": "Evergreen Health",
         "date": "2026-10-20",
         "reference": "G123456789",
         "summary_simple": "Du bist vom 20.10. bis 30.10.2026 krankgeschrieben.",
@@ -118,7 +118,7 @@ async fn photo_is_cropped_read_stored_and_deduplicated() {
     assert_eq!(r.deadlines[0].rule_id.as_deref(), Some("au_lueckenlos"));
     assert_eq!(r.deadlines[0].due, d("2026-11-02"));
     assert!(r.bubble.contains("20.10.") && r.bubble.contains("30.10."), "{}", r.bubble);
-    assert_eq!(s.memory.profile_get("krankenkasse").unwrap().as_deref(), Some("Gesundkasse Beispielstadt"));
+    assert_eq!(s.memory.profile_get("insurer").unwrap().as_deref(), Some("Evergreen Health"));
     assert_eq!(s.memory.search_documents("arbeitsunfähig", 5).unwrap().len(), 1, "letter text is searchable");
     assert_eq!(s.memory.recent_events(5).unwrap().len(), 1);
 
@@ -162,7 +162,7 @@ async fn pdf_goes_straight_to_spark_as_file() {
     assert_eq!(w.len(), 1);
     assert_eq!(w[0].due, d("2026-11-18"));
     assert!(r.bubble.starts_with("Du bekommst 96 Euro Wohngeld im Monat."), "{}", r.bubble);
-    assert_eq!(s.memory.profile_get("krankenkasse").unwrap(), None, "a city office is no health insurer");
+    assert_eq!(s.memory.profile_get("insurer").unwrap(), None, "a city office is no health insurer");
 
     let reqs = bodies(&s.server).await;
     assert_eq!(reqs.len(), 1, "no SAM call for a PDF");
@@ -202,7 +202,7 @@ async fn unreadable_answer_and_unsupported_file_are_typed_errors() {
         })),
     )
     .await;
-    let err = s.pipeline.ingest(&fixture("kasse_brief.pdf"), Lang::De).await.unwrap_err();
+    let err = s.pipeline.ingest(&fixture("insurer_letter.pdf"), Lang::De).await.unwrap_err();
     assert!(matches!(err.downcast_ref::<DocError>(), Some(DocError::Unreadable)), "{err:#}");
 
     let dir = tempfile::tempdir().unwrap();

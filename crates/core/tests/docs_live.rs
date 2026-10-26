@@ -20,7 +20,7 @@ const ALL: &[&str] = &[
     "au_erika_erst_foto.jpg",
     "au_erika_erst.pdf",
     "au_erika_folge.pdf",
-    "kasse_brief.pdf",
+    "insurer_letter.pdf",
     "bescheid_wohngeld.pdf",
     "uni_rueckmeldung.pdf",
 ];

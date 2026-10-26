@@ -1,8 +1,0 @@
-{
-  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG. A click hits if it lands inside the box.",
-  "w": 1600,
-  "h": 1000,
-  "image": "demo-kasse-fragebogen-thanks.png",
-  "targets": {},
-  "expect_text": "Thank you, received on"
-}

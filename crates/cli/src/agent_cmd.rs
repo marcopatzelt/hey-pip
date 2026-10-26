@@ -307,22 +307,22 @@ fn center(r: &PhysRect) -> PhysPoint {
 
 pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let screens: Vec<PathBuf> = if o.screens.is_empty() {
-        vec![ctx.fixture("screens/kasse_form.png"), ctx.fixture("screens/kasse_form_filled.png")]
+        vec![ctx.fixture("screens/insurer_form.png"), ctx.fixture("screens/insurer_form_filled.png")]
     } else {
         o.screens.clone()
     };
     // The insurer's contact form Pip knows: the local demo form. `--page` names what is open (any page, e.g. the
     // university), so it must not become the insurer's form in memory.
-    let kasse_form = {
-        let p = ctx.fixture("demo-kasse/index.html");
+    let insurer_form = {
+        let p = ctx.fixture("demo-insurer/index.html");
         p.canonicalize().ok().map(|p| file_url(&p))
     };
-    let page = match (&o.page, &kasse_form) {
+    let page = match (&o.page, &insurer_form) {
         (Some(p), _) => p.clone(),
         (None, Some(k)) => k.clone(),
-        (None, None) => bail!("demo form missing: {}", ctx.fixture("demo-kasse/index.html").display()),
+        (None, None) => bail!("demo form missing: {}", ctx.fixture("demo-insurer/index.html").display()),
     };
-    let kasse_form = kasse_form.unwrap_or_else(|| page.clone());
+    let insurer_form = insurer_form.unwrap_or_else(|| page.clone());
     let letter = o.letter.clone().unwrap_or_else(|| ctx.fixture("letters/au_erika_erst.expected.json"));
     let say = |s: String| {
         if !o.quiet {
@@ -342,10 +342,10 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let mem = &ctx.memory;
     let facts = [
         ("name", "Erika Beispiel".to_string()),
-        ("krankenkasse", x.recipient.clone()),
+        ("insurer", x.recipient.clone()),
         ("versichertennummer", x.reference.clone().unwrap_or_default()),
     ];
-    let always = [("krankenkasse_kontaktformular", kasse_form), (PROFILE_LANG, ctx.lang.code().to_string())];
+    let always = [("insurer_contact_form", insurer_form), (PROFILE_LANG, ctx.lang.code().to_string())];
     let seeded = if o.seed_facts { &facts[..] } else { &[] };
     for (k, v) in seeded.iter().chain(always.iter()) {
         if mem.profile_get(k)?.is_none() && !v.is_empty() {
@@ -723,7 +723,7 @@ mod tests {
 
     #[test]
     fn screen_boxes_name_the_click_target() {
-        let shot = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens/kasse_form.png");
+        let shot = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens/insurer_form.png");
         let boxes = load_boxes(&shot);
         assert_eq!(boxes.len(), 5);
         assert_eq!(target_at(&boxes, PhysPoint { x: 859, y: 940 }).as_deref(), Some("submit_button"));
@@ -735,13 +735,13 @@ mod tests {
     #[test]
     fn the_demo_outline_fits_its_screenshot() {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
-        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-kasse.png")).unwrap();
-        assert_eq!(fake.load_outline(&dir.join("demo-kasse.outline.json")).unwrap(), 13);
+        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-insurer.png")).unwrap();
+        assert_eq!(fake.load_outline(&dir.join("demo-insurer.outline.json")).unwrap(), 13);
         assert_eq!(
-            sibling_outline(&dir.join("demo-kasse-thanks.png")),
-            Some(dir.join("demo-kasse-thanks.outline.json"))
+            sibling_outline(&dir.join("demo-insurer-thanks.png")),
+            Some(dir.join("demo-insurer-thanks.outline.json"))
         );
-        assert_eq!(sibling_outline(&dir.join("demo-kasse-filled.png")), None, "the filled form keeps the typed list");
+        assert_eq!(sibling_outline(&dir.join("demo-insurer-filled.png")), None, "the filled form keeps the typed list");
         let items = platform.ui.outline(80);
         let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
         for n in ["Full name", "Insurance number", "Your message (optional)", "Choose file", "Submit"] {
@@ -763,14 +763,14 @@ mod tests {
     #[test]
     fn the_questionnaire_outline_fits_its_screenshot() {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
-        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-kasse-fragebogen.png")).unwrap();
-        let n = fake.load_outline(&dir.join("demo-kasse-fragebogen.outline.json")).unwrap();
+        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-insurer-questionnaire.png")).unwrap();
+        let n = fake.load_outline(&dir.join("demo-insurer-questionnaire.outline.json")).unwrap();
         assert!(n >= 7, "{n}");
         assert_eq!(
-            sibling_outline(&dir.join("demo-kasse-fragebogen-thanks.png")),
-            Some(dir.join("demo-kasse-fragebogen-thanks.outline.json"))
+            sibling_outline(&dir.join("demo-insurer-questionnaire-thanks.png")),
+            Some(dir.join("demo-insurer-questionnaire-thanks.outline.json"))
         );
-        assert_eq!(sibling_outline(&dir.join("demo-kasse-fragebogen-filled.png")), None);
+        assert_eq!(sibling_outline(&dir.join("demo-insurer-questionnaire-filled.png")), None);
         let items = platform.ui.outline(80);
         assert!(
             items
@@ -789,7 +789,7 @@ mod tests {
         let r = submit.rect;
         assert!(r.x >= 0 && r.y >= 0 && r.x + r.w <= w as i32 && r.y + r.h <= h as i32, "{r:?}");
         // The screenshot's boxes name the same Submit button.
-        let boxes = load_boxes(&dir.join("demo-kasse-fragebogen.png"));
+        let boxes = load_boxes(&dir.join("demo-insurer-questionnaire.png"));
         assert_eq!(target_at(&boxes, center(&r)).as_deref(), Some("submit_button"));
         for (n, i) in items.iter().enumerate() {
             assert_eq!(i.id as usize, n + 1, "ids in order");
@@ -799,8 +799,8 @@ mod tests {
     #[test]
     fn a_click_on_a_radio_selects_it_and_clears_its_row() {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
-        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-kasse-fragebogen.png")).unwrap();
-        fake.load_outline(&dir.join("demo-kasse-fragebogen.outline.json")).unwrap();
+        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-insurer-questionnaire.png")).unwrap();
+        fake.load_outline(&dir.join("demo-insurer-questionnaire.outline.json")).unwrap();
         let radio = |name: &str| platform.ui.outline(80).into_iter().find(|i| i.name == name).unwrap();
         let (yes, no) = (center(&radio("Yes").rect), center(&radio("No").rect));
         select_clicked_radios(&fake, &[Action::Click(yes)]);
@@ -959,11 +959,11 @@ mod tests {
     #[test]
     fn an_error_screen_is_skipped_when_its_empty_fields_are_filled() {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
-        let err = dir.join("demo-kasse-fragebogen-v2-error.outline.json");
-        assert!(is_error(&dir.join("demo-kasse-fragebogen-v2-error.png")));
+        let err = dir.join("demo-insurer-questionnaire-v2-error.outline.json");
+        assert!(is_error(&dir.join("demo-insurer-questionnaire-v2-error.png")));
         assert!(
-            is_filled(&dir.join("demo-kasse-fragebogen-v2-filled.png"))
-                && is_filled(&dir.join("kasse_form_filled.png"))
+            is_filled(&dir.join("demo-insurer-questionnaire-v2-filled.png"))
+                && is_filled(&dir.join("insurer_form_filled.png"))
         );
         let mut now: BTreeMap<String, String> = [
             ("Name of insured person".to_string(), "Erika Beispiel".to_string()),
@@ -984,14 +984,14 @@ mod tests {
         ]
         .into();
         assert!(!page_would_refuse(&uni, &both));
-        let kasse = dir.join("demo-kasse-v2-error.outline.json");
-        let kasse_now: BTreeMap<String, String> = [
+        let insurer = dir.join("demo-insurer-v2-error.outline.json");
+        let insurer_now: BTreeMap<String, String> = [
             ("Versichertennummer".to_string(), "G123456789".to_string()),
             ("Vor- und Nachname".to_string(), "Erika Beispiel".to_string()),
             ("Ihre Nachricht".to_string(), "Krankschreibung anbei".to_string()),
         ]
         .into();
-        assert!(!page_would_refuse(&kasse, &kasse_now), "Telefon (freiwillig) is optional");
+        assert!(!page_would_refuse(&insurer, &insurer_now), "Telefon (freiwillig) is optional");
     }
 
     #[test]
@@ -1000,18 +1000,18 @@ mod tests {
         // named target of the screen's boxes lies on an element of the list.
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
         let stems = [
-            "demo-kasse-v2-popup",
-            "demo-kasse-v2",
-            "demo-kasse-v2-error",
-            "demo-kasse-v2-thanks",
+            "demo-insurer-v2-popup",
+            "demo-insurer-v2",
+            "demo-insurer-v2-error",
+            "demo-insurer-v2-thanks",
             "demo-uni-v2",
             "demo-uni-v2-error",
             "demo-uni-v2-step2",
             "demo-uni-v2-thanks",
-            "demo-kasse-fragebogen-v2",
-            "demo-kasse-fragebogen-v2-error",
-            "demo-kasse-fragebogen-v2-thanks",
-            "demo-kasse-konto-check",
+            "demo-insurer-questionnaire-v2",
+            "demo-insurer-questionnaire-v2-error",
+            "demo-insurer-questionnaire-v2-thanks",
+            "demo-insurer-account-check",
             "demo-alert-locked",
         ];
         for stem in stems {
@@ -1033,11 +1033,11 @@ mod tests {
             }
         }
         for stem in [
-            "demo-kasse-v2-filled",
+            "demo-insurer-v2-filled",
             "demo-uni-v2-filled",
             "demo-uni-v2-error-filled",
-            "demo-kasse-fragebogen-v2-filled",
-            "demo-kasse-fragebogen-v2-error-filled",
+            "demo-insurer-questionnaire-v2-filled",
+            "demo-insurer-questionnaire-v2-error-filled",
         ] {
             assert_eq!(sibling_outline(&dir.join(format!("{stem}.png"))), None, "{stem} keeps the typed list");
         }
@@ -1046,17 +1046,17 @@ mod tests {
             fake.load_outline(&dir.join(format!("{stem}.outline.json"))).unwrap();
             platform.ui.outline(200).into_iter().map(|i| i.name).collect()
         };
-        assert!(names("demo-kasse-v2-popup").contains(&"Only necessary".to_string()));
-        assert!(!names("demo-kasse-v2").contains(&"Only necessary".to_string()), "the banner is gone");
+        assert!(names("demo-insurer-v2-popup").contains(&"Only necessary".to_string()));
+        assert!(!names("demo-insurer-v2").contains(&"Only necessary".to_string()), "the banner is gone");
         assert!(names("demo-uni-v2-error").contains(&"Please enter your student number (7 digits).".to_string()));
-        assert!(names("demo-kasse-fragebogen-v2-error").contains(&"Please fill in: Employer".to_string()));
+        assert!(names("demo-insurer-questionnaire-v2-error").contains(&"Please fill in: Employer".to_string()));
     }
 
     #[test]
     fn a_scroll_on_a_page_that_fits_moves_nothing() {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
-        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-kasse-fragebogen-v2.png")).unwrap();
-        fake.load_outline(&dir.join("demo-kasse-fragebogen-v2.outline.json")).unwrap();
+        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-insurer-questionnaire-v2.png")).unwrap();
+        fake.load_outline(&dir.join("demo-insurer-questionnaire-v2.outline.json")).unwrap();
         *fake.screen_h.lock().unwrap() = 1000;
         assert!(page_fits(&fake));
         let before = rects(&fake);

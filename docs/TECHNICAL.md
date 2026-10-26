@@ -82,7 +82,7 @@ Pip uses Meta's colour world (blue to violet) but no Meta logo and no Meta chara
 - **Demo mode is on by default.** With `DEMO_MODE` on (the default; `DEMO_MODE=0` turns it off), Pip may open and
   submit only local demo pages: `localhost`, or pages inside Pip's own fixtures folders. The check looks at the page
   that is really in the browser's address bar when it can read it, else at the page opened in the same task. The demo
-  insurer "Gesundkasse" and the second demo site, the invented "Beispiel University" with its re-registration form,
+  insurer "Evergreen Health" and the second demo site, the invented "Beispiel University" with its re-registration form,
   send nothing. Both are built into the exe. Each demo folder counts as its own site, so "Don't ask again" and the
   learned steps for the insurer never cover the university.
 - **The card shows the real recipient.** Next to the name the model gives, the card shows the web address of the
@@ -108,8 +108,8 @@ Before the model sees a page, Pip checks it with plain Rust rules (`crates/core/
 costs no tokens and needs no network. It runs at the first look and again whenever the page in front belongs to
 another site.
 
-- **What it compares with:** memory. The user's organisations come from profile facts: a name (`krankenkasse =
-  Gesundkasse`) plus a page address whose key starts with that name (`krankenkasse_kontaktformular`). The source is
+- **What it compares with:** memory. The user's organisations come from profile facts: a name (`insurer =
+  Evergreen Health`) plus a page address whose key starts with that name (`insurer_contact_form`). The source is
   the newest letter from or to that organisation ("from your letter of Tuesday, October 20"). Known sites are also
   the sites of playbooks and of "Don't ask again".
 - **Signals:** the page names a known organisation but is not its site and not a known site; the address looks like
@@ -120,7 +120,7 @@ another site.
   fake warning with a phone number. A new site that asks for nothing secret, and a sister page of the insurer that
   asks for nothing secret, stay silent.
 - **The amber bubble:** "Wait. This page doesn't look right to me.", one plain sentence per sign, then "I am not sure
-  it is a scam, but I would not type anything here." The safe button comes first: "Take me to the real Gesundkasse"
+  it is a scam, but I would not type anything here." The safe button comes first: "Take me to the real Evergreen Health"
   (opens the page memory knows and ends the task) or "Stop here". Then "I'm sure, continue": the guard is off for
   this task, and the send card still asks before anything leaves the computer.
 - **Events:** `guard_warned` (the signs), `guard_overridden` (the user went on), `guard_redirected` (Pip opened
@@ -146,7 +146,7 @@ cargo xwin build --release --target x86_64-pc-windows-msvc -p pip-app -p pip-cli
 ```
 
 Run `pip-app.exe`. Pip appears in the bottom-right corner. The demo pages are built into the exe (Pip writes them to
-`%APPDATA%\Pip\fixtures\demo-kasse\` and `…\demo-uni\`; open `demo-uni\index.html` in the browser for the second example); the `fixtures/` folder next to the exe is only needed for the example
+`%APPDATA%\Pip\fixtures\demo-insurer\` and `…\demo-uni\`; open `demo-uni\index.html` in the browser for the second example); the `fixtures/` folder next to the exe is only needed for the example
 letters. Without a key, Pip shows a field to paste it (stored in `%APPDATA%\Pip\.env`).
 
 Switches for testing: `PIP_MOCK=1` (scripted demo without the API), `PIP_WINDOWED=1` (corner window instead of the
@@ -190,10 +190,10 @@ laptop CPU can take minutes per letter (timeout 10 minutes).
 
 ```sh
 pip-cli read fixtures/letters/au_erika_erst_foto.jpg      # crop + read + rules, compared with *.expected.json
-pip-cli sam fixtures/screens/kasse_form.png "button" --out boxes.png
-pip-cli ground fixtures/screens/kasse_form.png "Absenden button at the bottom right"
+pip-cli sam fixtures/screens/insurer_form.png "button" --out boxes.png
+pip-cli ground fixtures/screens/insurer_form.png "Absenden button at the bottom right"
 pip-cli rules --now 2026-10-29T18:00                      # deadlines and the reminder that fires now
-pip-cli agent "Schick die Krankschreibung an die Gesundkasse"   # dry run on screenshots, nothing is clicked
+pip-cli agent "Schick die Krankschreibung an Evergreen Health"   # dry run on screenshots, nothing is clicked
 pip-cli eval                                              # the eval below -> eval/results.md
 pip-cli card --demo                                       # writes the 'Pip did this for me' page with invented numbers
 crates/app/tools/shot.sh                                  # headless screenshots of the overlay scenes (preview.html)
@@ -206,7 +206,7 @@ Pip points at "deinen Vor- und Nachnamen" (name_field)
   [input] click (462, 503) -> name_field
   [input] type "Erika Beispiel"
 Pip points at "den grünen Knopf „Absenden“ unten rechts" (submit_button)
-  [GATE] card: Darf ich das abschicken? | Was: deine Krankschreibung vom 20.10. bis 30.10.2026 | An: Gesundkasse (Kontaktformular)
+  [GATE] card: Darf ich das abschicken? | Was: deine Krankschreibung vom 20.10. bis 30.10.2026 | An: Evergreen Health (Kontaktformular)
   [GATE] answer: Noch nicht
 Outcome: Stopped. The send card stopped the click on "Absenden". Nothing was clicked there, nothing sent.
 ```

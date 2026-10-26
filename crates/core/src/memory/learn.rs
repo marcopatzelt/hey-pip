@@ -100,6 +100,7 @@ pub fn is_sensitive_value(value: &str) -> bool {
 
 /// Profile keys that decide where things go, or who the user is.
 pub fn is_protected_key(key: &str) -> bool {
+    let key = super::db::profile_key(key);
     [
         "url",
         "formular",
@@ -109,10 +110,9 @@ pub fn is_protected_key(key: &str) -> bool {
         "mail",
         "iban",
         "konto",
-        "krankenkasse",
+        "insurer",
         "arbeitgeber",
         "employer",
-        "insurer",
         "versichert",
         "lang",
         "name",
@@ -280,7 +280,7 @@ pub fn learn_from_letter(mem: &Memory, doc_id: i64, x: &DocumentExtract) -> Resu
         facts.push(("full_name", p.to_string()));
     }
     if let Some(name) = &insurer {
-        facts.push(("krankenkasse", name.clone()));
+        facts.push(("insurer", name.clone()));
     }
     let from_insurer = x.doc_type == DocType::AuBescheinigung || insurer.is_some();
     if from_insurer && let Some(n) = x.reference.as_deref().and_then(insurance_number) {
@@ -352,9 +352,9 @@ mod tests {
 
     fn run(ok: bool) -> RunSummary {
         RunSummary {
-            site: Some("www.gesundkasse.example".into()),
+            site: Some("www.evergreen-health.example".into()),
             task_kind: "send_au".into(),
-            url: Some("https://www.gesundkasse.example/kontakt?name=Erika".into()),
+            url: Some("https://www.evergreen-health.example/kontakt?name=Erika".into()),
             typed: vec![
                 ("Name".into(), "Erika  Beispiel".into()),
                 ("Versichertennummer".into(), "G123456789".into()),
@@ -374,8 +374,8 @@ mod tests {
         let l = learn_from_run(&m, &run(true)).unwrap();
         assert!(l.playbook_new && l.playbook_saved);
         assert_eq!(l.used_keys, ["full_name", "versichertennummer"]);
-        let p = m.playbook_get("www.gesundkasse.example", "send_au").unwrap().unwrap();
-        assert_eq!(p.url, "https://www.gesundkasse.example/kontakt", "no query (personal data) in the link");
+        let p = m.playbook_get("www.evergreen-health.example", "send_au").unwrap().unwrap();
+        assert_eq!(p.url, "https://www.evergreen-health.example/kontakt", "no query (personal data) in the link");
         assert_eq!(
             p.fields,
             [("Name".to_string(), "full_name".to_string()), ("Versichertennummer".into(), "versichertennummer".into())]
@@ -396,17 +396,17 @@ mod tests {
         let l = learn_from_run(&m, &second).unwrap();
         assert!(!l.playbook_new && l.playbook_saved);
         assert_eq!(l.before, Some(PriorRun { runs: 1, steps: 7, seconds: 41 }), "values before this run");
-        let p = m.playbook_get("www.gesundkasse.example", "send_au").unwrap().unwrap();
+        let p = m.playbook_get("www.evergreen-health.example", "send_au").unwrap().unwrap();
         assert_eq!((p.runs, p.steps), (2, 3));
         learn_from_run(&m, &run(false)).unwrap();
-        assert_eq!(m.playbook_get("www.gesundkasse.example", "send_au").unwrap().unwrap().failed_since_ok, 1);
+        assert_eq!(m.playbook_get("www.evergreen-health.example", "send_au").unwrap().unwrap().failed_since_ok, 1);
         // A success resets the count.
         learn_from_run(&m, &run(true)).unwrap();
-        assert_eq!(m.playbook_get("www.gesundkasse.example", "send_au").unwrap().unwrap().failed_since_ok, 0);
+        assert_eq!(m.playbook_get("www.evergreen-health.example", "send_au").unwrap().unwrap().failed_since_ok, 0);
         learn_from_run(&m, &run(false)).unwrap();
         let l = learn_from_run(&m, &run(false)).unwrap();
         assert!(l.playbook_dropped);
-        assert!(m.playbook_get("www.gesundkasse.example", "send_au").unwrap().is_none());
+        assert!(m.playbook_get("www.evergreen-health.example", "send_au").unwrap().is_none());
         // A failed first run writes nothing; a run that typed and sent nothing writes nothing.
         assert!(!learn_from_run(&m, &run(false)).unwrap().playbook_saved);
         let empty = RunSummary { site: Some("x.example".into()), ok: true, ..Default::default() };
@@ -418,7 +418,7 @@ mod tests {
         DocumentExtract {
             doc_type: DocType::AuBescheinigung,
             sender: "Dr. med. Max Beispiel".into(),
-            recipient: "Gesundkasse Beispielstadt".into(),
+            recipient: "Evergreen Health".into(),
             date: Some(d(10, 20)),
             reference: Some("H 987654321".into()),
             person: Some("Erika Muster".into()),
@@ -435,20 +435,20 @@ mod tests {
     fn a_letter_fills_gaps_but_never_overwrites_the_user() {
         let m = mem(); // full_name and versichertennummer came from the user
         let saved = learn_from_letter(&m, 4, &au_letter()).unwrap();
-        assert_eq!(saved, ["krankenkasse"]);
+        assert_eq!(saved, ["insurer"]);
         assert_eq!(m.profile_get("full_name").unwrap().as_deref(), Some("Erika Beispiel"));
-        assert_eq!(m.profile_meta("krankenkasse").unwrap().unwrap().source, "letter:4");
+        assert_eq!(m.profile_meta("insurer").unwrap().unwrap().source, "letter:4");
 
         let fresh = Memory::open_in_memory().unwrap();
         fresh.profile_set_with("full_name", "E. B.", "model", 0.6).unwrap();
         let saved = learn_from_letter(&fresh, 5, &au_letter()).unwrap();
-        assert_eq!(saved, ["full_name", "krankenkasse", "versichertennummer"]);
+        assert_eq!(saved, ["full_name", "insurer", "versichertennummer"]);
         assert_eq!(fresh.profile_get("versichertennummer").unwrap().as_deref(), Some("H987654321"));
         // A later letter from another insurer does not move the insurer.
         let mut other = au_letter();
         other.recipient = "AOK Nordwest".into();
         assert!(learn_from_letter(&fresh, 6, &other).unwrap().is_empty());
-        assert_eq!(fresh.profile_get("krankenkasse").unwrap().as_deref(), Some("Gesundkasse Beispielstadt"));
+        assert_eq!(fresh.profile_get("insurer").unwrap().as_deref(), Some("Evergreen Health"));
         // A file number is not an insurance number.
         let mut bescheid = au_letter();
         bescheid.doc_type = DocType::Bescheid;

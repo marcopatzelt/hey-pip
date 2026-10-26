@@ -46,7 +46,7 @@ pub struct ApprovalCard {
     pub title: String,
     /// "Was: deine Krankschreibung 20.10.–30.10."
     pub what: String,
-    /// "An: Gesundkasse (Kontaktformular)"
+    /// "An: Evergreen Health (Kontaktformular)"
     pub to: String,
     pub attachments: Vec<String>,
     /// What Pip typed into the form in this run ("Name: Erika Beispiel"), so the user can check it.
@@ -316,7 +316,7 @@ impl Gate {
     }
 
     /// What the user would call the site of a page, for sentences: the host of an http(s) page
-    /// ("www.gesundkasse.example"), or the demo folder of a local page ("demo-kasse"). None like `site_key`.
+    /// ("www.evergreen-health.example"), or the demo folder of a local page ("demo-insurer"). None like `site_key`.
     pub fn site_label(&self, url: &str) -> Option<String> {
         let key = self.site_key(url)?;
         if url.trim().to_lowercase().starts_with("file:") {
@@ -607,7 +607,7 @@ mod tests {
         let live = Gate::new(false);
         assert!(live.url_allowed("https://www.aok.de/kontakt"));
         assert!(live.url_allowed("http://localhost:8000/"));
-        assert!(!live.url_allowed("file:///C:/demo/fixtures/demo-kasse/index.html"));
+        assert!(!live.url_allowed("file:///C:/demo/fixtures/demo-insurer/index.html"));
         assert!(!live.url_allowed("javascript:alert(1)"));
         assert!(!live.url_allowed("ftp://x"));
         assert!(!live.url_allowed("https://localhost@evil.example/"));
@@ -616,9 +616,9 @@ mod tests {
         assert!(demo.url_allowed("http://localhost:8000/form"));
         assert!(demo.url_allowed("http://127.0.0.1/"));
         assert!(demo.url_allowed("http://[::1]:9000/"));
-        assert!(demo.url_allowed("file:///home/x/papierkram-copilot/fixtures/demo-kasse/index.html"));
-        assert!(demo.url_allowed("file:///C:/Pip/fixtures/demo-kasse/index.html"));
-        assert!(demo.url_allowed("file://localhost/C:/Pip/fixtures/demo-kasse/index.html"));
+        assert!(demo.url_allowed("file:///home/x/papierkram-copilot/fixtures/demo-insurer/index.html"));
+        assert!(demo.url_allowed("file:///C:/Pip/fixtures/demo-insurer/index.html"));
+        assert!(demo.url_allowed("file://localhost/C:/Pip/fixtures/demo-insurer/index.html"));
         assert!(!demo.url_allowed("https://www.aok.de/"));
         assert!(!demo.url_allowed("http://localhost.evil.example/"));
         assert!(!demo.url_allowed("http://localhost@evil.example/"));
@@ -628,7 +628,7 @@ mod tests {
         assert!(!demo.url_allowed("file:////evil.example/share/fixtures/x.html"), "UNC via four slashes");
         assert!(!demo.url_allowed("file:///C:/Users/erika/Downloads/fixtures/evil.html"), "any folder named fixtures");
         assert!(!demo.url_allowed("file:///C:/Pip/fixtures-evil/x.html"), "prefix of another folder");
-        assert!(!Gate::new(true).url_allowed("file:///C:/Pip/fixtures/demo-kasse/index.html"), "no folder given");
+        assert!(!Gate::new(true).url_allowed("file:///C:/Pip/fixtures/demo-insurer/index.html"), "no folder given");
     }
 
     #[test]
@@ -668,23 +668,27 @@ mod tests {
     #[test]
     fn site_keys() {
         let live = Gate::new(false);
-        assert_eq!(live.site_key("https://WWW.Kasse.example:8443/form?x").as_deref(), Some("www.kasse.example"));
-        assert_eq!(live.site_key("file:///C:/Pip/fixtures/demo-kasse/index.html"), None, "no local pages outside demo");
+        assert_eq!(live.site_key("https://WWW.Insurer.example:8443/form?x").as_deref(), Some("www.insurer.example"));
+        assert_eq!(
+            live.site_key("file:///C:/Pip/fixtures/demo-insurer/index.html"),
+            None,
+            "no local pages outside demo"
+        );
         let demo = Gate::new(true).with_fixtures(&["C:/Pip/fixtures"]);
         // One key per demo site folder: the insurer's three pages share one, the university has its own.
-        let kasse = Some("file:///c:/pip/fixtures/demo-kasse");
-        for page in ["index.html", "services.html", "fragebogen.html?x=1#top"] {
+        let insurer = Some("file:///c:/pip/fixtures/demo-insurer");
+        for page in ["index.html", "services.html", "questionnaire.html?x=1#top"] {
             assert_eq!(
-                demo.site_key(&format!("file:///C:/Pip/fixtures/demo-kasse/{page}")).as_deref(),
-                kasse,
+                demo.site_key(&format!("file:///C:/Pip/fixtures/demo-insurer/{page}")).as_deref(),
+                insurer,
                 "{page}"
             );
         }
-        assert_eq!(demo.site_key("file://localhost/C:/Pip/fixtures/demo-kasse/index.html").as_deref(), kasse);
-        assert_eq!(demo.site_key("file:///C:\\Pip\\fixtures\\demo-kasse\\services.html").as_deref(), kasse);
+        assert_eq!(demo.site_key("file://localhost/C:/Pip/fixtures/demo-insurer/index.html").as_deref(), insurer);
+        assert_eq!(demo.site_key("file:///C:\\Pip\\fixtures\\demo-insurer\\services.html").as_deref(), insurer);
         let uni = demo.site_key("file:///C:/Pip/fixtures/demo-uni/index.html");
         assert_eq!(uni.as_deref(), Some("file:///c:/pip/fixtures/demo-uni"));
-        assert_ne!(uni.as_deref(), kasse);
+        assert_ne!(uni.as_deref(), insurer);
         // A page directly in the root keeps the root as its key.
         assert_eq!(demo.site_key("file:///C:/Pip/fixtures/page.html").as_deref(), Some("file:///c:/pip/fixtures"));
         assert_eq!(demo.site_key("file:///C:/Pip/fixtures/page.html?a/b").as_deref(), Some("file:///c:/pip/fixtures"));
@@ -697,9 +701,9 @@ mod tests {
     #[test]
     fn site_labels_for_sentences() {
         let live = Gate::new(false);
-        assert_eq!(live.site_label("https://WWW.Kasse.example/form?x").as_deref(), Some("www.kasse.example"));
+        assert_eq!(live.site_label("https://WWW.Insurer.example/form?x").as_deref(), Some("www.insurer.example"));
         let demo = Gate::new(true).with_fixtures(&["C:/Pip/fixtures"]);
-        assert_eq!(demo.site_label("file:///C:/Pip/fixtures/demo-kasse/index.html").as_deref(), Some("demo-kasse"));
+        assert_eq!(demo.site_label("file:///C:/Pip/fixtures/demo-insurer/index.html").as_deref(), Some("demo-insurer"));
         assert_eq!(demo.site_label("file:///C:/Pip/fixtures/page.html").as_deref(), Some("fixtures"));
         assert_eq!(demo.site_label("file:///C:/Users/x/evil.html"), None);
     }

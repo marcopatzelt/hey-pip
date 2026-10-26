@@ -197,8 +197,8 @@ const SETTING_KEYS: &[&str] = &[
     "onboarded",
     "screen_notice_ok",
     "trusted_send_hosts",
-    "krankenkasse_kontaktformular",
-    "krankenkasse_services",
+    "insurer_contact_form",
+    "insurer_services",
     "brief_shown_on",
     "seconds_saved_total",
 ];
@@ -1269,7 +1269,7 @@ impl Ctx {
         }
     }
 
-    /// The deterministic after-task offer: "Gesundkasse also offers …" [Yes, let's do it] [Not now] [Why?].
+    /// The deterministic after-task offer: "Evergreen Health also offers …" [Yes, let's do it] [Not now] [Why?].
     fn show_offer(self: Arc<Self>, o: AfterTaskOffer) {
         let lang = self.lang();
         self.offer_event(EV_SUGGESTED, &o.offer.heading);
@@ -1857,7 +1857,7 @@ fn knowledge_groups(k: &Knowledge, lang: Lang) -> Vec<KnowGroup> {
     ]
 }
 
-/// "krankenkasse" -> "Health insurer"; unknown keys: "favourite_shop" -> "Favourite shop".
+/// "insurer" -> "Health insurer"; unknown keys: "favourite_shop" -> "Favourite shop".
 fn fact_label(key: &str, lang: Lang) -> String {
     let k = format!("know_key_{key}");
     let known = t(&k, lang);
@@ -2175,7 +2175,7 @@ mod tests {
     fn file_urls_to_paths() {
         assert_eq!(file_url_path("file:///C:/Pip/a%20b.html"), Some(PathBuf::from("C:/Pip/a b.html")));
         assert_eq!(file_url_path("file:///home/x/s.html#top"), Some(PathBuf::from("/home/x/s.html")));
-        assert_eq!(file_url_path("https://kasse.example/services"), None);
+        assert_eq!(file_url_path("https://insurer.example/services"), None);
     }
 
     #[test]
@@ -2203,12 +2203,12 @@ mod tests {
     fn knowledge_in_plain_words() {
         use pip_core::memory::{Memory, RunSummary, learn_from_run};
         let m = Memory::open_in_memory().unwrap();
-        m.profile_set("krankenkasse", "Gesundkasse").unwrap();
+        m.profile_set("insurer", "Evergreen Health").unwrap();
         m.profile_set("lang", "en").unwrap();
-        m.profile_set("trusted_send_hosts", "www.gesundkasse.example").unwrap();
+        m.profile_set("trusted_send_hosts", "www.evergreen-health.example").unwrap();
         m.profile_set_with("favourite_shop", "Bäckerei", "model", 0.6).unwrap();
         let run = RunSummary {
-            site: Some("www.gesundkasse.example".into()),
+            site: Some("www.evergreen-health.example".into()),
             task_kind: "send_au".into(),
             send_label: Some("Send".into()),
             ok: true,
@@ -2219,7 +2219,7 @@ mod tests {
         let titles: Vec<&str> = g.iter().map(|g| g.title.as_str()).collect();
         assert_eq!(titles, ["About you", "Your letters", "Places I know", "Where I may send without asking"]);
         let about: Vec<(&str, &str)> = g[0].items.iter().map(|i| (i.title.as_str(), i.detail.as_str())).collect();
-        assert!(about.contains(&("Health insurer: Gesundkasse", "you told me")), "{about:?}");
+        assert!(about.contains(&("Health insurer: Evergreen Health", "you told me")), "{about:?}");
         assert!(about.contains(&("Favourite shop: Bäckerei", "I noticed it while helping")), "{about:?}");
         assert!(!about.iter().any(|(t, _)| t.starts_with("Lang")), "settings are not facts about you");
         assert!(g[1].items.is_empty() && g[1].empty == "Nothing yet.");

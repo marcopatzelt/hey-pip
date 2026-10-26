@@ -3,7 +3,7 @@
   "date": "2026-11-02",
   "reference": "G123456789",
   "sender_contains": "Beispiel",
-  "recipient_contains": "Gesundkasse",
+  "recipient_contains": "Evergreen Health",
   "au": {
     "from": "2026-10-20",
     "until": "2026-11-06",

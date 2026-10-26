@@ -49,7 +49,7 @@ fn au_args() -> Value {
     json!({
         "doc_type": "au_bescheinigung",
         "sender": "Dr. med. Max Beispiel",
-        "recipient": "Gesundkasse Beispielstadt",
+        "recipient": "Evergreen Health",
         "date": "2026-10-20",
         "reference": "G123456789",
         "summary_simple": "Du bist vom 20.10. bis 30.10.2026 krankgeschrieben.",
@@ -130,7 +130,7 @@ fn sha_of(name: &str) -> String {
 async fn pdf_in_private_mode_is_refused_before_any_call() {
     let s = setup(None).await;
     mount_local(&s.local, chat_answer(&au_args())).await;
-    let err = s.pipeline.ingest(&fixture("kasse_brief.pdf"), Lang::En).await.unwrap_err();
+    let err = s.pipeline.ingest(&fixture("insurer_letter.pdf"), Lang::En).await.unwrap_err();
     let doc = err.downcast_ref::<DocError>();
     assert!(matches!(doc, Some(DocError::PrivatePdf)), "{err:#}");
     assert_eq!(

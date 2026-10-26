@@ -103,22 +103,22 @@ mod tests {
     #[test]
     fn same_page_untouched_is_fresh_then_stale_then_gone() {
         let t0 = Instant::now();
-        let c = Cached { key: key(1, "Fragebogen"), epoch: 3, at: t0, items: vec![1, 2] };
-        assert_eq!(c.hit(&key(1, "Fragebogen"), 3, t0 + Duration::from_millis(200)), Hit::Fresh);
-        assert_eq!(c.hit(&key(1, "Fragebogen"), 3, t0 + Duration::from_millis(1600)), Hit::Stale);
-        assert_eq!(c.hit(&key(1, "Fragebogen"), 3, t0 + Duration::from_secs(11)), Hit::Miss);
+        let c = Cached { key: key(1, "Questionnaire"), epoch: 3, at: t0, items: vec![1, 2] };
+        assert_eq!(c.hit(&key(1, "Questionnaire"), 3, t0 + Duration::from_millis(200)), Hit::Fresh);
+        assert_eq!(c.hit(&key(1, "Questionnaire"), 3, t0 + Duration::from_millis(1600)), Hit::Stale);
+        assert_eq!(c.hit(&key(1, "Questionnaire"), 3, t0 + Duration::from_secs(11)), Hit::Miss);
         // a clock that went backwards (or `at` in the future) is not a panic, just fresh
-        assert_eq!(c.hit(&key(1, "Fragebogen"), 3, t0), Hit::Fresh);
+        assert_eq!(c.hit(&key(1, "Questionnaire"), 3, t0), Hit::Fresh);
     }
 
     #[test]
     fn other_window_title_cap_or_an_action_misses() {
         let t0 = Instant::now();
-        let c = Cached { key: key(1, "Fragebogen"), epoch: 3, at: t0, items: Vec::<u8>::new() };
-        assert_eq!(c.hit(&key(2, "Fragebogen"), 3, t0), Hit::Miss, "other window");
+        let c = Cached { key: key(1, "Questionnaire"), epoch: 3, at: t0, items: Vec::<u8>::new() };
+        assert_eq!(c.hit(&key(2, "Questionnaire"), 3, t0), Hit::Miss, "other window");
         assert_eq!(c.hit(&key(1, "Danke"), 3, t0), Hit::Miss, "page changed (title)");
-        assert_eq!(c.hit(&key(1, "Fragebogen"), 4, t0), Hit::Miss, "clicked or typed since");
-        let mut wider = key(1, "Fragebogen");
+        assert_eq!(c.hit(&key(1, "Questionnaire"), 4, t0), Hit::Miss, "clicked or typed since");
+        let mut wider = key(1, "Questionnaire");
         wider.max = 200;
         assert_eq!(c.hit(&wider, 3, t0), Hit::Miss, "asked for more items");
     }

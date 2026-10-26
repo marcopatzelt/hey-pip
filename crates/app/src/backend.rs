@@ -32,8 +32,8 @@ pub struct Backend {
     profile_fallback: Mutex<HashMap<String, String>>,
 }
 
-/// Profile key with the demo insurer's contact form (file:// URL of fixtures/demo-kasse/index.html).
-pub const DEMO_FORM_KEY: &str = "krankenkasse_kontaktformular";
+/// Profile key with the demo insurer's contact form (file:// URL of fixtures/demo-insurer/index.html).
+pub const DEMO_FORM_KEY: &str = "insurer_contact_form";
 
 /// Profile key with the demo insurer's "Services for you" page (after-task discovery looks there).
 pub const DEMO_SERVICES_KEY: &str = PROFILE_SERVICES;
@@ -43,9 +43,9 @@ pub const DEMO_SERVICES_KEY: &str = PROFILE_SERVICES;
 /// university's re-registration form (a second site: its own playbook and its own "Don't ask again").
 /// Paths are relative to the fixtures folder.
 const DEMO_PAGES: &[(&str, &str)] = &[
-    ("demo-kasse/index.html", include_str!("../../../fixtures/demo-kasse/index.html")),
-    ("demo-kasse/services.html", include_str!("../../../fixtures/demo-kasse/services.html")),
-    ("demo-kasse/fragebogen.html", include_str!("../../../fixtures/demo-kasse/fragebogen.html")),
+    ("demo-insurer/index.html", include_str!("../../../fixtures/demo-insurer/index.html")),
+    ("demo-insurer/services.html", include_str!("../../../fixtures/demo-insurer/services.html")),
+    ("demo-insurer/questionnaire.html", include_str!("../../../fixtures/demo-insurer/questionnaire.html")),
     ("demo-uni/index.html", include_str!("../../../fixtures/demo-uni/index.html")),
 ];
 
@@ -53,7 +53,7 @@ const DEMO_PAGES: &[(&str, &str)] = &[
 const DEMO_LETTERS: &[(&str, &[u8])] = &[
     ("bescheid_wohngeld.pdf", include_bytes!("../../../fixtures/letters/bescheid_wohngeld.pdf")),
     ("au_erika_erst_foto.jpg", include_bytes!("../../../fixtures/letters/au_erika_erst_foto.jpg")),
-    ("kasse_brief.pdf", include_bytes!("../../../fixtures/letters/kasse_brief.pdf")),
+    ("insurer_letter.pdf", include_bytes!("../../../fixtures/letters/insurer_letter.pdf")),
 ];
 
 /// The invented demo person (`seed_demo_profile`); PIP_DEMO_RESET wipes only her memory.
@@ -227,7 +227,7 @@ impl Backend {
     /// "Schick die Krankschreibung an meine Krankenkasse" has a target. Never overrides a stored value.
     /// True if the profile now has a form address.
     fn seed_demo_form(&self, fixtures_dir: &std::path::Path) -> bool {
-        let dir = fixtures_dir.join("demo-kasse");
+        let dir = fixtures_dir.join("demo-insurer");
         // The services page for after-task discovery, if this folder has one and none is stored yet.
         if self.profile_get(DEMO_SERVICES_KEY).is_none()
             && let Ok(services) = dir.join("services.html").canonicalize()
@@ -311,7 +311,7 @@ fn write_demo_letters(dir: &std::path::Path) -> std::io::Result<()> {
     DEMO_LETTERS.iter().try_for_each(|(name, bytes)| std::fs::write(dir.join(name), bytes))
 }
 
-/// Write the built-in demo pages to `<dir>/demo-kasse/` and `<dir>/demo-uni/` (refreshed every start). Returns `dir`.
+/// Write the built-in demo pages to `<dir>/demo-insurer/` and `<dir>/demo-uni/` (refreshed every start). Returns `dir`.
 fn write_demo_form(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let r = DEMO_PAGES.iter().try_for_each(|(rel, html)| {
         let path = dir.join(rel);
@@ -353,9 +353,9 @@ mod tests {
         let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
         assert!(b.seed_demo_form(&fixtures));
         let url = b.profile_get(DEMO_FORM_KEY).expect("seeded");
-        assert!(url.starts_with("file:///") && url.ends_with("/fixtures/demo-kasse/index.html"), "{url}");
+        assert!(url.starts_with("file:///") && url.ends_with("/fixtures/demo-insurer/index.html"), "{url}");
         let services = b.profile_get(DEMO_SERVICES_KEY).expect("services seeded");
-        assert!(services.ends_with("/fixtures/demo-kasse/services.html"), "{services}");
+        assert!(services.ends_with("/fixtures/demo-insurer/services.html"), "{services}");
         assert!(Gate::new(true).with_fixtures(&[&fixtures]).url_allowed(&services));
         assert!(Gate::new(true).with_fixtures(&[&fixtures]).url_allowed(&url));
         b.profile_set(DEMO_FORM_KEY, "http://localhost:8080/form");
@@ -373,17 +373,17 @@ mod tests {
         assert!(b.seed_demo_form(&fx));
         let url = b.profile_get(DEMO_FORM_KEY).unwrap();
         assert!(Gate::new(true).with_fixtures(&[&fx]).url_allowed(&url), "{url}");
-        let html = std::fs::read_to_string(fx.join("demo-kasse/index.html")).unwrap();
-        assert!(html.contains("Gesundkasse") && html.contains("Submit"));
+        let html = std::fs::read_to_string(fx.join("demo-insurer/index.html")).unwrap();
+        assert!(html.contains("Evergreen Health") && html.contains("Submit"));
         // The services page and the questionnaire come along, are seeded and allowed by the gate.
         let services = b.profile_get(DEMO_SERVICES_KEY).expect("services seeded");
-        assert!(services.ends_with("/demo-kasse/services.html"), "{services}");
+        assert!(services.ends_with("/demo-insurer/services.html"), "{services}");
         let gate = Gate::new(true).with_fixtures(&[&fx]);
         assert!(gate.url_allowed(&services));
-        assert!(gate.url_allowed(&services.replace("services.html", "fragebogen.html")));
-        let page = std::fs::read_to_string(fx.join("demo-kasse/services.html")).unwrap();
-        assert!(page.contains("Return your questionnaire online") && page.contains("fragebogen.html"));
-        let form = std::fs::read_to_string(fx.join("demo-kasse/fragebogen.html")).unwrap();
+        assert!(gate.url_allowed(&services.replace("services.html", "questionnaire.html")));
+        let page = std::fs::read_to_string(fx.join("demo-insurer/services.html")).unwrap();
+        assert!(page.contains("Return your questionnaire online") && page.contains("questionnaire.html"));
+        let form = std::fs::read_to_string(fx.join("demo-insurer/questionnaire.html")).unwrap();
         assert!(form.contains("Still unable to work?") && form.contains("Thank you, received on"));
     }
 
@@ -391,24 +391,30 @@ mod tests {
     fn built_in_uni_page_is_written_and_is_its_own_site() {
         let dir = tempfile::tempdir().unwrap();
         let fx = write_demo_form(&dir.path().join("fixtures")).expect("written");
-        for rel in
-            ["demo-kasse/index.html", "demo-kasse/services.html", "demo-kasse/fragebogen.html", "demo-uni/index.html"]
-        {
+        for rel in [
+            "demo-insurer/index.html",
+            "demo-insurer/services.html",
+            "demo-insurer/questionnaire.html",
+            "demo-uni/index.html",
+        ] {
             assert!(fx.join(rel).is_file(), "{rel}");
         }
         let gate = Gate::new(true).with_fixtures(&[&fx]);
         let uni = file_url(&fx.join("demo-uni/index.html").canonicalize().unwrap());
         assert!(gate.url_allowed(&uni), "{uni}");
-        let kasse = file_url(&fx.join("demo-kasse/index.html").canonicalize().unwrap());
-        let (uni_site, kasse_site) = (gate.site_key(&uni).unwrap(), gate.site_key(&kasse).unwrap());
-        assert!(uni_site.ends_with("/demo-uni") && kasse_site.ends_with("/demo-kasse"), "{uni_site} {kasse_site}");
-        // Seeding still points the insurer's form and services page at demo-kasse/, never at the university.
+        let insurer = file_url(&fx.join("demo-insurer/index.html").canonicalize().unwrap());
+        let (uni_site, insurer_site) = (gate.site_key(&uni).unwrap(), gate.site_key(&insurer).unwrap());
+        assert!(
+            uni_site.ends_with("/demo-uni") && insurer_site.ends_with("/demo-insurer"),
+            "{uni_site} {insurer_site}"
+        );
+        // Seeding still points the insurer's form and services page at demo-insurer/, never at the university.
         let mut b = Backend::mock();
         b.memory = Some(Arc::new(Memory::open_in_memory().unwrap()));
         assert!(b.seed_demo_form(&fx));
         let services = b.profile_get(DEMO_SERVICES_KEY).expect("services seeded");
-        assert!(services.ends_with("/demo-kasse/services.html"), "{services}");
-        assert!(b.profile_get(DEMO_FORM_KEY).unwrap().ends_with("/demo-kasse/index.html"));
+        assert!(services.ends_with("/demo-insurer/services.html"), "{services}");
+        assert!(b.profile_get(DEMO_FORM_KEY).unwrap().ends_with("/demo-insurer/index.html"));
     }
 
     #[test]
@@ -425,7 +431,7 @@ mod tests {
         ] {
             assert!(html.contains(label), "{label}");
         }
-        assert!(!html.to_lowercase().contains("gesundkasse"));
+        assert!(!html.to_lowercase().contains("evergreen health"));
     }
 
     #[test]
@@ -501,10 +507,10 @@ mod tests {
             let (_dir, letters, mem, rules, now) = demo_setup();
             mem.profile_set("name", "Jonas").unwrap();
             mem.profile_set("full_name", "Jonas Muster").unwrap();
-            mem.profile_set("krankenkasse", "Echte Kasse").unwrap();
+            mem.profile_set("insurer", "Real Insurer").unwrap();
             seed_demo_memory(&mem, &rules, &letters, now, reset);
             assert_eq!(mem.profile_get("full_name").unwrap().as_deref(), Some("Jonas Muster"), "reset={reset}");
-            assert_eq!(mem.profile_get("krankenkasse").unwrap().as_deref(), Some("Echte Kasse"));
+            assert_eq!(mem.profile_get("insurer").unwrap().as_deref(), Some("Real Insurer"));
             assert_eq!(mem.documents_count().unwrap(), 0);
             // A first name only may be a real person too.
             let (_dir, letters, mem, rules, now) = demo_setup();

@@ -175,7 +175,7 @@ mod tests {
         assert_eq!(file_url(Path::new("/a b/c%.html")), "file:///a%20b/c%25.html");
         assert_eq!(file_url(Path::new(r"\\?\C:\Users\E\fixtures\x.html")), "file:///C:/Users/E/fixtures/x.html");
         let gate = crate::agent::Gate::new(true).with_fixtures(&[r"\\?\C:\Pip\fixtures"]);
-        assert!(gate.url_allowed(&file_url(Path::new(r"\\?\C:\Pip\fixtures\demo-kasse\index.html"))));
+        assert!(gate.url_allowed(&file_url(Path::new(r"\\?\C:\Pip\fixtures\demo-insurer\index.html"))));
     }
 
     #[test]

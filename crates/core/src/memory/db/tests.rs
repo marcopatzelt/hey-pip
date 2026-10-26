@@ -37,14 +37,14 @@ fn open_file_twice_is_idempotent_and_versioned() {
 #[test]
 fn profile_upsert_and_all() {
     let m = mem();
-    assert_eq!(m.profile_get("kasse").unwrap(), None);
-    m.profile_set("kasse", "Gesundkasse").unwrap();
-    m.profile_set("kasse", "TK Beispiel").unwrap();
+    assert_eq!(m.profile_get("insurer").unwrap(), None);
+    m.profile_set("insurer", "Evergreen Health").unwrap();
+    m.profile_set("insurer", "Riverside Health").unwrap();
     m.profile_set("name", "Erika").unwrap();
-    assert_eq!(m.profile_get("kasse").unwrap().as_deref(), Some("TK Beispiel"));
+    assert_eq!(m.profile_get("insurer").unwrap().as_deref(), Some("Riverside Health"));
     assert_eq!(
         m.profile_all().unwrap(),
-        vec![("kasse".to_string(), "TK Beispiel".to_string()), ("name".to_string(), "Erika".to_string())]
+        vec![("insurer".to_string(), "Riverside Health".to_string()), ("name".to_string(), "Erika".to_string())]
     );
 }
 
@@ -198,10 +198,66 @@ fn reminder_order_across_dst_change() {
 }
 
 #[test]
+fn old_profile_key_names_move_to_the_new_ones_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.db");
+    let old_form = "file:///c:/Pip/fixtures/demo-kasse/index.html";
+    let old_services = "file:///c:/Pip/fixtures/demo-kasse/services.html";
+    {
+        let m = Memory::open(&path).unwrap();
+        // A database of an older version: the facts under their old (German) key names.
+        let c = m.conn();
+        let now = ts(Local::now());
+        for (k, v) in [
+            ("krankenkasse", "Evergreen Health"),
+            ("krankenkasse_kontaktformular", old_form),
+            ("krankenkasse_services", old_services),
+        ] {
+            c.execute(
+                "INSERT INTO profile(key, value, updated_at, source) VALUES (?1, ?2, ?3, 'letter:4')",
+                params![k, v, now],
+            )
+            .unwrap();
+        }
+    }
+    let m = Memory::open(&path).unwrap();
+    assert_eq!(m.profile_get("insurer").unwrap().as_deref(), Some("Evergreen Health"));
+    assert_eq!(m.profile_meta("insurer").unwrap().unwrap().source, "letter:4", "source stays");
+    assert_eq!(
+        m.profile_get("insurer_contact_form").unwrap().as_deref(),
+        Some("file:///c:/Pip/fixtures/demo-insurer/index.html")
+    );
+    assert_eq!(
+        m.profile_get("insurer_services").unwrap().as_deref(),
+        Some("file:///c:/Pip/fixtures/demo-insurer/services.html")
+    );
+    let keys: Vec<String> = m.profile_all().unwrap().into_iter().map(|(k, _)| k).collect();
+    assert_eq!(keys, ["insurer", "insurer_contact_form", "insurer_services"], "no old key left");
+    // An old name still reads and writes the new key.
+    assert_eq!(m.profile_get("krankenkasse").unwrap().as_deref(), Some("Evergreen Health"));
+    m.profile_set("krankenkasse", "Riverside Health").unwrap();
+    assert_eq!(m.profile_get("insurer").unwrap().as_deref(), Some("Riverside Health"));
+    drop(m);
+    // A newer value under the new name wins over a leftover old one.
+    {
+        let m = Memory::open(&path).unwrap();
+        m.conn()
+            .execute(
+                "INSERT INTO profile(key, value, updated_at, source) VALUES ('krankenkasse', 'Old', ?1, 'user')",
+                [ts(Local::now())],
+            )
+            .unwrap();
+    }
+    let m = Memory::open(&path).unwrap();
+    assert_eq!(m.profile_get("insurer").unwrap().as_deref(), Some("Riverside Health"));
+    assert_eq!(m.profile_all().unwrap().len(), 3);
+}
+
+#[test]
 fn events_newest_first() {
     let m = mem();
     m.add_event("doc", "Krankschreibung gelesen").unwrap();
-    m.add_event("sent", "Krankschreibung an Kasse geschickt").unwrap();
+    m.add_event("sent", "Krankschreibung an Evergreen Health geschickt").unwrap();
     let e = m.recent_events(5).unwrap();
     assert_eq!(e.len(), 2);
     assert_eq!(e[0].kind, "sent");
@@ -309,7 +365,7 @@ fn forgetting_a_letter_removes_it_from_search_and_its_deadlines() {
             Path::new("C:/b/au.pdf"),
             "sha-x",
             &au_doc(d(2026, 10, 20), d(2026, 10, 30)),
-            "Arbeitsunfähigkeit Gesundkasse",
+            "Arbeitsunfähigkeit Evergreen Health",
         )
         .unwrap();
     m.add_deadline(&NewDeadline { doc_id: Some(id), ..deadline("Neue AU", d(2026, 11, 2), vec![]) }).unwrap();
@@ -332,7 +388,7 @@ fn wipe_everything_empties_every_table() {
             Path::new("C:/b/au.pdf"),
             "sha-w",
             &au_doc(d(2026, 10, 20), d(2026, 10, 30)),
-            "Arbeitsunfähigkeit Gesundkasse",
+            "Arbeitsunfähigkeit Evergreen Health",
         )
         .unwrap();
     let now = local_at(d(2026, 10, 28), 9, 0);

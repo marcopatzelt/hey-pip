@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn text_field_with_a_date_placeholder_gets_the_written_date() {
         // Chromium names an unlabelled text field by its placeholder; a label may carry the pattern too. A
-        // labelled field ("First day of illness", demo-kasse fragebogen-v2) hides its placeholder: the label's
+        // labelled field ("First day of illness", demo-insurer questionnaire-v2) hides its placeholder: the label's
         // words have to do.
         for name in [
             "TT.MM.JJJJ",

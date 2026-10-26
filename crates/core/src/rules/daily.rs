@@ -85,7 +85,7 @@ pub struct AfterTaskOffer {
     pub offer: BriefOffer,
     /// "their letter of 27 October" (the deadline's letter has a date) or "your deadline on 13 November".
     pub reason: String,
-    /// Profile `krankenkasse` (max. 60 characters), else "Your health insurer".
+    /// Profile `insurer` (max. 60 characters), else "Your health insurer".
     pub insurer: String,
 }
 
@@ -115,8 +115,8 @@ pub fn after_task(mem: &Memory, now: DateTime<Local>, lang: Lang, services: (&st
 /// `after_task`, but the task that just finished is not offered again: a deadline whose title shares a
 /// long word with `just_done` (the agent's done summary) is skipped, so right after the questionnaire Pip
 /// offers the next fitting deadline or stays quiet. Words of the insurer's and the user's name and a few
-/// generic words do not count ("Sick note sent to Gesundkasse" must not hide the questionnaire for
-/// Gesundkasse). The reason of every Silent and LookAround is logged at info.
+/// generic words do not count ("Sick note sent to Evergreen Health" must not hide the questionnaire for
+/// Evergreen Health). The reason of every Silent and LookAround is logged at info.
 pub fn after_task_on(
     mem: &Memory,
     now: DateTime<Local>,
@@ -172,7 +172,7 @@ pub fn after_task_on(
         None => tr("sugg_reason_deadline", lang, &[("date", &fmt_date(dl.due, lang))]),
     };
     let insurer = mem
-        .profile_get("krankenkasse")?
+        .profile_get("insurer")?
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .map(|v| truncate(&v, 60))
@@ -290,7 +290,7 @@ fn task_words(mem: &Memory, summary: &str) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
     let mut names: Vec<String> = GENERIC_WORDS.iter().map(|w| w.to_string()).collect();
-    for key in ["krankenkasse", "full_name", "name"] {
+    for key in ["insurer", "full_name", "name"] {
         if let Some(v) = mem.profile_get(key)? {
             names.extend(long_words(&v));
         }
@@ -383,7 +383,7 @@ mod tests {
             .insert_document(Path::new("au.jpg"), "sha-au", &au_doc(d(2026, 10, 20), d(2026, 10, 30)), "AU")
             .unwrap();
         add(&mem, "New sick note, if you are still ill", d(2026, 11, 2), "au_lueckenlos", Some(doc));
-        let q = add(&mem, "Send the questionnaire back to Gesundkasse", d(2026, 11, 13), "frist_aus_brief", None);
+        let q = add(&mem, "Send the questionnaire back to Evergreen Health", d(2026, 11, 13), "frist_aus_brief", None);
         add(&mem, "Objection to the decision", d(2026, 11, 18), "widerspruch_bescheid", None);
         (mem, q)
     }
@@ -406,7 +406,9 @@ mod tests {
         assert!(b.text.contains("Your sick note ends on Friday, October 30."), "{}", b.text);
         assert!(b.text.contains("you need a new one by Monday, November 2."), "{}", b.text);
         assert!(
-            b.text.contains("The deadline \"Send the questionnaire back to Gesundkasse\" ends on Friday, November 13."),
+            b.text.contains(
+                "The deadline \"Send the questionnaire back to Evergreen Health\" ends on Friday, November 13."
+            ),
             "{}",
             b.text
         );
@@ -501,7 +503,8 @@ mod tests {
         let mem = Memory::open_in_memory().unwrap();
         let doc =
             mem.insert_document(Path::new("brief.pdf"), "sha-q", &bescheid_doc(d(2026, 10, 27)), "Brief").unwrap();
-        let q = add(&mem, "Send the questionnaire back to Gesundkasse", d(2026, 11, 13), "frist_aus_brief", Some(doc));
+        let q =
+            add(&mem, "Send the questionnaire back to Evergreen Health", d(2026, 11, 13), "frist_aus_brief", Some(doc));
         (mem, q)
     }
 
@@ -509,13 +512,13 @@ mod tests {
     fn after_task_offer_names_the_letter() {
         let _env = env_lock();
         let (mem, q) = with_letter();
-        mem.profile_set("krankenkasse", "  Gesundkasse  ").unwrap();
+        mem.profile_set("insurer", "  Evergreen Health  ").unwrap();
         let o = offer_after_task(&mem, now(), Lang::En, (URL, SERVICES)).unwrap().expect("offer");
         assert_eq!(o.offer.heading, "Return your questionnaire online");
         assert_eq!(o.offer.deadline_id, q);
         assert!(o.offer.task.contains(URL) && o.offer.task.contains("is_commit=true"), "{}", o.offer.task);
         assert_eq!(o.reason, "their letter of Tuesday, October 27");
-        assert_eq!(o.insurer, "Gesundkasse");
+        assert_eq!(o.insurer, "Evergreen Health");
         let de = offer_after_task(&mem, now(), Lang::De, (URL, SERVICES)).unwrap().expect("offer");
         assert!(de.reason.starts_with("ihrem Brief vom"), "{}", de.reason);
     }
@@ -529,7 +532,7 @@ mod tests {
         assert_eq!(o.reason, "your deadline on Friday, November 13");
         assert_eq!(o.insurer, "Your health insurer");
         let long = "X".repeat(80);
-        mem.profile_set("krankenkasse", &long).unwrap();
+        mem.profile_set("insurer", &long).unwrap();
         let o = offer_after_task(&mem, now(), Lang::En, (URL, SERVICES)).unwrap().expect("offer");
         assert_eq!(o.insurer.chars().count(), 61, "60 characters and an ellipsis");
     }
@@ -662,10 +665,10 @@ mod tests {
     fn after_task_skips_the_deadline_just_done() {
         let _env = env_lock();
         let html = "<h2>Return your questionnaire online</h2><h2>Objection to a decision: write to us</h2>";
-        let done = "Sent the questionnaire to Gesundkasse";
+        let done = "Sent the questionnaire to Evergreen Health";
         // The questionnaire is skipped, the next fitting deadline is offered.
         let (mem, q) = erika();
-        mem.profile_set("krankenkasse", "Gesundkasse Beispielstadt").unwrap();
+        mem.profile_set("insurer", "Evergreen Health").unwrap();
         match after_task_on(&mem, now(), Lang::En, (URL, html), done).unwrap() {
             AfterTask::Offer(o) => {
                 assert_ne!(o.offer.deadline_id, q);
@@ -676,7 +679,7 @@ mod tests {
         // Nothing else fits on a readable page: silent, never a look around.
         assert_eq!(after_task_on(&mem, now(), Lang::En, (URL, SERVICES), done).unwrap(), AfterTask::Silent);
         // The insurer's name alone does not hide the questionnaire (the sick note went to the same insurer).
-        let sick = "Sent your sick note to Gesundkasse Beispielstadt.";
+        let sick = "Sent your sick note to Evergreen Health.";
         match after_task_on(&mem, now(), Lang::En, (URL, SERVICES), sick).unwrap() {
             AfterTask::Offer(o) => assert_eq!(o.offer.deadline_id, q),
             other => panic!("expected the questionnaire, got {other:?}"),
@@ -704,15 +707,15 @@ mod tests {
     #[test]
     fn after_task_on_the_real_services_page() {
         let _env = env_lock();
-        let page = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo-kasse/services.html");
+        let page = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo-insurer/services.html");
         let html = std::fs::read_to_string(page).unwrap();
         let (mem, q) = with_letter();
-        mem.profile_set("krankenkasse", "Gesundkasse Beispielstadt").unwrap();
-        match after_task_on(&mem, now(), Lang::En, (URL, &html), "Sent your sick note to Gesundkasse.").unwrap() {
+        mem.profile_set("insurer", "Evergreen Health").unwrap();
+        match after_task_on(&mem, now(), Lang::En, (URL, &html), "Sent your sick note to Evergreen Health.").unwrap() {
             AfterTask::Offer(o) => assert_eq!(o.offer.deadline_id, q),
             other => panic!("expected the questionnaire, got {other:?}"),
         }
-        let done = "Sent the questionnaire to Gesundkasse";
+        let done = "Sent the questionnaire to Evergreen Health";
         assert_eq!(after_task_on(&mem, now(), Lang::En, (URL, &html), done).unwrap(), AfterTask::Silent);
     }
 

@@ -11,7 +11,7 @@ Theme: "Build for Your World" (ein Problem, das Marco selbst kennt).
 
 ### Erweiterung (Marco, 20.10.2026): Orga-Helfer, der mitdenkt
 - Auslöser: Marcos Mutter. Die Folge-Krankschreibung kam zwei Tage zu spät (rückwirkend). Die Krankenkasse zahlte die zwei Tage nicht. Grund: Die Folge-AU muss spätestens am nächsten Werktag nach dem Ende der alten AU ausgestellt sein (§ 46 SGB V, vor der Demo prüfen).
-- Der Helfer liest Bescheinigungen und Briefe, merkt sich Zeiträume und Fristen und warnt rechtzeitig: "Deine Krankschreibung endet am Freitag. Geh spätestens am Montag zum Arzt, sonst zahlt die Kasse die Lücke nicht."
+- Der Helfer liest Bescheinigungen und Briefe, merkt sich Zeiträume und Fristen und warnt rechtzeitig: "Deine Krankschreibung endet am Freitag. Geh spätestens am Montag zum Arzt, sonst zahlt die Krankenkasse die Lücke nicht."
 - Er macht nicht nur Vorschläge, sondern handelt selbst (Entwurf schreiben, Frist eintragen, Weitergabe vorbereiten). Senden nur nach Freigabe.
 - Gedächtnis über den Nutzer (Verlauf, Fristen, Unterlagen). Kleiner Helfer auf dem Bildschirm, für alle Lebenslagen: Anmeldungen, Abgaben, Studenten-Fristen usw.
 - Zielgruppe: Menschen, die eingeschränkt sind oder die Regeln nicht kennen.
@@ -63,7 +63,7 @@ Die Meta Model API ist HTTPS (REST): `https://api.meta.ai/v1`, `Authorization: B
 ## Demo-Geschichte (3 Minuten)
 1. Nutzerin fotografiert eine Krankschreibung (AU) und den Brief der Krankenkasse (beides erfunden). Helfer liest, merkt sich: AU bis Freitag.
 2. Donnerstag: Figur meldet sich von selbst: "Deine AU endet morgen. Für lückenlose Zahlung brauchst du die Folge-AU spätestens am Montag." Frist im Kalender.
-3. Nutzerin fragt per Stimme: "Hilf mir, das der Kasse zu schicken." Helfer öffnet das Online-Formular / Mail, zeigt mit SAM auf die Felder, füllt sie aus.
+3. Nutzerin fragt per Stimme: "Hilf mir, das der Krankenkasse zu schicken." Helfer öffnet das Online-Formular / Mail, zeigt mit SAM auf die Felder, füllt sie aus.
 4. Freigabe-Karte: "Senden?" → Ja. Erst dann klickt er.
 5. Zweites kurzes Beispiel: Student mit Rückmeldefrist (zeigt "alle Lebenslagen").
 
@@ -73,7 +73,7 @@ Ziel: Hauptpreis im Indie-Track (1. Platz 150k $) plus Bonus-Preise. Offen: Darf
 **Hauptpreis: die vier Punkte (gleich gewichtet)**
 | Punkt | Was wir tun |
 |---|---|
-| Impact | Echte Geschichte (Krankschreibung, Kasse zahlt 2 Tage nicht). Zielgruppe: Menschen mit Einschränkungen, Ältere, alle ohne Behörden-Wissen. Zahl im Video: wie viele Menschen das trifft (seriöse Quelle suchen). |
+| Impact | Echte Geschichte (Krankschreibung, Krankenkasse zahlt 2 Tage nicht). Zielgruppe: Menschen mit Einschränkungen, Ältere, alle ohne Behörden-Wissen. Zahl im Video: wie viele Menschen das trifft (seriöse Quelle suchen). |
 | Use of Meta AI tooling | 5 Meta-Modelle mit klarer Rolle: Muse Spark (Gehirn), SAM 3.1 (zeigen/klicken), Muse Voice Transcribe (Stimme), Muse Glimmer lokal (private Dokumente), Muse Image (Figur). Schaubild im README und im Video. |
 | Technical depth | Komplett Rust, eigener Agent mit Tool Calls, SAM-Grounding (Text → Box → Klick), lokales Modell, Freigabe-Schranke, Eval mit Zahlen (Trefferquote). |
 | Demo quality | 3 Minuten, die ersten 10 Sekunden zeigen das Problem. Echte Bedienung auf Windows, nicht gestellt. Englisch mit Untertiteln. |

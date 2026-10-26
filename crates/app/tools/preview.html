@@ -97,7 +97,7 @@
     };
     const press = (type) => document.getElementById("pip").dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 7, button: 0, isPrimary: true, clientX: 0, clientY: 0 }));
     async function card(title, yes) {
-      ui({ type: "approval_request", card: { id: crypto.randomUUID(), title, what: "Was: deine Krankschreibung 20.10.–30.10.", to: "An: Gesundkasse (Kontaktformular)", attachments: ["krankschreibung_beispiel.pdf"], crop_png_b64: null, yes_label: yes, no_label: "Noch nicht" } });
+      ui({ type: "approval_request", card: { id: crypto.randomUUID(), title, what: "Was: deine Krankschreibung 20.10.–30.10.", to: "An: Evergreen Health (Kontaktformular)", attachments: ["krankschreibung_beispiel.pdf"], crop_png_b64: null, yes_label: yes, no_label: "Noch nicht" } });
       return new Promise((r) => (approve = r));
     }
     async function story() {
@@ -111,7 +111,7 @@
       if (await card("Darf ich das abschicken?", "Ja, abschicken") !== "yes") return;
       ui({ type: "pip", state: "acting" }); ui({ type: "progress", text: "Ich klicke auf Absenden." }); await wait(1200);
       ui({ type: "point_clear" }); ui({ type: "fly_home" }); ui({ type: "progress", text: "" }); ui({ type: "pip", state: "happy" });
-      ui({ type: "bubble", text: "Erledigt. Ich merke mir: Krankschreibung ist bei der Kasse.", buttons: [], question_id: null });
+      ui({ type: "bubble", text: "Erledigt. Ich merke mir: Krankschreibung ist bei Evergreen Health.", buttons: [], question_id: null });
       emit("app", { type: "acting", on: false }); await wait(2000); ui({ type: "pip", state: "idle" });
     }
     function scene() {
@@ -153,10 +153,10 @@
         // a lookalike page (invented): the core stops before typing and asks with an amber bubble
         emit("app", { type: "acting", on: true }); ui({ type: "pip", state: "asking" });
         ui({ type: "bubble", question_id: crypto.randomUUID(), buttons: [
-          { id: "guard:real", label: "Take me to the real Gesundkasse", primary: true },
+          { id: "guard:real", label: "Take me to the real Evergreen Health", primary: true },
           { id: "guard:continue", label: "I'm sure, continue", primary: false },
         ], text: [
-          "Careful: this page only looks like Gesundkasse.",
+          "Careful: this page only looks like Evergreen Health.",
           "The web address is not the one from your letters",
           "It asks for your SMS code",
           "It says you must hurry",
@@ -170,7 +170,7 @@
 </head>
 <body>
   <div id="desk">
-    <div class="win"><div class="bar">Gesundkasse – Kontaktformular (Demo)</div></div>
+    <div class="win"><div class="bar">Evergreen Health – Kontaktformular (Demo)</div></div>
   </div>
   <div id="log"></div>
   <!-- the real overlay markup, copied from ui/index.html at load -->
@@ -182,10 +182,10 @@
       const desk = document.getElementById("desk");
       if (location.hash === "#guard") {
         // an invented lookalike page: urgent red banner, member number + SMS code, red "Confirm now"
-        desk.querySelector(".bar").textContent = "gesundkasse-konto-check.example/confirm   |   Gesundkasse – Confirm your account";
+        desk.querySelector(".bar").textContent = "evergreen-health-account-check.example/confirm   |   Evergreen Health – Confirm your account";
         const add = (cls, x, y, w, h, text, css) => { const d = document.createElement("div"); d.className = cls; Object.assign(d.style, { left: x * 100 + "%", top: y * 100 + "%", width: w * 100 + "%", height: h * 100 + "%" }, css || {}); if (text) d.textContent = text; desk.append(d); };
         add("send", .14, .21, .42, .055, "Your account will be locked in 24 hours!", { background: "#fdecea", color: "#b3261e", fontWeight: "700", fontSize: "16px" });
-        add("send", .14, .29, .2, .05, "Gesundkasse", { background: "none", color: "#0b6e4f", fontWeight: "800", fontSize: "24px", placeItems: "center start" });
+        add("send", .14, .29, .2, .05, "Evergreen Health", { background: "none", color: "#0b6e4f", fontWeight: "800", fontSize: "24px", placeItems: "center start" });
         add("f", .18, .40, .30, .05); add("f", .18, .50, .30, .05);
         add("send", .18, .60, .16, .065, "Confirm now", { background: "#d32f2f", fontWeight: "700" });
         const lab = (t, y) => { const l = document.createElement("label"); l.textContent = t; Object.assign(l.style, { left: "18%", top: (y - .03) * 100 + "%" }); desk.append(l); };

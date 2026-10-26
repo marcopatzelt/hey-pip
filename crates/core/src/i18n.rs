@@ -259,7 +259,7 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("know_type_letter", "Brief", "Letter"),
     ("know_key_full_name", "Name", "Name"),
     ("know_key_name", "Vorname", "First name"),
-    ("know_key_krankenkasse", "Krankenkasse", "Health insurer"),
+    ("know_key_insurer", "Krankenkasse", "Health insurer"),
     ("know_key_versichertennummer", "Versichertennummer", "Insurance number"),
     ("know_key_arbeitgeber", "Arbeitgeber", "Employer"),
     ("know_key_address", "Adresse", "Address"),
@@ -595,13 +595,18 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("guard_title", "Moment. Diese Seite kommt mir nicht richtig vor.", "Wait. This page doesn't look right to me."),
     (
         "guard_claims",
-        "Hier steht {org}, aber deine {org} ist {site} ({source}).",
-        "It says {org}, but your {org} is {site} ({source}).",
+        "Hier steht {org}, aber das ist nicht die Seite deiner {org} ({source}).",
+        "It says {org}, but this is not the site of your {org} ({source}).",
     ),
     (
         "guard_lookalike",
-        "Die Adresse sieht aus wie {site}, ist es aber nicht.",
-        "Its address looks like {site}, but it is not that site.",
+        "Die Adresse sieht aus wie die Seite deiner {org}, ist es aber nicht.",
+        "Its address looks like your {org}, but it is not that site.",
+    ),
+    (
+        "guard_lookalike_plain",
+        "Die Adresse sieht aus wie eine Seite, die du schon benutzt hast, ist es aber nicht.",
+        "Its address looks like a site you used before, but it is not that site.",
     ),
     (
         "guard_sensitive",
@@ -675,11 +680,11 @@ mod tests {
 
     #[test]
     fn placeholders() {
-        assert_eq!(tf("approve_to", Lang::De, &[("to", "Gesundkasse")]), "An: Gesundkasse");
+        assert_eq!(tf("approve_to", Lang::De, &[("to", "Evergreen Health")]), "An: Evergreen Health");
         assert_eq!(t("no_such_key", Lang::En), "no_such_key");
         assert_eq!(
-            tf("approve_title_send", Lang::En, &[("to", "www.kasse.example")]),
-            "Ready to send to www.kasse.example?"
+            tf("approve_title_send", Lang::En, &[("to", "www.insurer.example")]),
+            "Ready to send to www.insurer.example?"
         );
         assert_eq!(t("btn_yes_send", Lang::En), "Send");
         assert_eq!(t("btn_not_yet", Lang::En), "Not yet");

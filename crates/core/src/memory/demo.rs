@@ -15,10 +15,10 @@ use crate::i18n::Lang;
 use crate::rules::{RuleEngine, local_at};
 
 /// The letter files the demo profile points to (the app writes them into `<data_dir>/demo-letters/`).
-pub const DEMO_LETTER_FILES: &[&str] = &["bescheid_wohngeld.pdf", "au_erika_erst_foto.jpg", "kasse_brief.pdf"];
+pub const DEMO_LETTER_FILES: &[&str] = &["bescheid_wohngeld.pdf", "au_erika_erst_foto.jpg", "insurer_letter.pdf"];
 
 /// Profile of the invented person. Address and birth date are the ones printed on the invented letters.
-/// Keys: `name` (first name, the greeting uses it), `krankenkasse`, `versichertennummer`, `bundesland`,
+/// Keys: `name` (first name, the greeting uses it), `insurer`, `versichertennummer`, `bundesland`,
 /// `lang` and `onboarded` are read by app, rules and agent; the rest is context for the agent.
 const PROFILE: &[(&str, &str)] = &[
     ("name", "Erika"),
@@ -27,7 +27,7 @@ const PROFILE: &[(&str, &str)] = &[
     ("address", "Lindenweg 7, 40999 Beispielstadt"),
     ("phone", "0999 1234567"),
     ("email", "erika.beispiel@example.com"),
-    ("krankenkasse", "Gesundkasse Beispielstadt"),
+    ("insurer", "Evergreen Health"),
     ("versichertennummer", "G123456789"),
     ("arbeitgeber", "Bäckerei Sonnenschein GmbH"),
     ("iban", "DE02 1203 0000 0000 2020 51"),
@@ -77,7 +77,7 @@ fn letters(shift: Duration) -> Vec<DemoLetter> {
     let d = |y, m, day| d(y, m, day) + shift;
     let wg_date = d(2026, 10, 14);
     let (au_from, au_until) = (d(2026, 10, 20), d(2026, 10, 30));
-    let (kasse_date, kasse_due) = (d(2026, 10, 27), d(2026, 11, 13));
+    let (insurer_date, insurer_due) = (d(2026, 10, 27), d(2026, 11, 13));
     vec![
         DemoLetter {
             file: "bescheid_wohngeld.pdf",
@@ -121,7 +121,7 @@ fn letters(shift: Duration) -> Vec<DemoLetter> {
             extract: DocumentExtract {
                 doc_type: DocType::AuBescheinigung,
                 sender: "Dr. med. Max Beispiel".into(),
-                recipient: "Gesundkasse Beispielstadt".into(),
+                recipient: "Evergreen Health".into(),
                 date: Some(au_from),
                 reference: Some("G123456789".into()),
                 person: Some("Erika Beispiel".into()),
@@ -147,7 +147,7 @@ fn letters(shift: Duration) -> Vec<DemoLetter> {
                 confidence: 0.9,
             },
             text: format!(
-                "Arbeitsunfähigkeitsbescheinigung. Krankenkasse: Gesundkasse Beispielstadt. Beispiel, Erika, \
+                "Arbeitsunfähigkeitsbescheinigung. Krankenkasse: Evergreen Health. Beispiel, Erika, \
                  Lindenweg 7, 40999 Beispielstadt, geb. am 12.08.1971. Versicherten-Nr. G123456789. \
                  Erstbescheinigung. Arbeitsunfähig seit {from}, voraussichtlich arbeitsunfähig bis \
                  einschließlich {until}, festgestellt am {from}. Ausgestellt am {from}. \
@@ -157,31 +157,31 @@ fn letters(shift: Duration) -> Vec<DemoLetter> {
             ),
         },
         DemoLetter {
-            file: "kasse_brief.pdf",
+            file: "insurer_letter.pdf",
             read_at: (d(2026, 10, 28), 9, 20),
             extract: DocumentExtract {
                 doc_type: DocType::Brief,
-                sender: "Gesundkasse Beispielstadt".into(),
+                sender: "Evergreen Health".into(),
                 recipient: "Erika Beispiel".into(),
-                date: Some(kasse_date),
+                date: Some(insurer_date),
                 reference: Some("G123456789".into()),
                 person: Some("Erika Beispiel".into()),
                 summary_simple: format!(
-                    "Gesundkasse got your sick note of {}. To check your sick pay they need the enclosed \
+                    "Evergreen Health got your sick note of {}. To check your sick pay they need the enclosed \
                      questionnaire, filled in and signed, and your IBAN if it changed. Please send both by {}.",
                     en_day(au_from),
-                    en(kasse_due)
+                    en(insurer_due)
                 ),
                 requests: vec![
                     "Fill in and sign the questionnaire about your inability to work.".into(),
                     "Send your bank details (IBAN) if they changed.".into(),
                 ],
                 deadlines: vec![ExtractedDeadline {
-                    title: "Send the questionnaire back to Gesundkasse".into(),
-                    due: kasse_due,
+                    title: "Send the questionnaire back to Evergreen Health".into(),
+                    due: insurer_due,
                     source_text: format!(
                         "Bitte senden Sie uns die Unterlagen bis spätestens {} zurück.",
-                        de(kasse_due)
+                        de(insurer_due)
                     ),
                 }],
                 au: None,
@@ -189,16 +189,16 @@ fn letters(shift: Duration) -> Vec<DemoLetter> {
                 confidence: 0.94,
             },
             text: format!(
-                "Gesundkasse – Die Krankenkasse für Beispielstadt. Frau Erika Beispiel, Lindenweg 7, 40999 \
+                "Evergreen Health – Die Krankenkasse für Beispielstadt. Frau Erika Beispiel, Lindenweg 7, 40999 \
                  Beispielstadt. Versicherten-Nr. G123456789. Datum {}. Ihre Krankschreibung vom \
                  {} – bitte Fragebogen zurücksenden. Damit wir Ihren Anspruch auf Krankengeld prüfen \
                  können, brauchen wir noch: den beiliegenden Fragebogen zur Arbeitsunfähigkeit, ausgefüllt und \
                  unterschrieben, Ihre Bankverbindung (IBAN), falls sie sich geändert hat. Bitte senden Sie uns \
                  die Unterlagen bis spätestens {} zurück. Wenn die Unterlagen später kommen, kann sich \
-                 die Zahlung verzögern. Kontaktformular: www.gesundkasse.example/kontakt",
-                de(kasse_date),
+                 die Zahlung verzögern. Kontaktformular: www.evergreen-health.example/kontakt",
+                de(insurer_date),
                 de(au_from),
-                de(kasse_due)
+                de(insurer_due)
             ),
         },
     ]
@@ -210,7 +210,7 @@ fn history(shift: Duration) -> Vec<(&'static str, (NaiveDate, u32, u32), String)
     vec![(
         "done",
         (d(2026, 10, 14), 16, 40),
-        format!("Sent the sick note of {} to Gesundkasse Beispielstadt.", en_short(d(2026, 10, 13))),
+        format!("Sent the sick note of {} to Evergreen Health.", en_short(d(2026, 10, 13))),
     )]
 }
 
@@ -333,7 +333,7 @@ mod tests {
         for (k, v) in [
             ("name", "Erika"),
             ("full_name", "Erika Beispiel"),
-            ("krankenkasse", "Gesundkasse Beispielstadt"),
+            ("insurer", "Evergreen Health"),
             ("versichertennummer", "G123456789"),
             ("lang", "en"),
             ("onboarded", "1"),
@@ -400,7 +400,7 @@ mod tests {
         let (mem, rules) = setup(now);
         mem.profile_set("name", "Jonas").unwrap();
         assert!(!seed_demo_profile(&mem, &rules, &letters_dir(), now).unwrap());
-        assert_eq!(mem.profile_get("krankenkasse").unwrap(), None);
+        assert_eq!(mem.profile_get("insurer").unwrap(), None);
         assert!(mem.open_deadlines().unwrap().is_empty());
     }
 

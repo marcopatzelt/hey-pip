@@ -65,8 +65,8 @@ fn demo_profile_brief_offers_the_questionnaire() {
     let mem = Arc::new(Memory::open_in_memory().unwrap());
     let rules = RuleEngine::new(mem.clone(), Arc::new(FixedClock::new(now)));
     assert!(seed_demo_profile(&mem, &rules, &root.join("letters"), now).unwrap());
-    let html = std::fs::read_to_string(root.join("demo-kasse/services.html")).unwrap();
-    let url = "file:///C:/Pip/fixtures/demo-kasse/services.html";
+    let html = std::fs::read_to_string(root.join("demo-insurer/services.html")).unwrap();
+    let url = "file:///C:/Pip/fixtures/demo-insurer/services.html";
     let name = mem.profile_get("name").unwrap();
     let brief = daily_brief(&mem, now, Lang::En, name.as_deref(), Some((url, &html))).unwrap().expect("a brief");
     let offer = brief.offer.expect("an offer");
@@ -87,8 +87,8 @@ fn demo_profile_brief_offers_the_questionnaire_on_any_day() {
     let rules = RuleEngine::new(mem.clone(), Arc::new(FixedClock::new(now)));
     assert!(seed_demo_profile(&mem, &rules, &root.join("letters"), now).unwrap());
     assert!(mem.open_deadlines().unwrap().iter().all(|dl| dl.due >= now.date_naive()));
-    let html = std::fs::read_to_string(root.join("demo-kasse/services.html")).unwrap();
-    let url = "file:///C:/Pip/fixtures/demo-kasse/services.html";
+    let html = std::fs::read_to_string(root.join("demo-insurer/services.html")).unwrap();
+    let url = "file:///C:/Pip/fixtures/demo-insurer/services.html";
     let brief = daily_brief(&mem, now, Lang::En, Some("Erika"), Some((url, &html))).unwrap().expect("a brief");
     assert_eq!(brief.offer.expect("an offer").heading, "Return your questionnaire online");
     assert!(brief.text.contains("sick note") && !brief.text.contains("passed"), "{}", brief.text);
@@ -107,8 +107,8 @@ fn demo_profile_offers_the_questionnaire_after_a_task() {
     let mem = Arc::new(Memory::open_in_memory().unwrap());
     let rules = RuleEngine::new(mem.clone(), Arc::new(FixedClock::new(now)));
     assert!(seed_demo_profile(&mem, &rules, &root.join("letters"), now).unwrap());
-    let html = std::fs::read_to_string(root.join("demo-kasse/services.html")).unwrap();
-    let url = "file:///C:/Pip/fixtures/demo-kasse/services.html";
+    let html = std::fs::read_to_string(root.join("demo-insurer/services.html")).unwrap();
+    let url = "file:///C:/Pip/fixtures/demo-insurer/services.html";
     let o = offer_after_task(&mem, now, Lang::En, (url, &html)).unwrap().expect("an offer");
     assert_eq!(o.offer.heading, "Return your questionnaire online");
     let dl = mem.deadline(o.offer.deadline_id).unwrap().expect("the deadline");
@@ -130,13 +130,13 @@ fn demo_profile_offer_never_goes_silent_or_repeats() {
     let rules = RuleEngine::new(mem.clone(), Arc::new(FixedClock::new(now)));
     assert!(seed_demo_profile(&mem, &rules, &root.join("letters"), now).unwrap());
     assert!(pip_core::memory::demo_seed_is_complete(&mem).unwrap());
-    let html = std::fs::read_to_string(root.join("demo-kasse/services.html")).unwrap();
-    let url = "file:///C:/Pip/fixtures/demo-kasse/services.html";
-    let sick = "Your sick note is with Gesundkasse Beispielstadt.";
+    let html = std::fs::read_to_string(root.join("demo-insurer/services.html")).unwrap();
+    let url = "file:///C:/Pip/fixtures/demo-insurer/services.html";
+    let sick = "Your sick note is with Evergreen Health.";
     match after_task_on(&mem, now, Lang::En, (url, &html), sick).unwrap() {
         AfterTask::Offer(o) => assert_eq!(o.offer.heading, "Return your questionnaire online"),
         other => panic!("expected the questionnaire, got {other:?}"),
     }
-    let done = "Sent the questionnaire to Gesundkasse.";
+    let done = "Sent the questionnaire to Evergreen Health.";
     assert_eq!(after_task_on(&mem, now, Lang::En, (url, &html), done).unwrap(), AfterTask::Silent);
 }

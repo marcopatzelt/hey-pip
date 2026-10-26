@@ -25,7 +25,7 @@ pub enum Tool {
         sam_query: String,
         description: String,
     },
-    /// `commit_what` / `commit_to` fill the approval card ("deine Krankschreibung", "Gesundkasse").
+    /// `commit_what` / `commit_to` fill the approval card ("deine Krankschreibung", "Evergreen Health").
     /// Missing is_commit/commit_* parse as false/null: the live model leaves them out (26.10 Edge run).
     Click {
         sam_query: String,
@@ -437,7 +437,7 @@ const IS_COMMIT: &str = "true if this sends, submits, uploads or attaches a priv
 deletes or cancels something. The user must approve it first.";
 const COMMIT_WHAT: &str = "Only when is_commit: what is sent, in the user's language (e.g. 'deine Krankschreibung \
 20.10.–30.10.'). Otherwise null.";
-const COMMIT_TO: &str = "Only when is_commit: to whom (e.g. 'Gesundkasse (Kontaktformular)'). Otherwise null.";
+const COMMIT_TO: &str = "Only when is_commit: to whom (e.g. 'Evergreen Health (Kontaktformular)'). Otherwise null.";
 const ELEMENT: &str = "The # number of the target in PAGE ELEMENTS (e.g. 4 for '#4'), when the list has it; then Pip \
 acts on that element directly. null when there is no PAGE ELEMENTS list or the target is not in it.";
 
@@ -515,7 +515,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         def("wait", "Wait for a page or dialog to load.", obj(&[("seconds", int_("0 to 10."))])),
         def(
             "remember_fact",
-            "Remember a fact about the user for later (e.g. key 'krankenkasse', value 'Gesundkasse').",
+            "Remember a fact about the user for later (e.g. key 'insurer', value 'Evergreen Health').",
             obj(&[("key", str_("lowercase snake_case key")), ("value", str_("The value."))]),
         ),
         def(
@@ -546,7 +546,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         def(
             "done",
             "Finish the task. summary = the one fact you will remember, user's language \
-             (e.g. 'Krankschreibung ist bei der Kasse.').",
+             (e.g. 'Krankschreibung ist bei Evergreen Health.').",
             obj(&[("summary", str_("One short sentence."))]),
         ),
         def(
@@ -590,7 +590,7 @@ mod tests {
             ("scroll", json!({"direction": "down", "amount": 3})),
             ("open_url", json!({"url": "http://localhost:8000/"})),
             ("wait", json!({"seconds": 2})),
-            ("remember_fact", json!({"key": "krankenkasse", "value": "Gesundkasse"})),
+            ("remember_fact", json!({"key": "insurer", "value": "Evergreen Health"})),
             ("search_memory", json!({"query": "Krankschreibung"})),
             ("add_deadline", json!({"title": "Widerspruch", "due": "2026-11-30", "why": "Sonst gilt der Bescheid."})),
             ("ask_user", json!({"question": "Welche?", "options": ["A", "B"]})),

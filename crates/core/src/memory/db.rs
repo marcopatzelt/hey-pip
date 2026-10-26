@@ -154,6 +154,45 @@ fn data_dir() -> Result<PathBuf> {
     Ok(base.join("Pip"))
 }
 
+/// Profile keys of older versions (German names of the demo insurer's facts) and their names now. Old
+/// databases are moved over once when opened; a model or caller that still uses an old name gets the new one.
+pub const LEGACY_PROFILE_KEYS: &[(&str, &str)] = &[
+    ("krankenkasse", "insurer"),
+    ("krankenkasse_kontaktformular", "insurer_contact_form"),
+    ("krankenkasse_services", "insurer_services"),
+];
+
+/// Demo page paths of older versions in stored profile URLs, and their paths now.
+const LEGACY_DEMO_PATHS: &[(&str, &str)] = &[
+    ("/demo-kasse/", "/demo-insurer/"),
+    ("/fragebogen-v2.html", "/questionnaire-v2.html"),
+    ("/fragebogen.html", "/questionnaire.html"),
+];
+
+/// The current name of a profile key (old names map to new ones, every other key stays).
+pub fn profile_key(key: &str) -> &str {
+    LEGACY_PROFILE_KEYS.iter().find(|(old, _)| *old == key).map_or(key, |(_, new)| new)
+}
+
+/// Moves facts stored under an old key name to the new one (a fact already under the new name wins, the old
+/// one is dropped), and points stored demo page URLs at the renamed demo folder. Safe to run on every open.
+fn migrate_legacy_profile(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    for (old, new) in LEGACY_PROFILE_KEYS {
+        tx.execute("UPDATE OR IGNORE profile SET key = ?2 WHERE key = ?1", params![old, new])?;
+        tx.execute("DELETE FROM profile WHERE key = ?1", [old])?;
+    }
+    for (old, new) in LEGACY_DEMO_PATHS {
+        tx.execute(
+            "UPDATE profile SET value = replace(value, ?1, ?2) WHERE key IN ('insurer_contact_form', 'insurer_services')
+               AND instr(value, ?1) > 0",
+            params![old, new],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// Schema migrations; entry i brings the db to `user_version = i + 1`. Append, never edit.
 const MIGRATIONS: &[&str] = &[super::SCHEMA_SQL, super::SCHEMA_2_SQL];
 
@@ -324,6 +363,7 @@ impl Memory {
             tx.pragma_update(None, "user_version", (i + 1) as i64)?;
             tx.commit()?;
         }
+        migrate_legacy_profile(&mut conn).context("memory: renaming old profile keys")?;
         let me = Self(Mutex::new(conn));
         me.prune()?;
         Ok(me)
@@ -335,6 +375,7 @@ impl Memory {
     }
 
     pub fn profile_get(&self, key: &str) -> Result<Option<String>> {
+        let key = profile_key(key);
         Ok(self.conn().query_row("SELECT value FROM profile WHERE key = ?1", [key], |r| r.get(0)).optional()?)
     }
 
@@ -345,6 +386,7 @@ impl Memory {
 
     /// Upsert with where the fact came from. No rank check here (see `learn::set_fact`); uses stay.
     pub fn profile_set_with(&self, key: &str, value: &str, source: &str, confidence: f64) -> Result<()> {
+        let key = profile_key(key);
         self.conn().execute(
             "INSERT INTO profile(key, value, updated_at, source, confidence) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at,
@@ -360,7 +402,10 @@ impl Memory {
         let tx = c.transaction()?;
         let now = ts(Local::now());
         for k in keys {
-            tx.execute("UPDATE profile SET uses = uses + 1, last_used_at = ?1 WHERE key = ?2", params![now, k])?;
+            tx.execute(
+                "UPDATE profile SET uses = uses + 1, last_used_at = ?1 WHERE key = ?2",
+                params![now, profile_key(k)],
+            )?;
         }
         tx.commit()?;
         Ok(())
@@ -368,12 +413,12 @@ impl Memory {
 
     /// True if there was such a fact.
     pub fn profile_delete(&self, key: &str) -> Result<bool> {
-        Ok(self.conn().execute("DELETE FROM profile WHERE key = ?1", [key])? > 0)
+        Ok(self.conn().execute("DELETE FROM profile WHERE key = ?1", [profile_key(key)])? > 0)
     }
 
     pub fn profile_meta(&self, key: &str) -> Result<Option<ProfileFact>> {
         let sql = format!("SELECT {FACT_COLS} FROM profile WHERE key = ?1");
-        Ok(self.conn().query_row(&sql, [key], fact_from_row).optional()?)
+        Ok(self.conn().query_row(&sql, [profile_key(key)], fact_from_row).optional()?)
     }
 
     /// All facts with source and use count, most used first (then by key).

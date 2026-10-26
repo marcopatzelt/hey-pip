@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn every_fixture_round_trips_through_the_stand_in_extract() {
-        for name in ["au_erika_erst", "au_erika_folge", "kasse_brief", "bescheid_wohngeld", "uni_rueckmeldung"] {
+        for name in ["au_erika_erst", "au_erika_folge", "insurer_letter", "bescheid_wohngeld", "uni_rueckmeldung"] {
             let xp = fixtures().join(format!("{name}.expected.json"));
             let x = load(&xp).unwrap();
             let e = to_extract(&x).unwrap();

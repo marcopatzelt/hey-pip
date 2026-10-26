@@ -50,7 +50,7 @@ pub fn run(ctx: &Ctx, out: &Path, demo: bool) -> Result<()> {
 fn demo_history(mem: &Memory, now: DateTime<Local>) -> Result<()> {
     let sent_at = now - Duration::days(14);
     mem.playbook_upsert(&Playbook {
-        site: "fixtures/demo-kasse".into(),
+        site: "fixtures/demo-insurer".into(),
         task: "send_au".into(),
         url: String::new(),
         fields: vec![("Name".into(), "full_name".into()), ("Insurance number".into(), "versichertennummer".into())],

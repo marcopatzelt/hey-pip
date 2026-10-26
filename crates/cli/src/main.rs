@@ -3,16 +3,16 @@
 //!
 //! Examples:
 //!   pip-cli read fixtures/letters/au_erika_erst_foto.jpg
-//!   pip-cli sam fixtures/screens/kasse_form.png "button" --out target/cli/sam.png
-//!   pip-cli ground fixtures/screens/kasse_form.png "Knopf Absenden" --query button
+//!   pip-cli sam fixtures/screens/insurer_form.png "button" --out target/cli/sam.png
+//!   pip-cli ground fixtures/screens/insurer_form.png "Knopf Absenden" --query button
 //!   pip-cli rules --now 2026-10-29T18:00
-//!   pip-cli agent "Schick die Krankschreibung an die Gesundkasse"
-//!   pip-cli agent "Send my sick note" --screen fixtures/screens/demo-kasse.png \
-//!       --outline fixtures/screens/demo-kasse.outline.json
+//!   pip-cli agent "Schick die Krankschreibung an Evergreen Health"
+//!   pip-cli agent "Send my sick note" --screen fixtures/screens/demo-insurer.png \
+//!       --outline fixtures/screens/demo-insurer.outline.json
 //!   pip-cli --lang en agent "…" --page file://…/fixtures/demo-uni/index.html --answer 7654321
 //!   pip-cli transcribe sample.wav
 //!   pip-cli --lang en agent "@task_look_screen" --memory cold --answer "name => Erika Beispiel"
-//!   pip-cli eval [--real] [--set quick] [--only demo-uni-v2,konto-check] [--jobs 4]
+//!   pip-cli eval [--real] [--set quick] [--only demo-uni-v2,account-check] [--jobs 4]
 //!   pip-cli card --demo --out target/pip-did-this.html
 
 mod agent_cmd;
@@ -92,7 +92,7 @@ enum Cmd {
         /// (default: the empty, then the filled demo form)
         #[arg(long = "screen")]
         screens: Vec<PathBuf>,
-        /// The page open in the browser (default: the local demo form, file://…/fixtures/demo-kasse/index.html).
+        /// The page open in the browser (default: the local demo form, file://…/fixtures/demo-insurer/index.html).
         /// Pip's memory always knows the demo form as the insurer's contact form, whatever is open.
         #[arg(long)]
         page: Option<String>,

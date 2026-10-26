@@ -297,16 +297,16 @@ mod tests {
     #[test]
     fn the_playbook_of_this_site_is_recalled() {
         let m = mem();
-        learn(&m, "www.gesundkasse.example", "send_au");
-        let s = recall(&m, &q(Some("www.gesundkasse.example"), "send_au", 4500)).unwrap();
-        assert!(s.contains("LAST TIME ON THIS SITE (www.gesundkasse.example, 1 run,"), "{s}");
+        learn(&m, "www.evergreen-health.example", "send_au");
+        let s = recall(&m, &q(Some("www.evergreen-health.example"), "send_au", 4500)).unwrap();
+        assert!(s.contains("LAST TIME ON THIS SITE (www.evergreen-health.example, 1 run,"), "{s}");
         assert!(s.contains("When PAGE ELEMENTS lists these labels, use their # numbers"), "{s}");
-        assert!(s.contains("open https://www.gesundkasse.example/kontakt"), "{s}");
+        assert!(s.contains("open https://www.evergreen-health.example/kontakt"), "{s}");
         assert!(s.contains("\"Name\" <- full_name") && s.contains("send button \"Absenden\""), "{s}");
         // The same job without a known site borrows it; another job on an unknown site only lists the sites.
         assert!(recall(&m, &q(None, "send_au", 4500)).unwrap().contains("LAST TIME ON THIS SITE"));
         let other = recall(&m, &q(Some("x.example"), "text", 4500)).unwrap();
-        assert!(!other.contains("LAST TIME") && other.contains("www.gesundkasse.example (send_au)"), "{other}");
+        assert!(!other.contains("LAST TIME") && other.contains("www.evergreen-health.example (send_au)"), "{other}");
         assert!(s.contains("- full_name: Erika Beispiel [user said]"), "{s}");
         // The time-saved total is Pip's own bookkeeping, never a fact for the model.
         assert!(m.profile_get(PROFILE_SECONDS_SAVED).unwrap().is_some());

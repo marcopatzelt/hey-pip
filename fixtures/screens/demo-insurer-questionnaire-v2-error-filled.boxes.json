@@ -1,0 +1,78 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-insurer-questionnaire-v2-error-filled.png",
+  "targets": {
+    "name_field": {
+      "box": [
+        403,
+        251,
+        790,
+        303
+      ],
+      "sam_query": "text input field",
+      "description": "name field"
+    },
+    "nr_field": {
+      "box": [
+        809,
+        251,
+        1196,
+        303
+      ],
+      "sam_query": "text input field",
+      "description": "nr field"
+    },
+    "since_field": {
+      "box": [
+        403,
+        353,
+        790,
+        405
+      ],
+      "sam_query": "text input field",
+      "description": "since field"
+    },
+    "employer_field": {
+      "box": [
+        809,
+        353,
+        1196,
+        405
+      ],
+      "sam_query": "text input field",
+      "description": "employer field"
+    },
+    "still_no_radio": {
+      "box": [
+        408,
+        459,
+        429,
+        480
+      ],
+      "sam_query": "text input field",
+      "description": "still no radio"
+    },
+    "still_yes_radio": {
+      "box": [
+        501,
+        459,
+        522,
+        480
+      ],
+      "sam_query": "text input field",
+      "description": "still yes radio"
+    },
+    "submit_button": {
+      "box": [
+        1038,
+        498,
+        1196,
+        551
+      ],
+      "sam_query": "button",
+      "description": "submit button"
+    }
+  }
+}

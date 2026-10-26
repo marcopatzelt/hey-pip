@@ -88,8 +88,8 @@ pub fn guard_bubble(lang: Lang, question_id: Option<Uuid>) -> UiEvent {
     let lines = [
         pick(
             lang,
-            "Vorsicht: Diese Seite sieht nur aus wie die Gesundkasse.",
-            "Careful: this page only looks like Gesundkasse.",
+            "Vorsicht: Diese Seite sieht nur aus wie Evergreen Health.",
+            "Careful: this page only looks like Evergreen Health.",
         ),
         pick(lang, "Die Adresse ist nicht die aus deinen Briefen", "The web address is not the one from your letters"),
         pick(lang, "Sie will deinen SMS-Code", "It asks for your SMS code"),
@@ -105,7 +105,7 @@ pub fn guard_bubble(lang: Lang, question_id: Option<Uuid>) -> UiEvent {
         buttons: vec![
             Button::new(
                 "guard:real",
-                pick(lang, "Bring mich zur echten Gesundkasse", "Take me to the real Gesundkasse"),
+                pick(lang, "Bring mich zur echten Evergreen Health", "Take me to the real Evergreen Health"),
                 true,
             ),
             Button::new("guard:continue", pick(lang, "Ich bin sicher, weiter", "I'm sure, continue"), false),
@@ -207,7 +207,7 @@ async fn run_task_paced(
     }
 
     let what = pick(lang, "deine Krankschreibung 20.10.–30.10.", "your sick note 20.10.–30.10.");
-    let to = pick(lang, "Gesundkasse (Kontaktformular)", "Gesundkasse (contact form)");
+    let to = pick(lang, "Evergreen Health (Kontaktformular)", "Evergreen Health (contact form)");
     let cards = [
         (
             frac(&screen, 0.18, 0.50, 0.14, 0.05),
@@ -223,7 +223,7 @@ async fn run_task_paced(
         let send = title == "approve_title_send";
         let card = ApprovalCard {
             id: Uuid::new_v4(),
-            title: tf(title, lang, &[("to", "Gesundkasse")]),
+            title: tf(title, lang, &[("to", "Evergreen Health")]),
             what: tf("approve_what", lang, &[("what", what)]),
             to: tf("approve_to", lang, &[("to", to)]),
             attachments: vec!["krankschreibung_beispiel.pdf".into()],
@@ -231,7 +231,7 @@ async fn run_task_paced(
             crop_png_b64: None,
             yes_label: t(yes, lang).into(),
             no_label: t("btn_not_yet", lang).into(),
-            remember_label: send.then(|| tf("approve_remember_site", lang, &[("to", "Gesundkasse")])),
+            remember_label: send.then(|| tf("approve_remember_site", lang, &[("to", "Evergreen Health")])),
             remembered: Vec::new(),
         };
         let id = card.id;
@@ -269,7 +269,7 @@ async fn run_task_paced(
     bus.emit(UiEvent::FlyHome);
     bus.emit(UiEvent::Progress { text: String::new() });
     bus.emit(UiEvent::Pip { state: PipState::Happy });
-    let fact = pick(lang, "Krankschreibung ist bei der Kasse.", "the sick note is with the insurer.");
+    let fact = pick(lang, "Krankschreibung ist bei Evergreen Health.", "the sick note is with the insurer.");
     let done = tf("done_remember", lang, &[("fact", fact)]);
     bus.emit(UiEvent::Bubble { text: done.clone(), buttons: vec![], question_id: None });
     bus.emit(UiEvent::Speak { text: done.clone() });

@@ -574,7 +574,7 @@ mod tests {
         let w = |t: &str, c: &str| WindowInfo { title: t.into(), class: c.into(), address: None };
         assert!(w("Öffnen", "#32770").is_file_dialog());
         assert!(w("Open", "x").is_file_dialog());
-        assert!(!w("Gesundkasse – Microsoft Edge", "Chrome_WidgetWin_1").is_file_dialog());
+        assert!(!w("Evergreen Health – Microsoft Edge", "Chrome_WidgetWin_1").is_file_dialog());
         let e = |c: &str| UiElement { name: "x".into(), control: c.into(), is_password: false };
         assert!(e("Button").is_pressable() && !e("Edit").is_pressable());
         assert!(e("Edit").is_text_input() && !e("Button").is_text_input());

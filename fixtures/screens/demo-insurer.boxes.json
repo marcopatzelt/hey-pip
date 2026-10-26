@@ -1,0 +1,58 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG (English demo form, from ?mark). A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-insurer.png",
+  "targets": {
+    "name_field": {
+      "box": [
+        307,
+        476,
+        620,
+        530
+      ],
+      "sam_query": "text input field",
+      "description": "Full name field"
+    },
+    "nr_field": {
+      "box": [
+        639,
+        476,
+        952,
+        530
+      ],
+      "sam_query": "text input field",
+      "description": "Insurance number field"
+    },
+    "message_field": {
+      "box": [
+        307,
+        609,
+        952,
+        692
+      ],
+      "sam_query": "text area",
+      "description": "Your message field"
+    },
+    "file_button": {
+      "box": [
+        327,
+        766,
+        505,
+        820
+      ],
+      "sam_query": "button",
+      "description": "Choose file button"
+    },
+    "submit_button": {
+      "box": [
+        794,
+        910,
+        952,
+        967
+      ],
+      "sam_query": "button",
+      "description": "Submit button"
+    }
+  }
+}

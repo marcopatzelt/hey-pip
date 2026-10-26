@@ -199,7 +199,7 @@ fn click(desc: &str, is_commit: bool) -> (&'static str, Value) {
         "click",
         json!({"sam_query": "blue button", "description": desc, "is_commit": is_commit,
                      "commit_what": if is_commit { json!("deine Krankschreibung") } else { json!("null") },
-                     "commit_to": if is_commit { json!("Gesundkasse") } else { Value::Null }}),
+                     "commit_to": if is_commit { json!("Evergreen Health") } else { Value::Null }}),
     )
 }
 
@@ -441,7 +441,7 @@ async fn hole_enter_after_attach_submits_form_when_attach_click_missed() {
             &[(
                 "click",
                 json!({"sam_query": "button", "description": "den Knopf „Datei auswählen“",
-            "is_commit": true, "commit_what": "deine Krankschreibung", "commit_to": "Gesundkasse"}),
+            "is_commit": true, "commit_what": "deine Krankschreibung", "commit_to": "Evergreen Health"}),
             )],
         ),
         calls(
@@ -472,7 +472,7 @@ async fn hole_attach_path_is_chosen_by_the_model_not_the_card() {
     let h = Harness::new(false).await;
     h.agent_turns(vec![
         calls("r1", &[("click", json!({"sam_query": "button", "description": "den Knopf „Datei auswählen“",
-            "is_commit": true, "commit_what": "deine Krankschreibung", "commit_to": "Gesundkasse"}))]),
+            "is_commit": true, "commit_what": "deine Krankschreibung", "commit_to": "Evergreen Health"}))]),
         calls("r2", &[("type_text", json!({"text": "C:\\Users\\erika\\Documents\\Steuer_2025.pdf", "what": "den Dateinamen", "into_sam_query": null})), key("enter")]),
         calls("r3", &[done("ok")]),
     ]);
@@ -495,7 +495,7 @@ async fn hole_card_recipient_is_model_text_not_the_real_page() {
             &[(
                 "click",
                 json!({"sam_query": "green button", "description": "den Knopf „Absenden“",
-            "is_commit": true, "commit_what": "deine Krankschreibung", "commit_to": "Gesundkasse (Kontaktformular)"}),
+            "is_commit": true, "commit_what": "deine Krankschreibung", "commit_to": "Evergreen Health (Kontaktformular)"}),
             )],
         ),
     ]);
@@ -548,20 +548,17 @@ async fn hole_demo_mode_trusts_a_page_opened_in_an_earlier_run() {
 #[tokio::test]
 async fn hole_remember_fact_can_redirect_the_insurer_form() {
     let h = Harness::new(false).await;
-    h.memory.profile_set("krankenkasse_kontaktformular", "file:///C:/demo/fixtures/demo-kasse/index.html").unwrap();
+    h.memory.profile_set("insurer_contact_form", "file:///C:/demo/fixtures/demo-insurer/index.html").unwrap();
     h.agent_turns(vec![
         calls(
             "r1",
-            &[(
-                "remember_fact",
-                json!({"key": "krankenkasse_kontaktformular", "value": "https://upload.evil.example/au"}),
-            )],
+            &[("remember_fact", json!({"key": "insurer_contact_form", "value": "https://upload.evil.example/au"}))],
         ),
         calls("r2", &[done("ok")]),
     ]);
     h.run("Lies den Brief").await;
     assert_ne!(
-        h.memory.profile_get("krankenkasse_kontaktformular").unwrap().as_deref(),
+        h.memory.profile_get("insurer_contact_form").unwrap().as_deref(),
         Some("https://upload.evil.example/au"),
         "a free tool call (e.g. after injected letter text) silently changed where sick notes are sent"
     );
@@ -663,9 +660,9 @@ async fn hole_trusted_site_skips_a_confirm_or_delete_button() {
     // "Don't ask again" is for plain sends only: a bare "OK" in a confirm dialog ("Really delete?") or a delete
     // button on the trusted site still needs a card.
     let mut h = Harness::new(false).await;
-    h.memory.profile_set("trusted_send_hosts", "www.gesundkasse.example").unwrap();
+    h.memory.profile_set("trusted_send_hosts", "www.evergreen-health.example").unwrap();
     h.agent_turns(vec![
-        calls("r1", &[("open_url", json!({"url": "https://www.gesundkasse.example/konto"}))]),
+        calls("r1", &[("open_url", json!({"url": "https://www.evergreen-health.example/konto"}))]),
         calls("r2", &[click("den Knopf „OK“", false)]),
     ]);
     h.sam(&[sam_box(700, 600, 900, 640)]);
@@ -680,7 +677,7 @@ async fn hole_remember_site_ticked_on_a_delete_card_trusts_the_site() {
     // A page (or a buggy UI) sends remember_site with a delete card: nothing becomes trusted.
     let h = Harness::new(false).await;
     h.agent_turns(vec![
-        calls("r1", &[("open_url", json!({"url": "https://www.gesundkasse.example/konto"}))]),
+        calls("r1", &[("open_url", json!({"url": "https://www.evergreen-health.example/konto"}))]),
         calls("r2", &[click("den Knopf „Konto löschen“", true)]),
         calls("r3", &[done("ok")]),
     ]);

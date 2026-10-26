@@ -474,7 +474,7 @@ mod tests {
             m.insert_document(&path, sha, &au_doc(d(2026, 10, 20), d(2026, 10, 30)), "AU").unwrap();
         }
         m.playbook_upsert(&Playbook {
-            site: "fixtures/demo-kasse".into(),
+            site: "fixtures/demo-insurer".into(),
             task: "send_au".into(),
             url: "file:///x/index.html".into(),
             fields: vec![],

@@ -58,7 +58,7 @@ const CHANGED_PIXELS: f32 = 40.0;
 /// Lines of "what I already did" kept for a resumed run.
 const HISTORY_MAX: usize = 24;
 /// Profile key with the insurer's "services" page that after-task discovery looks at.
-pub const PROFILE_SERVICES: &str = "krankenkasse_services";
+pub const PROFILE_SERVICES: &str = "insurer_services";
 /// Looking around after a task: at most this many model steps and this much time, then a silent end.
 pub const DISCOVER_STEPS: u32 = 4;
 pub const DISCOVER_TIME: Duration = Duration::from_secs(40);
@@ -82,7 +82,7 @@ const EV_REMEMBERED: &str = "remembered";
 /// Profile key: sites (hosts, or the demo fixtures folder) where the user said "Don't ask again" on a send card.
 pub use crate::memory::PROFILE_TRUSTED_SEND;
 /// Profile key with the demo form (file URL) a sick note is sent through.
-pub const PROFILE_FORM: &str = "krankenkasse_kontaktformular";
+pub const PROFILE_FORM: &str = "insurer_contact_form";
 /// A yes for a button whose page changed under it still counts this long for the same button.
 const PREAPPROVAL_TTL: Duration = Duration::from_secs(90);
 /// After open_url: wait at most this long for the browser window to show the new page.
@@ -2275,7 +2275,7 @@ without say.",
                 ),
             ));
         }
-        // "Gesundkasse" -> "Gesundkasse Beispielstadt" is a refinement, not a new target.
+        // "Evergreen" -> "Evergreen Health" is a refinement, not a new target.
         let refines = old.as_deref().is_some_and(|o| {
             let (o, v) = (o.trim().to_lowercase(), value.trim().to_lowercase());
             !o.is_empty() && (v.contains(&o) || o.contains(&v))
@@ -2652,7 +2652,7 @@ without say.",
         };
         let insurer = self
             .memory
-            .profile_get("krankenkasse")?
+            .profile_get("insurer")?
             .filter(|v| !v.trim().is_empty())
             .or_else(|| doc.as_ref().or(deadline_doc.as_ref()).map(|d| d.extract.sender.clone()))
             .filter(|v| !v.trim().is_empty())
@@ -3443,8 +3443,8 @@ fn page_text(html: &str) -> String {
     squash(&out)
 }
 
-/// What the guard compares a page with: the user's organisations (a profile fact naming one, e.g. "krankenkasse",
-/// plus a profile URL fact whose key starts with that name, e.g. "krankenkasse_kontaktformular", gives its real
+/// What the guard compares a page with: the user's organisations (a profile fact naming one, e.g. "insurer",
+/// plus a profile URL fact whose key starts with that name, e.g. "insurer_contact_form", gives its real
 /// site), and every site Pip knows as the user's (playbooks, "Don't ask again" sites, profile URLs). The source
 /// says where Pip knows the organisation from: the newest letter from or to it, else "you told me".
 pub fn guard_known(mem: &Memory, gate: &Gate, lang: Lang) -> Result<Known> {
@@ -3527,11 +3527,13 @@ fn guard_lines(v: &Verdict, lang: Lang) -> Vec<String> {
     v.signals
         .iter()
         .filter_map(|s| match s {
-            Signal::ClaimsKnownOrg { org, real_site, source } => {
-                Some(tf("guard_claims", lang, &[("org", org), ("site", real_site), ("source", source)]))
+            // Never a raw site key ("demo-insurer"): the organisation's name from memory, or a plain phrase.
+            Signal::ClaimsKnownOrg { org, source, .. } => {
+                Some(tf("guard_claims", lang, &[("org", org), ("source", source)]))
             }
-            Signal::Lookalike { of } if claimed.contains(&of.as_str()) => None,
-            Signal::Lookalike { of } => Some(tf("guard_lookalike", lang, &[("site", of)])),
+            Signal::Lookalike { of, .. } if claimed.contains(&of.as_str()) => None,
+            Signal::Lookalike { org: Some(org), .. } => Some(tf("guard_lookalike", lang, &[("org", org)])),
+            Signal::Lookalike { org: None, .. } => Some(t("guard_lookalike_plain", lang).to_string()),
             Signal::AsksSensitive { field } => Some(tf("guard_sensitive", lang, &[("field", field)])),
             Signal::Rushes { phrase } => Some(tf("guard_rushes", lang, &[("phrase", phrase)])),
             Signal::FakeWarning { .. } => Some(t("guard_fake_warning", lang).to_string()),
@@ -4015,18 +4017,18 @@ mod tests {
         let url = |folder: &str| crate::config::file_url(&root.join(folder).join("index.html"));
         let known = Known {
             orgs: vec![KnownOrg {
-                name: "Gesundkasse".into(),
-                site: gate.site_key(&url("demo-kasse")),
+                name: "Evergreen Health".into(),
+                site: gate.site_key(&url("demo-insurer")),
                 source: "from your letter of Tuesday, October 20".into(),
-                url: Some(url("demo-kasse")),
+                url: Some(url("demo-insurer")),
             }],
             sites: gate.site_key(&url("demo-uni")).into_iter().collect(),
         };
         let pages = [
-            ("demo-kasse-konto-check", true, false),
+            ("demo-insurer-account-check", true, false),
             ("demo-alert-locked", true, true),
-            ("demo-kasse", false, false),
-            ("demo-kasse-v2", false, false),
+            ("demo-insurer", false, false),
+            ("demo-insurer-v2", false, false),
             ("demo-uni", false, false),
             ("demo-uni-v2", false, false),
         ];
@@ -4070,6 +4072,37 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn guard_sentences_name_the_insurer_never_a_site_key() {
+        let claims = Signal::ClaimsKnownOrg {
+            org: "Evergreen Health".into(),
+            real_site: "demo-insurer".into(),
+            source: "from your letter of Tuesday, October 20".into(),
+        };
+        let look = |org: Option<&str>| Signal::Lookalike { of: "demo-insurer".into(), org: org.map(Into::into) };
+        for lang in [Lang::En, Lang::De] {
+            let lines = guard_lines(
+                &Verdict { warn: true, signals: vec![claims.clone(), look(Some("Evergreen Health"))] },
+                lang,
+            );
+            assert_eq!(lines.len(), 1, "the address line repeats the organisation line: {lines:?}");
+            let alone = guard_lines(&Verdict { warn: true, signals: vec![look(Some("Evergreen Health"))] }, lang);
+            let plain = guard_lines(&Verdict { warn: true, signals: vec![look(None)] }, lang);
+            for l in lines.iter().chain(&alone).chain(&plain) {
+                assert!(!l.contains("demo-insurer"), "raw site key shown: {l}");
+            }
+            assert!(alone[0].contains("Evergreen Health"), "{alone:?}");
+        }
+        let en = guard_lines(&Verdict { warn: true, signals: vec![claims, look(None)] }, Lang::En);
+        assert_eq!(
+            en[0],
+            "It says Evergreen Health, but this is not the site of your Evergreen Health (from your letter of \
+             Tuesday, October 20)."
+        );
+        let plain = guard_lines(&Verdict { warn: true, signals: vec![look(None)] }, Lang::En);
+        assert_eq!(plain, ["Its address looks like a site you used before, but it is not that site."]);
+    }
 
     fn sb(x1: u32, y1: u32, x2: u32, y2: u32) -> SamBox {
         SamBox { x1, y1, x2, y2, img_w: 1000, img_h: 800 }
@@ -4151,10 +4184,8 @@ mod tests {
         assert_eq!(field_label("your name"), "Name");
         assert!(looks_like_address("https://upload.evil.example/au"));
         assert!(looks_like_address("erika@example.org"));
-        assert!(!looks_like_address("Gesundkasse"));
-        assert!(
-            is_protected_key("krankenkasse_kontaktformular") && is_protected_key("lang") && !is_protected_key("hobby")
-        );
+        assert!(!looks_like_address("Evergreen Health"));
+        assert!(is_protected_key("insurer_contact_form") && is_protected_key("lang") && !is_protected_key("hobby"));
         assert_eq!(percent_decode("a%20b%2Fc%zz"), "a b/c%zz");
         assert!(same_path("C:\\Briefe\\AU.pdf", "c:/briefe/au.pdf"));
         let e = anyhow::Error::new(MetaError::Http { status: 429, body: String::new() });
@@ -4234,7 +4265,7 @@ mod tests {
         assert!(same_page("file:///C:/Users/x/a.html#top", url), "fragment");
         assert!(same_page("file:///C:/My%20Docs/a.html", "file:///C:/My Docs/a.html"), "percent-encoding");
         assert!(same_page("localhost:8080/form/", "http://localhost:8080/form"), "trailing slash, scheme");
-        assert!(same_page("https://www.kasse.example/Services", "www.kasse.example/services"));
+        assert!(same_page("https://www.insurer.example/Services", "www.insurer.example/services"));
         assert!(!same_page("C:/Users/x/b.html", url));
         assert!(!same_page("http://localhost:8080/a", "http://localhost:8081/a"));
         assert!(!same_page("", url));
@@ -4315,8 +4346,8 @@ mod tests {
             class: class.into(),
             address: None,
         };
-        assert!(looks_like_browser(&w("Gesundkasse - Microsoft Edge", "Chrome_WidgetWin_1")));
-        assert!(looks_like_browser(&w("Gesundkasse — Mozilla Firefox", "MozillaWindowClass")));
+        assert!(looks_like_browser(&w("Evergreen Health - Microsoft Edge", "Chrome_WidgetWin_1")));
+        assert!(looks_like_browser(&w("Evergreen Health — Mozilla Firefox", "MozillaWindowClass")));
         assert!(!looks_like_browser(&w("Downloads", "CabinetWClass")));
         assert!(!looks_like_browser(&w("Open", "#32770")));
     }

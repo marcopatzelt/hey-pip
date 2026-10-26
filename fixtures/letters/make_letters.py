@@ -99,15 +99,15 @@ def paragraphs(c: Canvas, y: float, paras: list[str], size: float = 10.5, width_
     return y
 
 
-def logo_gesundkasse(c: Canvas, x: float, y: float) -> None:
+def logo_evergreen_health(c: Canvas, x: float, y: float) -> None:
     c.setFillColor(GREEN)
     c.circle(x + 6 * mm, y + 3 * mm, 6 * mm, fill=1, stroke=0)
     c.setFillColor(white)
     c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(x + 6 * mm, y + 0.8 * mm, "G")
+    c.drawCentredString(x + 6 * mm, y + 0.8 * mm, "E")
     c.setFillColor(GREEN)
     c.setFont("Helvetica-Bold", 20)
-    c.drawString(x + 15 * mm, y + 1 * mm, "Gesundkasse")
+    c.drawString(x + 15 * mm, y + 1 * mm, "Evergreen Health")
     c.setFont("Helvetica", 8)
     c.setFillColor(GREY)
     c.drawString(x + 15 * mm, y - 3.5 * mm, "Die Krankenkasse für Beispielstadt")
@@ -148,7 +148,7 @@ def make_au(name: str, *, first: bool, since: str, until: str, found: str, issue
     c.rect(15 * mm, 95 * mm, W - 30 * mm, H - 110 * mm, fill=1, stroke=0)
     c.setFillColor(black)
     top = H - 22 * mm
-    field(c, 18 * mm, top - 12 * mm, 110 * mm, 12 * mm, "Krankenkasse bzw. Kostenträger", "Gesundkasse Beispielstadt")
+    field(c, 18 * mm, top - 12 * mm, 110 * mm, 12 * mm, "Krankenkasse bzw. Kostenträger", "Evergreen Health")
     field(c, 18 * mm, top - 30 * mm, 110 * mm, 17 * mm, "Name, Vorname des Versicherten", "")
     c.setFont("Courier-Bold", 11)
     c.drawString(20 * mm, top - 19.6 * mm, "Beispiel, Erika")
@@ -222,16 +222,16 @@ def make_au(name: str, *, first: bool, since: str, until: str, found: str, issue
     c.save()
 
 
-# --------------------------------------------------------------------------- Gesundkasse letter
+# --------------------------------------------------------------------------- Evergreen Health letter
 
 
-def make_kasse_brief() -> None:
-    c = Canvas(str(OUT / "kasse_brief.pdf"), pagesize=A4)
-    c.setTitle("Gesundkasse – Fragebogen (Beispiel)")
-    logo_gesundkasse(c, 20 * mm, H - 25 * mm)
+def make_insurer_letter() -> None:
+    c = Canvas(str(OUT / "insurer_letter.pdf"), pagesize=A4)
+    c.setTitle("Evergreen Health – Fragebogen (Beispiel)")
+    logo_evergreen_health(c, 20 * mm, H - 25 * mm)
     window_address(
         c,
-        "Gesundkasse · Postfach 10 20 30 · 40998 Beispielstadt",
+        "Evergreen Health · Postfach 10 20 30 · 40998 Beispielstadt",
         ["Frau", "Erika Beispiel", "Lindenweg 7", "40999 Beispielstadt"],
     )
     info_block(
@@ -259,10 +259,10 @@ def make_kasse_brief() -> None:
             "Wenn die Unterlagen später kommen, kann sich die Zahlung verzögern. Bitte denken Sie auch daran: "
             "Wenn Sie länger krank sind, muss die nächste Krankschreibung ohne Lücke anschließen.",
             "Sie können die Unterlagen per Post schicken oder über unser Kontaktformular hochladen: "
-            "www.gesundkasse.example/kontakt",
+            "www.evergreen-health.example/kontakt",
             "Bei Fragen rufen Sie uns gern an.",
             "Mit freundlichen Grüßen",
-            "Ihre Gesundkasse",
+            "Ihre Evergreen Health",
         ],
     )
     c.setFont("Helvetica", 9)
@@ -270,8 +270,8 @@ def make_kasse_brief() -> None:
     footer(
         c,
         [
-            "Gesundkasse · Körperschaft des öffentlichen Rechts · Hauptstraße 1 · 40998 Beispielstadt",
-            "Bank: Beispielbank · IBAN DE00 0000 0000 0000 0000 00 · www.gesundkasse.example",
+            "Evergreen Health · Körperschaft des öffentlichen Rechts · Hauptstraße 1 · 40998 Beispielstadt",
+            "Bank: Beispielbank · IBAN DE00 0000 0000 0000 0000 00 · www.evergreen-health.example",
         ],
     )
     c.showPage()
@@ -480,10 +480,10 @@ def main() -> None:
         found="02.11.2026",
         issued_note="Ausgestellt am 02.11.2026.",
     )
-    make_kasse_brief()
+    make_insurer_letter()
     make_bescheid()
     make_uni()
-    for name in ["au_erika_erst", "au_erika_folge", "kasse_brief", "bescheid_wohngeld", "uni_rueckmeldung"]:
+    for name in ["au_erika_erst", "au_erika_folge", "insurer_letter", "bescheid_wohngeld", "uni_rueckmeldung"]:
         render_png(name)
     make_photo(OUT / "au_erika_erst.png", OUT / "au_erika_erst_foto.jpg")
     print("ok:", sorted(p.name for p in OUT.iterdir() if p.suffix in {".pdf", ".png", ".jpg"}))

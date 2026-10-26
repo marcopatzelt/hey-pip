@@ -20,9 +20,9 @@ use crate::platform::OutlineItem;
 /// The page to check.
 #[derive(Debug, Clone, Copy)]
 pub struct GuardInput<'a> {
-    /// Site key of the page (Gate::site_key): a host, or a demo folder "…/fixtures/demo-kasse". None = unknown.
+    /// Site key of the page (Gate::site_key): a host, or a demo folder "…/fixtures/demo-insurer". None = unknown.
     pub site: Option<&'a str>,
-    /// What the user would call the site ("www.gesundkasse.example", "demo-kasse").
+    /// What the user would call the site ("www.evergreen-health.example", "demo-insurer").
     pub site_label: &'a str,
     pub title: &'a str,
     /// Visible text of the page (or the names of its elements when the page itself cannot be read).
@@ -33,7 +33,7 @@ pub struct GuardInput<'a> {
 /// An organisation the user deals with, from memory.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KnownOrg {
-    /// "Gesundkasse"
+    /// "Evergreen Health"
     pub name: String,
     /// Site key of its real site (from a profile URL fact), if memory has one.
     pub site: Option<String>,
@@ -55,8 +55,9 @@ pub struct Known {
 pub enum Signal {
     /// The page names `org`, whose real site is `real_site` (a label), known `source`.
     ClaimsKnownOrg { org: String, real_site: String, source: String },
-    /// The site looks like the known site `of` (a label).
-    Lookalike { of: String },
+    /// The site looks like the known site `of` (a label, never shown to the user); `org` is the name of the
+    /// known organisation with that site, if memory has one ("Evergreen Health").
+    Lookalike { of: String, org: Option<String> },
     /// The page has a field for this (its name, or "password").
     AsksSensitive { field: String },
     /// The pressure phrase found on the page.
@@ -165,14 +166,19 @@ pub fn check(input: &GuardInput, known: &Known) -> Verdict {
             break;
         }
         // The known name with extra words or a letter or two different, or the same name under another domain
-        // ("gesundkasse.de" for "www.gesundkasse.example"; the same site itself is `on_known`).
+        // ("evergreen-health.de" for "www.evergreen-health.example"; the same site itself is `on_known`).
         if let Some(c) = current.as_deref()
             && let Some(k) = known_sites.iter().find(|k| {
                 let (cn, kn) = (site_name(c), site_name(k));
                 lookalike(&cn, &kn) || (!cn.is_empty() && cn == kn)
             })
         {
-            signals.push(Signal::Lookalike { of: key_label(k) });
+            let org = known
+                .orgs
+                .iter()
+                .find(|o| o.site.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(k)) && !o.name.trim().is_empty())
+                .map(|o| o.name.trim().to_string());
+            signals.push(Signal::Lookalike { of: key_label(k), org });
         }
     }
     if let Some(field) = input.items.iter().find_map(sensitive_field) {
@@ -197,7 +203,7 @@ pub fn check(input: &GuardInput, known: &Known) -> Verdict {
 
 /// Does the candidate site name look like the known one without being it? Names are the last folder of a demo
 /// site key or the main part of a host (`site_name`). Lookalike = the known name's words plus extra words
-/// ("demo-kasse-konto-check", "gesundkasse-login"), or at most two letters different ("gesundkase").
+/// ("demo-insurer-account-check", "evergreen-health-login"), or at most two letters different ("evergreen-helth").
 pub fn lookalike(candidate_label: &str, known_label: &str) -> bool {
     let (c, k) = (candidate_label.trim().to_lowercase(), known_label.trim().to_lowercase());
     if c.is_empty() || k.is_empty() || c == k {
@@ -216,7 +222,7 @@ pub fn key_label(site: &str) -> String {
 }
 
 /// The part of a site key that names the site: the demo folder, or the host without "www." and without its
-/// last label ("www.gesundkasse.example" -> "gesundkasse").
+/// last label ("www.evergreen-health.example" -> "evergreen-health").
 fn site_name(site: &str) -> String {
     let label = key_label(site);
     if site.contains('/') {
@@ -229,7 +235,7 @@ fn site_name(site: &str) -> String {
     }
 }
 
-/// The same site: equal keys, or a host below the known host's domain ("secure.gesundkasse.example").
+/// The same site: equal keys, or a host below the known host's domain ("secure.evergreen-health.example").
 fn same_site(current: &str, known: &str) -> bool {
     if current == known {
         return true;
@@ -361,16 +367,16 @@ mod tests {
         format!("{ROOT}/{folder}")
     }
 
-    /// Memory of the demo: the Gesundkasse with its real demo site, known from a letter.
+    /// Memory of the demo: Evergreen Health with its real demo site, known from a letter.
     fn known() -> Known {
         Known {
             orgs: vec![KnownOrg {
-                name: "Gesundkasse".into(),
-                site: Some(site("demo-kasse")),
+                name: "Evergreen Health".into(),
+                site: Some(site("demo-insurer")),
                 source: "from your letter of Tuesday, October 20".into(),
-                url: Some(format!("{}/index.html", site("demo-kasse"))),
+                url: Some(format!("{}/index.html", site("demo-insurer"))),
             }],
-            sites: vec![site("demo-kasse")],
+            sites: vec![site("demo-insurer")],
         }
     }
 
@@ -382,35 +388,35 @@ mod tests {
 
     // Visible texts of the two fake eval fixtures (fixtures/demo-*/index.html, invented pages), as `page_text`
     // reads them; the safe pages are shortened. The real fixture files are checked in agent::loop_::tests.
-    const KONTO_CHECK_TITLE: &str = "Gesundkasse – Confirm your account";
-    const KONTO_CHECK_TEXT: &str = "Gesundkasse – Confirm your account G Gesundkasse Confirm your account Your \
+    const ACCOUNT_CHECK_TITLE: &str = "Evergreen Health – Confirm your account";
+    const ACCOUNT_CHECK_TEXT: &str = "Evergreen Health – Confirm your account E Evergreen Health Confirm your account Your \
         cover ends within 24 hours unless you confirm now. Member number SMS code Confirm now Invented example for \
         tests. A fake page for the guard eval; nothing is sent.";
     const POPUP_TITLE: &str = "SYSTEM SECURITY ALERT";
     const POPUP_TEXT: &str = "SYSTEM SECURITY ALERT ⚠ SYSTEM SECURITY ALERT Your computer is locked. Call 0800 555 \
         0199 now. Do not close this window. Call support Invented example for tests. A fake warning page for the \
         guard eval; the number is invented.";
-    const KASSE_TITLE: &str = "Send documents – Gesundkasse";
-    const KASSE_TEXT: &str = "DEMO PAGE: invented insurer, nothing is sent. Gesundkasse Your health insurer \
+    const INSURER_TITLE: &str = "Send documents – Evergreen Health";
+    const INSURER_TEXT: &str = "DEMO PAGE: invented insurer, nothing is sent. Evergreen Health Your health insurer \
         Benefits Join Service Send documents Upload your sick note. Full name Insurance number Message \
         Choose file Submit Questions? Call us 0999 888 77 66 Mon–Fri 8–20";
     const UNI_TITLE: &str = "Re-registration – Beispiel University";
     const UNI_TEXT: &str = "DEMO PAGE: invented. Beispiel University Re-registration for the summer term \
         Student ID Full name Postal code Pay the semester fee by 15 January. Continue";
-    const KASSE_V2_TITLE: &str = "Gesundkasse – Upload centre";
-    const KASSE_V2_TEXT: &str = "Gesundkasse – Upload centre Demo page of an invented health insurer. Nothing is \
-        sent. G Gesundkasse Ihre Krankenkasse in Beispielstadt Leistungen Mitglied werden Upload-Center Kontakt \
-        Upload centre Dokumente sicher an die Gesundkasse schicken. Pflichtfelder: Versichertennummer, Name, Datei. \
+    const INSURER_V2_TITLE: &str = "Evergreen Health – Upload centre";
+    const INSURER_V2_TEXT: &str = "Evergreen Health – Upload centre Demo page of an invented health insurer. Nothing is \
+        sent. E Evergreen Health Ihre Krankenkasse in Beispielstadt Leistungen Mitglied werden Upload-Center Kontakt \
+        Upload centre Dokumente sicher an Evergreen Health schicken. Pflichtfelder: Versichertennummer, Name, Datei. \
         Abschicken Versichertennummer Bitte Versichertennummer eingeben. Vor- und Nachname Bitte Vor- und Nachname \
         eingeben. Telefon (freiwillig) Ihre Nachricht Krankschreibung (PDF, JPG oder PNG) Krankschreibung hochladen \
         Noch keine Datei gewählt Bitte laden Sie Ihre Krankschreibung hoch. Vielen Dank, eingegangen am Ihre \
         Unterlagen sind bei uns. Sie müssen nichts weiter tun. Name Versichertennummer Datei Vorgangsnummer \
-        Gesundkasse is invented. Invented example for tests; no data leaves the computer. We use cookies Some \
+        Evergreen Health is invented. Invented example for tests; no data leaves the computer. We use cookies Some \
         cookies are necessary for this site to work. With your consent we also use cookies for statistics. Only \
         necessary Accept all";
 
-    /// PAGE ELEMENTS of fixtures/screens/demo-kasse-konto-check.outline.json.
-    fn konto_items() -> Vec<OutlineItem> {
+    /// PAGE ELEMENTS of fixtures/screens/demo-insurer-account-check.outline.json.
+    fn account_items() -> Vec<OutlineItem> {
         vec![
             item(1, "text", "Confirm your account"),
             item(2, "text", "Your cover ends within 24 hours unless you confirm now."),
@@ -420,8 +426,8 @@ mod tests {
         ]
     }
 
-    /// PAGE ELEMENTS of fixtures/screens/demo-kasse-v2.outline.json (the fields).
-    fn kasse_v2_items() -> Vec<OutlineItem> {
+    /// PAGE ELEMENTS of fixtures/screens/demo-insurer-v2.outline.json (the fields).
+    fn insurer_v2_items() -> Vec<OutlineItem> {
         vec![
             item(1, "edit", "Versichertennummer"),
             item(2, "edit", "Vor- und Nachname"),
@@ -433,20 +439,28 @@ mod tests {
 
     #[test]
     fn the_fake_account_check_warns_and_names_the_real_site() {
-        let v = verdict(Some("demo-kasse-konto-check"), KONTO_CHECK_TITLE, KONTO_CHECK_TEXT, &konto_items(), &known());
+        let v = verdict(
+            Some("demo-insurer-account-check"),
+            ACCOUNT_CHECK_TITLE,
+            ACCOUNT_CHECK_TEXT,
+            &account_items(),
+            &known(),
+        );
         assert!(v.warn, "{v:?}");
         assert_eq!(
             v.signals[0],
             Signal::ClaimsKnownOrg {
-                org: "Gesundkasse".into(),
-                real_site: "demo-kasse".into(),
+                org: "Evergreen Health".into(),
+                real_site: "demo-insurer".into(),
                 source: "from your letter of Tuesday, October 20".into()
             }
         );
-        assert!(v.signals.contains(&Signal::Lookalike { of: "demo-kasse".into() }));
+        assert!(
+            v.signals.contains(&Signal::Lookalike { of: "demo-insurer".into(), org: Some("Evergreen Health".into()) })
+        );
         assert!(v.signals.contains(&Signal::AsksSensitive { field: "SMS code".into() }));
         assert!(v.signals.contains(&Signal::Rushes { phrase: "within 24 hours".into() }));
-        assert_eq!(v.claimed_org(), Some("Gesundkasse"));
+        assert_eq!(v.claimed_org(), Some("Evergreen Health"));
     }
 
     #[test]
@@ -459,7 +473,7 @@ mod tests {
     #[test]
     fn the_real_insurer_page_is_safe() {
         let items = vec![item(1, "edit", "Full name"), item(2, "edit", "Insurance number")];
-        let v = verdict(Some("demo-kasse"), KASSE_TITLE, KASSE_TEXT, &items, &known());
+        let v = verdict(Some("demo-insurer"), INSURER_TITLE, INSURER_TEXT, &items, &known());
         assert!(!v.warn, "{v:?}");
         assert!(v.signals.is_empty(), "{v:?}");
     }
@@ -476,18 +490,20 @@ mod tests {
 
     #[test]
     fn a_sister_site_that_asks_nothing_secret_is_safe() {
-        let v = verdict(Some("demo-kasse-v2"), KASSE_V2_TITLE, KASSE_V2_TEXT, &kasse_v2_items(), &known());
+        let v = verdict(Some("demo-insurer-v2"), INSURER_V2_TITLE, INSURER_V2_TEXT, &insurer_v2_items(), &known());
         assert!(!v.warn, "{v:?}");
         // The signs are there, but nothing pushes: no warning.
         assert!(v.signals.iter().any(|s| matches!(s, Signal::ClaimsKnownOrg { .. })), "{v:?}");
-        assert!(v.signals.contains(&Signal::Lookalike { of: "demo-kasse".into() }));
+        assert!(
+            v.signals.contains(&Signal::Lookalike { of: "demo-insurer".into(), org: Some("Evergreen Health".into()) })
+        );
     }
 
     #[test]
     fn a_site_pip_used_before_is_never_a_claim() {
         let mut k = known();
-        k.sites.push(site("demo-kasse-v2"));
-        let v = verdict(Some("demo-kasse-v2"), KONTO_CHECK_TITLE, KONTO_CHECK_TEXT, &konto_items(), &k);
+        k.sites.push(site("demo-insurer-v2"));
+        let v = verdict(Some("demo-insurer-v2"), ACCOUNT_CHECK_TITLE, ACCOUNT_CHECK_TEXT, &account_items(), &k);
         assert!(!v.warn, "{v:?}");
     }
 
@@ -495,52 +511,52 @@ mod tests {
     fn hosts_lookalikes_and_subdomains() {
         let k = Known {
             orgs: vec![KnownOrg {
-                name: "Gesundkasse".into(),
-                site: Some("www.gesundkasse.example".into()),
+                name: "Evergreen Health".into(),
+                site: Some("www.evergreen-health.example".into()),
                 source: "you told me".into(),
                 url: None,
             }],
             sites: vec![],
         };
         let check_host = |host: &str| {
-            let items = konto_items();
+            let items = account_items();
             check(
                 &GuardInput {
                     site: Some(host),
                     site_label: host,
-                    title: KONTO_CHECK_TITLE,
-                    page_text: KONTO_CHECK_TEXT,
+                    title: ACCOUNT_CHECK_TITLE,
+                    page_text: ACCOUNT_CHECK_TEXT,
                     items: &items,
                 },
                 &k,
             )
         };
-        assert!(check_host("gesundkasse-login.example").warn);
-        assert!(check_host("www.gesundkase.example").warn);
-        assert!(check_host("konto-check.example").warn, "claims the org on a strange site");
-        assert!(!check_host("secure.gesundkasse.example").warn, "a page of the real domain");
-        assert!(!check_host("www.gesundkasse.example").warn);
-        let of = Signal::Lookalike { of: "www.gesundkasse.example".into() };
-        let v = check_host("gesundkasse-login.example");
+        assert!(check_host("evergreen-health-login.example").warn);
+        assert!(check_host("www.evergreen-helth.example").warn);
+        assert!(check_host("account-check.example").warn, "claims the org on a strange site");
+        assert!(!check_host("secure.evergreen-health.example").warn, "a page of the real domain");
+        assert!(!check_host("www.evergreen-health.example").warn);
+        let of = Signal::Lookalike { of: "www.evergreen-health.example".into(), org: Some("Evergreen Health".into()) };
+        let v = check_host("evergreen-health-login.example");
         assert!(v.signals.contains(&of), "{v:?}");
-        let v = check_host("gesundkasse.de");
+        let v = check_host("evergreen-health.de");
         assert!(v.warn && v.signals.contains(&of), "the same name under another domain: {v:?}");
-        let v = check_host("konto-check.example");
+        let v = check_host("account-check.example");
         assert!(!v.signals.contains(&of), "another name is no lookalike: {v:?}");
     }
 
     #[test]
     fn lookalike_rules() {
-        assert!(lookalike("demo-kasse-konto-check", "demo-kasse"));
-        assert!(lookalike("demo-kasse-v2", "demo-kasse"));
-        assert!(lookalike("gesundkase", "gesundkasse"));
-        assert!(lookalike("gesundkasse-login", "gesundkasse"));
-        assert!(!lookalike("demo-kasse", "demo-kasse"));
-        assert!(!lookalike("demo-uni", "demo-kasse"));
-        assert!(!lookalike("kasse", "demo-kasse"), "fewer words is no lookalike");
+        assert!(lookalike("demo-insurer-account-check", "demo-insurer"));
+        assert!(lookalike("demo-insurer-v2", "demo-insurer"));
+        assert!(lookalike("evergreen-helth", "evergreen-health"));
+        assert!(lookalike("evergreen-health-login", "evergreen-health"));
+        assert!(!lookalike("demo-insurer", "demo-insurer"));
+        assert!(!lookalike("demo-uni", "demo-insurer"));
+        assert!(!lookalike("insurer", "demo-insurer"), "fewer words is no lookalike");
         assert!(!lookalike("ab", "ac"), "short names never by spelling");
-        assert_eq!(key_label("file:///c:/demo/fixtures/demo-kasse"), "demo-kasse");
-        assert_eq!(key_label("www.gesundkasse.example"), "www.gesundkasse.example");
+        assert_eq!(key_label("file:///c:/demo/fixtures/demo-insurer"), "demo-insurer");
+        assert_eq!(key_label("www.evergreen-health.example"), "www.evergreen-health.example");
     }
 
     #[test]
@@ -574,6 +590,6 @@ mod tests {
         assert!(phone_number("letter of 26.10.2026, member g123456789").is_none());
         assert!(phone_number("amount 1 000 000 eur").is_none());
         // The real insurer's hotline is a phone number, but there is no alarm: safe (see the_real_insurer_page_is_safe).
-        assert!(phone_number(&KASSE_TEXT.to_lowercase()).is_some());
+        assert!(phone_number(&INSURER_TEXT.to_lowercase()).is_some());
     }
 }
