@@ -13,7 +13,7 @@ pub use db::{
     ActionLog, Deadline, DeadlineStatus, DocumentRow, Event, Knowledge, Memory, NewDeadline, Playbook, ProfileFact,
     Reminder, default_db_path,
 };
-pub use demo::{DEMO_LETTER_FILES, seed_demo_profile};
+pub use demo::{DEMO_LETTER_FILES, demo_seed_is_complete, seed_demo_profile};
 pub use learn::{
     Learned, PROFILE_TRUSTED_SEND, RunSummary, SENSITIVE_REFUSAL, is_protected_key, is_sensitive_key,
     is_sensitive_value, learn_from_letter, learn_from_run, set_fact, source_rank, trusted_sites, untrust_site,

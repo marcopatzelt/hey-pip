@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Screenshots of the demo forms (fixtures/demo-kasse, fixtures/demo-uni) + expected target boxes for grounding/eval.
 
-Run: python3 fixtures/screens/make_screens.py [kasse|uni]   (default kasse; needs Firefox; throwaway profile in target/)
+Run: python3 fixtures/screens/make_screens.py [kasse|uni|fragebogen]   (default kasse; needs Firefox; throwaway profile in target/)
 Boxes come from `?mark`, which paints each target in a solid colour; we take the bounding box of
 that colour. Coordinates are pixels of the PNG (1600x1000), xyxy.
 """
@@ -19,6 +19,7 @@ OUT = pathlib.Path(__file__).resolve().parent
 PAGES = {
     "kasse": (ROOT / "fixtures/demo-kasse/index.html").as_uri(),
     "uni": (ROOT / "fixtures/demo-uni/index.html").as_uri(),
+    "fragebogen": (ROOT / "fixtures/demo-kasse/fragebogen.html").as_uri(),
 }
 PROFILE = ROOT / "target/ff-profile"
 SIZE = (1600, 1000)
@@ -37,6 +38,14 @@ UNI_TARGETS = {
     (0, 0, 255): ("programme_field", "text input field", "Text field Programme"),
     (255, 0, 255): ("fee_checkbox", "checkbox", "Checkbox I have paid the semester fee"),
     (0, 255, 255): ("submit_button", "button", "Button Submit re-registration"),
+}
+FRAGEBOGEN_TARGETS = {
+    (255, 0, 0): ("name_field", "text input field", "Text field Full name"),
+    (0, 255, 0): ("nr_field", "text input field", "Text field Insurance number"),
+    (0, 0, 255): ("since_field", "text input field", "Date field Sick since"),
+    (255, 0, 255): ("employer_field", "text input field", "Text field Employer"),
+    (255, 255, 0): ("still_yes_radio", "radio button", "Radio button Yes under Still unable to work?"),
+    (0, 255, 255): ("submit_button", "button", "Button Submit"),
 }
 
 
@@ -74,31 +83,43 @@ def boxes(marked: pathlib.Path, targets: dict = TARGETS) -> dict:
     return out
 
 
-def main_uni() -> None:
-    page = PAGES["uni"]
+def main_page(key: str, stem: str, targets_by_colour: dict, thanks_text: str) -> None:
+    """Empty form, filled form (the dry run shows it after Pip typed) and the confirmation (after an approved Send),
+    so a dry run with --approve all sees the end instead of the empty form again."""
+    page = PAGES[key]
     tmp = OUT / "_marked.png"
-    shot("", OUT / "demo-uni.png", page)
-    shot("?fill", OUT / "demo-uni-filled.png", page)
-    shot("?thanks", OUT / "demo-uni-thanks.png", page)
+    shot("", OUT / f"{stem}.png", page)
+    shot("?fill", OUT / f"{stem}-filled.png", page)
+    shot("?thanks", OUT / f"{stem}-thanks.png", page)
     shot("?mark", tmp, page)
-    targets = boxes(tmp, UNI_TARGETS)
+    targets = boxes(tmp, targets_by_colour)
     tmp.unlink()
     meta = {"note": "Pixel boxes (x1,y1,x2,y2) in the PNG. A click hits if it lands inside the box.", "w": SIZE[0], "h": SIZE[1]}
-    # Empty form, filled form (the dry run shows it after Pip typed) and the confirmation (after an approved Send),
-    # so a dry run with --approve all sees the end instead of the empty form again.
-    for name in ["demo-uni", "demo-uni-filled"]:
+    for name in [stem, f"{stem}-filled"]:
         (OUT / f"{name}.boxes.json").write_text(json.dumps({**meta, "image": f"{name}.png", "targets": targets}, indent=2, ensure_ascii=False) + "\n")
-    (OUT / "demo-uni-thanks.boxes.json").write_text(json.dumps({**meta, "image": "demo-uni-thanks.png", "targets": {},
-        "expect_text": "Thank you, your re-registration was received on"}, indent=2, ensure_ascii=False) + "\n")
+    (OUT / f"{stem}-thanks.boxes.json").write_text(json.dumps({**meta, "image": f"{stem}-thanks.png", "targets": {},
+        "expect_text": thanks_text}, indent=2, ensure_ascii=False) + "\n")
     print(json.dumps(targets, indent=1))
     shutil.rmtree(PROFILE, ignore_errors=True)
+
+
+def main_uni() -> None:
+    main_page("uni", "demo-uni", UNI_TARGETS, "Thank you, your re-registration was received on")
+
+
+def main_fragebogen() -> None:
+    # The questionnaire the proactive offer leads to (services page -> "Return your questionnaire online").
+    # The PAGE ELEMENTS (demo-kasse-fragebogen*.outline.json) are written by hand from these boxes.
+    main_page("fragebogen", "demo-kasse-fragebogen", FRAGEBOGEN_TARGETS, "Thank you, received on")
 
 
 def main() -> None:
     if sys.argv[1:] == ["uni"]:
         return main_uni()
+    if sys.argv[1:] == ["fragebogen"]:
+        return main_fragebogen()
     if sys.argv[1:] not in ([], ["kasse"]):
-        sys.exit("usage: make_screens.py [kasse|uni]")
+        sys.exit("usage: make_screens.py [kasse|uni|fragebogen]")
     tmp = OUT / "_marked.png"
     shot("", OUT / "kasse_form.png")
     shot("?fill", OUT / "kasse_form_filled.png")

@@ -3,6 +3,7 @@
 //! One step: capture (masked) -> Muse Spark with tools -> for every call: parse, ground (SAM 3.1 + Spark pick),
 //! gate, approval card, act, log. The cancel token is checked before every tool and raced against every wait.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -20,6 +21,7 @@ use super::gate::{
     is_send_target, label_hit, normalize_address, quoted_label, url_host, word_hit,
 };
 use super::tools::{DISCOVER_TOOLS, ScrollDir, Tool, bad_call, normalize_combo, tool_defs, truncate};
+use super::typing::{Mask, date_field, parse_date_in};
 use super::{APPROVAL_TIMEOUT, MAX_RUN, MAX_STEPS, prompt};
 use crate::clock::Clock;
 use crate::docs::DocType;
@@ -85,6 +87,10 @@ const BATCH_PACE: Duration = Duration::from_millis(80);
 const WHEEL_PX: i32 = 100;
 /// Output for the calls of a turn that were not run because the page changed under them.
 const NOT_DONE_PAGE_CHANGED: &str = "not done: the page changed, look again";
+/// The same click / type_text / key / open_url this often in one run: the next one is not run (loop guard).
+const MAX_SAME_CALL: u32 = 2;
+/// Keys that move on by themselves (Tab through a form, arrows through a list): never counted as a repeat.
+const MOVING_KEYS: &[&str] = &["tab", "shift+tab", "up", "down", "left", "right", "pageup", "pagedown", "home", "end"];
 
 #[derive(Debug, Clone)]
 pub enum Task {
@@ -249,6 +255,11 @@ pub struct RunState {
     talk_only_turn: bool,
     /// Active time of the parts of this task before the last resume (the budget restarts, the clock does not).
     active_before: Duration,
+    /// How often each click / type_text / key / open_url ran in this run ("tool|target|text", see `repeat_key`)
+    /// on a page that did not change in between, with the page's shape at the last call (see `outline_shape`).
+    repeats: HashMap<String, (u32, u64)>,
+    /// Calls the loop guard refused in this run; the second one ends the run.
+    guard_hits: u32,
 }
 
 /// A yes that could not be used because the page changed under the button.
@@ -338,6 +349,8 @@ impl RunState {
             said: Vec::new(),
             talk_only_turn: false,
             active_before: Duration::ZERO,
+            repeats: HashMap::new(),
+            guard_hits: 0,
         }
     }
 
@@ -373,6 +386,22 @@ impl RunState {
         self.user_wait = Arc::default();
         self.preapproved = None;
         self.outline.clear();
+        // The user looked at it: repeats start again.
+        self.repeats.clear();
+        self.guard_hits = 0;
+    }
+
+    /// One more identical call (loop guard): how many in a row on this page. The count starts again when the page
+    /// looks different from the last identical call (a wizard's Next, Enter on another dialog): that one did
+    /// something, so it is no repeat.
+    fn count_repeat(&mut self, key: String, shape: u64) -> u32 {
+        let (n, at) = self.repeats.entry(key).or_insert((0, shape));
+        if *at != shape {
+            *n = 0;
+            *at = shape;
+        }
+        *n += 1;
+        *n
     }
 
     /// Active time of the whole task without the time spent waiting for the user, including the parts before
@@ -1236,14 +1265,24 @@ impl Agent {
                 return Ok(Exec::Output(msg));
             }
         };
-        let run = match self.run_tool(&tool, state, cancel, lang).await {
-            Ok(run) => run,
-            // Model/network problems end the step (run() retries); platform problems go back to the model.
-            Err(e) if e.downcast_ref::<MetaError>().is_some() => return Err(e),
-            Err(e) => {
-                tracing::warn!(tool = tool.name(), error = %e, "tool failed");
-                ToolRun::out(self.gate.classify(&tool, None), format!("error: {e:#}"))
-            }
+        // Loop guard: the third identical action is not run (the model would burn the step budget on it).
+        let mut guarded = None;
+        if let Some((key, target)) = repeat_key(&tool, &state.outline)
+            && state.count_repeat(key, outline_shape(&state.outline)) > MAX_SAME_CALL
+        {
+            guarded = Some(self.loop_guard(&tool, &target, state, cancel, lang).await);
+        }
+        let run = match guarded {
+            Some(run) => run,
+            None => match self.run_tool(&tool, state, cancel, lang).await {
+                Ok(run) => run,
+                // Model/network problems end the step (run() retries); platform problems go back to the model.
+                Err(e) if e.downcast_ref::<MetaError>().is_some() => return Err(e),
+                Err(e) => {
+                    tracing::warn!(tool = tool.name(), error = %e, "tool failed");
+                    ToolRun::out(self.gate.classify(&tool, None), format!("error: {e:#}"))
+                }
+            },
         };
         let result = match &run.exec {
             Exec::Output(s) => s.clone(),
@@ -1257,6 +1296,81 @@ impl Agent {
         }
         self.log(tool.name(), tool.redacted_args(), run.risk, run.approved, &result, 0);
         Ok(run.exec)
+    }
+
+    /// The same action a third time in this run: not run. A field: ask the user once ("I fixed it" / "Skip it").
+    /// A click, key or page: tell the model to look for what is in the way. The second guard hit ends the run.
+    async fn loop_guard(
+        &self,
+        tool: &Tool,
+        target: &str,
+        state: &mut RunState,
+        cancel: &CancellationToken,
+        lang: Lang,
+    ) -> ToolRun {
+        // A field that already shows the right text is no failure: the model just did not see it (an old
+        // picture). Said without a question and without counting as a guard hit.
+        if let Tool::TypeText { text, element: Some(id), .. } = tool
+            && let Some(item) = state.outline.iter().find(|i| i.id == *id).cloned()
+            && !item.is_password
+        {
+            let ui = self.platform.ui.clone();
+            let p = item.center();
+            let shown = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
+            if let Some(v) = shown.filter(|v| value_fits(&item, text, v)) {
+                tracing::info!(element = id, "loop guard: the field already shows the text, not typed again");
+                return ToolRun::out(
+                    Risk::Free,
+                    format!(
+                        "already done: #{id} already shows \"{}\". Do not type into it again; continue with the rest.",
+                        truncate(&v, 60)
+                    ),
+                );
+            }
+        }
+        state.guard_hits += 1;
+        tracing::info!(
+            tool = tool.name(),
+            target,
+            hits = state.guard_hits,
+            "loop guard: same call a third time, not run"
+        );
+        if state.guard_hits > 1 {
+            let text = t("loop_stuck", lang);
+            self.bubble(text, true);
+            return ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(text.to_string()));
+        }
+        let Tool::TypeText { what, field_label, element, .. } = tool else {
+            return ToolRun::out(
+                Risk::Free,
+                format!(
+                    "not done: you already did this twice in this task ({target}) and nothing changed. Do not repeat \
+                     it: look at the screen for what is in the way (a dialog, a missing value, a disabled button), \
+                     or ask_user."
+                ),
+            );
+        };
+        let named = element.and_then(|id| state.outline.iter().find(|i| i.id == id)).map(|i| i.name.trim());
+        let label = named
+            .filter(|n| !n.is_empty())
+            .or(field_label.as_deref().map(str::trim).filter(|l| !l.is_empty() && *l != "null"))
+            .unwrap_or(what)
+            .to_string();
+        let question = tf("loop_field", lang, &[("label", &label)]);
+        let buttons =
+            vec![Button::new("fixed", t("btn_fixed", lang), true), Button::new("skip", t("btn_skip", lang), false)];
+        match self.ask_buttons(state, &question, buttons, cancel).await {
+            Asked::Answer(a) if a == "fixed" => ToolRun::out(
+                Risk::Free,
+                format!("the user corrected {label} by hand. Do not type into it again; continue with the rest."),
+            ),
+            Asked::Answer(_) => ToolRun::out(Risk::Free, format!("skip {label}; continue without it.")),
+            Asked::Timeout => {
+                self.away_bubble("question_timeout", "btn_ask_again", None, lang);
+                ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(question))
+            }
+            Asked::Cancelled => ToolRun::finish(Risk::Free, AgentOutcome::Stopped),
+        }
     }
 
     async fn run_tool(
@@ -1640,7 +1754,8 @@ without say.",
         if self.pace.is_zero() { Duration::ZERO } else { BATCH_PACE.min(self.short_pace()) }
     }
 
-    /// type_text by PAGE ELEMENTS number: click the field, select its text, type, read back what it shows.
+    /// type_text by PAGE ELEMENTS number: click the field, set its value through the UI tree (else select its
+    /// text and type), read back what it shows.
     async fn type_into_element(
         &self,
         a: &TypeArgs<'_>,
@@ -1681,30 +1796,59 @@ without say.",
         self.blocking(move |pl| pl.input.click(p)).await?;
         state.last_point = Some(p);
         state.focus_by_key = false;
-        // Replace what the field holds (a remembered old value, a half-typed try): select all and delete,
-        // so the new text never lands behind the old one even if the selection is lost.
-        self.blocking(|pl| pl.input.key("ctrl+a")).await?;
-        self.blocking(|pl| pl.input.key("backspace")).await?;
         self.progress(tf("progress_type", lang, &[("what", a.what)]));
-        let chars: Vec<char> = a.text.chars().collect();
-        for chunk in chars.chunks(TYPE_CHUNK) {
-            if cancel.is_cancelled() {
-                return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped));
-            }
-            let s: String = chunk.iter().collect();
-            self.blocking(move |pl| pl.input.type_text(&s)).await?;
-        }
+        // A date field: a date input takes ISO through the value and digits in its order as keys, a text field
+        // with a date name takes the written date (18.10.2026). Any other field: the text as it is.
+        let date = date_field(item).and_then(|f| parse_date_in(a.text, f.mask).map(|d| (f, d)));
+        let (direct, keys) = match date {
+            Some((f, d)) => (f.value(d), f.keys(d)),
+            None => (a.text.to_string(), a.text.to_string()),
+        };
+        let fits = |v: &str| value_fits(item, a.text, v);
+        // First through the UI tree (ValuePattern): exact and instant, nothing lands behind an old value
+        // (Edge kept "…GmbHnschein GmbH" after select-all and typing).
         let ui = self.platform.ui.clone();
-        let mut shows = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
-        // Typed text came out wrong (appended, cut, autocorrected): set the value directly once.
-        if shows.as_ref().is_some_and(|v| squash(v) != squash(a.text)) {
+        let value = direct.clone();
+        let set = tokio::task::spawn_blocking(move || ui.set_value_at(p, &value)).await.unwrap_or(false);
+        let mut shows = None;
+        if set {
             let ui = self.platform.ui.clone();
-            let text = a.text.to_string();
-            let fixed = tokio::task::spawn_blocking(move || ui.set_value_at(p, &text)).await.unwrap_or(false);
-            if fixed {
-                tracing::info!(element = id, "field value repaired directly");
+            shows = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
+        }
+        // Set and read back right (or set and unreadable): done. Else keystrokes.
+        let by_value = set && shows.as_deref().is_none_or(fits);
+        tracing::debug!(
+            element = id,
+            by_value,
+            date = date.is_some(),
+            date_input = date.is_some_and(|(f, _)| f.input),
+            "typing by element"
+        );
+        if !by_value {
+            // Replace what the field holds (a remembered old value, a half-typed try): select all and delete,
+            // so the new text never lands behind the old one even if the selection is lost.
+            self.blocking(|pl| pl.input.key("ctrl+a")).await?;
+            self.blocking(|pl| pl.input.key("backspace")).await?;
+            let chars: Vec<char> = keys.chars().collect();
+            for chunk in chars.chunks(TYPE_CHUNK) {
+                if cancel.is_cancelled() {
+                    return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped));
+                }
+                let s: String = chunk.iter().collect();
+                self.blocking(move |pl| pl.input.type_text(&s)).await?;
+            }
+            let ui = self.platform.ui.clone();
+            shows = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
+            // Typed text came out wrong (appended, cut, autocorrected) and the tree can set values: once more.
+            if set && shows.as_deref().is_some_and(|v| !fits(v)) {
                 let ui = self.platform.ui.clone();
-                shows = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
+                let value = direct.clone();
+                let fixed = tokio::task::spawn_blocking(move || ui.set_value_at(p, &value)).await.unwrap_or(false);
+                if fixed {
+                    tracing::info!(element = id, "field value repaired directly");
+                    let ui = self.platform.ui.clone();
+                    shows = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
+                }
             }
         }
         let label = a.field_label.map(str::trim).filter(|l| !l.is_empty() && *l != "null");
@@ -1718,7 +1862,7 @@ without say.",
         self.progress(filled_line(&state.typed));
         state.after_element_type = true;
         let out = match shows {
-            Some(v) if squash(&v) == squash(a.text) => {
+            Some(v) if fits(&v) => {
                 format!("typed {} into #{id}; the field now shows \"{}\"", a.what, truncate(&v, 60))
             }
             Some(v) => format!(
@@ -2003,7 +2147,24 @@ without say.",
         }
         self.pip(PipState::Acting);
         self.progress(t("progress_open_page", lang));
-        let before = if self.pace.is_zero() { None } else { self.foreground().await };
+        // One tab: the page in front already is this one (or this run opened it and the browser in front has an
+        // address bar Pip cannot read) -> nothing new is opened. Another window in front (Explorer, a dialog):
+        // opened, so the browser comes forward.
+        let shown = self.foreground().await;
+        let address = shown.as_ref().and_then(|w| w.address.as_deref());
+        let open = match address {
+            Some(a) => same_page(a, url),
+            None => {
+                shown.as_ref().is_none_or(looks_like_browser)
+                    && state.last_url.as_deref().is_some_and(|last| same_page(last, url))
+            }
+        };
+        if open {
+            tracing::info!(url, by_address = address.is_some(), "open_url: page already in front, not opened again");
+            state.last_url = Some(url.to_string());
+            return Ok(ToolRun::out(Risk::Act, "already open: this page is in front. Continue on it."));
+        }
+        let before = if self.pace.is_zero() { None } else { shown };
         (self.opener)(url)?;
         state.last_url = Some(url.to_string());
         if !self.wait_page_change(before, cancel).await {
@@ -2953,6 +3114,94 @@ fn clean_quote(q: &str) -> String {
     squash(q.trim().trim_matches(|c: char| matches!(c, '„' | '“' | '”' | '"' | '\'' | '‚' | '‘' | '’' | '«' | '»')))
 }
 
+/// The field shows what was meant: the same text (spaces aside), or for a date field the same day in any form.
+fn value_fits(item: &OutlineItem, text: &str, shown: &str) -> bool {
+    match date_field(item).and_then(|f| parse_date_in(text, f.mask).map(|d| (f.mask, d))) {
+        Some((m, d)) => parse_date_in(shown, m).or_else(|| parse_date_in(shown, Mask::Ymd)) == Some(d),
+        None => squash(shown) == squash(text),
+    }
+}
+
+/// Shape of the page for the loop guard: the roles and names of the PAGE ELEMENTS (not their values, which
+/// a wrong typing changes too). 0 without an outline (the picture path counts every repeat).
+fn outline_shape(outline: &[OutlineItem]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    if outline.is_empty() {
+        return 0;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for i in outline {
+        i.role.hash(&mut h);
+        i.name.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// A browser window (Edge, Chrome, Firefox) by class or title.
+fn looks_like_browser(w: &crate::platform::WindowInfo) -> bool {
+    let title = w.title.to_lowercase();
+    w.class.starts_with("Chrome_WidgetWin")
+        || w.class == "MozillaWindowClass"
+        || ["microsoft edge", "google chrome", "mozilla firefox", "chromium"].iter().any(|b| title.contains(b))
+}
+
+/// Loop-guard key of a call ("tool|target|text") and its target for the log and the model; None for the tools
+/// that are never counted (say, wait, scroll, point, done, ...) and for keys that move on by themselves.
+fn repeat_key(tool: &Tool, outline: &[OutlineItem]) -> Option<(String, String)> {
+    fn text_of(s: &Option<String>) -> Option<&str> {
+        s.as_deref().map(str::trim).filter(|s| !s.is_empty() && *s != "null")
+    }
+    let by_element = |id: u32| match outline.iter().find(|i| i.id == id) {
+        Some(i) if !i.name.trim().is_empty() => format!("#{id} {}", squash(&i.name).to_lowercase()),
+        _ => format!("#{id}"),
+    };
+    let (target, text) = match tool {
+        Tool::Click { element: Some(id), .. } => (by_element(*id), String::new()),
+        Tool::Click { sam_query, description, .. } => {
+            (if description.trim().is_empty() { sam_query.clone() } else { description.clone() }, String::new())
+        }
+        Tool::TypeText { element: Some(id), text, .. } => (by_element(*id), text.clone()),
+        Tool::TypeText { field_label, into_sam_query, text, .. } => {
+            (text_of(field_label).or(text_of(into_sam_query)).unwrap_or("").to_string(), text.clone())
+        }
+        Tool::Key { combo, .. } => {
+            let combo = normalize_combo(combo).unwrap_or_else(|_| combo.to_lowercase());
+            if MOVING_KEYS.contains(&combo.as_str()) {
+                return None;
+            }
+            (combo, String::new())
+        }
+        Tool::OpenUrl { url } => (url.clone(), String::new()),
+        _ => return None,
+    };
+    let target = squash(&target).to_lowercase();
+    let key = format!("{}|{target}|{}", tool.name(), squash(&text).to_lowercase());
+    Some((key, target))
+}
+
+/// The address bar shows this URL already: scheme, file://localhost, slashes, case, %XX, #fragment and a
+/// trailing slash do not count ("C:/Users/x/a.html" in Edge = file:///C:/Users/x/a.html).
+fn same_page(address: &str, url: &str) -> bool {
+    fn norm(s: &str) -> String {
+        let mut s = percent_decode(s.trim()).replace('\\', "/").to_lowercase();
+        if let Some(i) = s.find('#') {
+            s.truncate(i);
+        }
+        let mut rest = s.as_str();
+        for scheme in ["http://", "https://"] {
+            if let Some(r) = rest.strip_prefix(scheme) {
+                rest = r;
+            }
+        }
+        if let Some(r) = rest.strip_prefix("file://") {
+            rest = r.strip_prefix("localhost").unwrap_or(r);
+        }
+        rest.trim_start_matches('/').trim_end_matches('/').to_string()
+    }
+    let (a, u) = (norm(address), norm(url));
+    !a.is_empty() && a == u
+}
+
 /// Whitespace runs -> one space.
 fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -3661,5 +3910,109 @@ mod tests {
         assert_eq!(saved_total_words(3600, Lang::En), "1 h");
         assert_eq!(saved_total_words(4530, Lang::En), "1 h 15 min");
         assert_eq!(tf("done_time_one", Lang::En, &[("secs", "9")]), "Done in 9 s. By hand this takes about a minute.");
+    }
+
+    #[test]
+    fn same_page_ignores_how_the_browser_shows_the_address() {
+        let url = "file:///C:/Users/x/a.html";
+        assert!(same_page("C:/Users/x/a.html", url), "Edge shows a file without file:///");
+        assert!(same_page("file:///C:/Users/x/a.html", url));
+        assert!(same_page("C:\\Users\\x\\a.html", url));
+        assert!(same_page("file://localhost/C:/Users/x/a.html", url));
+        assert!(same_page("file:///C:/Users/x/a.html#top", url), "fragment");
+        assert!(same_page("file:///C:/My%20Docs/a.html", "file:///C:/My Docs/a.html"), "percent-encoding");
+        assert!(same_page("localhost:8080/form/", "http://localhost:8080/form"), "trailing slash, scheme");
+        assert!(same_page("https://www.kasse.example/Services", "www.kasse.example/services"));
+        assert!(!same_page("C:/Users/x/b.html", url));
+        assert!(!same_page("http://localhost:8080/a", "http://localhost:8081/a"));
+        assert!(!same_page("", url));
+        assert!(!same_page("edge://newtab", url));
+    }
+
+    #[test]
+    fn repeat_keys_of_the_loop_guard() {
+        let outline = vec![OutlineItem {
+            id: 4,
+            role: "edit".into(),
+            name: "Employer".into(),
+            value: Some(String::new()),
+            rect: PhysRect { x: 0, y: 0, w: 10, h: 10 },
+            offscreen: false,
+            enabled: true,
+            is_password: false,
+        }];
+        let ty = |text: &str, element: Option<u32>, label: Option<&str>| Tool::TypeText {
+            text: text.into(),
+            what: "your employer".into(),
+            into_sam_query: None,
+            field_label: label.map(str::to_string),
+            element,
+        };
+        let k = |t: &Tool| repeat_key(t, &outline).map(|(k, _)| k);
+        assert_eq!(
+            k(&ty("Bäckerei  Sonnenschein", Some(4), None)).unwrap(),
+            "type_text|#4 employer|bäckerei sonnenschein"
+        );
+        assert_eq!(k(&ty("x", None, Some("Arbeitgeber"))).unwrap(), "type_text|arbeitgeber|x");
+        assert_ne!(k(&ty("A", Some(4), None)), k(&ty("B", Some(4), None)), "another text is another try");
+        let key = |combo: &str| Tool::Key { combo: combo.into(), is_commit: false, commit_what: None, commit_to: None };
+        assert_eq!(k(&key("Ctrl + A")).unwrap(), "key|ctrl+a|");
+        assert_eq!(k(&key("tab")), None, "Tab moves on by itself");
+        assert_eq!(k(&Tool::OpenUrl { url: "http://x/a".into() }).unwrap(), "open_url|http://x/a|");
+        assert_eq!(k(&Tool::Wait { seconds: 1 }), None);
+        assert_eq!(k(&Tool::Say { text: "hi".into() }), None);
+    }
+
+    #[test]
+    fn repeats_count_only_while_the_page_stays_the_same() {
+        let mut st = RunState::new(Task::Text("x".into()));
+        let page1 = vec![OutlineItem {
+            id: 1,
+            role: "button".into(),
+            name: "Next".into(),
+            value: None,
+            rect: PhysRect { x: 0, y: 0, w: 10, h: 10 },
+            offscreen: false,
+            enabled: true,
+            is_password: false,
+        }];
+        let mut page2 = page1.clone();
+        page2.push(OutlineItem { id: 2, role: "edit".into(), name: "Street".into(), ..page1[0].clone() });
+        let mut page1_typed = page1.clone();
+        page1_typed[0].value = Some("x".into());
+        let (s1, s2) = (outline_shape(&page1), outline_shape(&page2));
+        assert_ne!(s1, s2);
+        assert_eq!(outline_shape(&page1_typed), s1, "values do not count");
+        assert_eq!(outline_shape(&[]), 0);
+        let key = || "click|#1 next|".to_string();
+        assert_eq!(st.count_repeat(key(), s1), 1);
+        assert_eq!(st.count_repeat(key(), s1), 2);
+        // Next led to another page: no repeat.
+        assert_eq!(st.count_repeat(key(), s2), 1);
+        assert_eq!(st.count_repeat(key(), s2), 2);
+        assert_eq!(st.count_repeat(key(), s2), 3, "the third on the same page");
+        assert_eq!(st.count_repeat("key|enter|".into(), s2), 1, "another call, its own count");
+        st.prepare_resume();
+        assert_eq!(st.count_repeat(key(), s2), 1, "Continue starts again");
+    }
+
+    #[test]
+    fn a_browser_in_front() {
+        let w = |title: &str, class: &str| crate::platform::WindowInfo {
+            title: title.into(),
+            class: class.into(),
+            address: None,
+        };
+        assert!(looks_like_browser(&w("Gesundkasse - Microsoft Edge", "Chrome_WidgetWin_1")));
+        assert!(looks_like_browser(&w("Gesundkasse — Mozilla Firefox", "MozillaWindowClass")));
+        assert!(!looks_like_browser(&w("Downloads", "CabinetWClass")));
+        assert!(!looks_like_browser(&w("Open", "#32770")));
+    }
+
+    #[test]
+    fn accepted_task_quotes_are_ascii() {
+        let task = accepted_task("„Return your questionnaire“", "letter #3");
+        assert!(task.contains("\"Return your questionnaire\""), "{task}");
+        assert!(!task.contains(['„', '“', '”']), "{task}");
     }
 }

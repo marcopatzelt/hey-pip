@@ -1,290 +1,265 @@
-# Pip – your AI helper on the screen
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/readme/banner-dark.png">
+    <img src="design/readme/banner.png" alt="Pip, a small blue helper, points at a web form and asks: Ready to send this to your university? Headline: No one should have to be good at computers to live their life." width="100%">
+  </picture>
+</p>
 
-<img src="design/pip/png/wave.png" alt="Pip, a small blue drop with a folded paper tuft, waving" width="140" align="right">
+<h1 align="center">Pip</h1>
 
-**Pip is computer use for everyday people.** A small helper sits on your Windows screen. Drop a letter on it and
-it explains the letter in plain words, remembers the deadline, speaks up on its own before the deadline runs out,
-and fills in online forms for you. It shows what it does while it does it, and **it never sends anything without
-your "yes".**
+<p align="center">
+  <b>No one should have to be good at computers to live their life.</b><br>
+  Pip is a personal assistant that lives on your screen. It knows you, notices what's coming,<br>
+  and does the computer work for you. It asks only once, before anything leaves your computer.
+</p>
 
-Built for the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026) with Meta's Muse and SAM models, in Rust.
+<p align="center">
+  <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10_%7C_11-0078D4?style=flat-square">
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-B7410E?style=flat-square&logo=rust&logoColor=white">
+  <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white">
+  <img alt="Meta Muse Spark and SAM 3.1" src="https://img.shields.io/badge/Meta-Muse_Spark_%C2%B7_SAM_3.1-0866FF?style=flat-square">
+  <img alt="License Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-4B5563?style=flat-square">
+</p>
+
+<p align="center">
+  <a href="#see-pip-at-work">See it work</a> ·
+  <a href="#how-pip-works">How it works</a> ·
+  <a href="#safe-by-design">Safety</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="docs/TECHNICAL.md">Technical details</a>
+</p>
+
+<!-- DEMO VIDEO: Marco adds the video/GIF here -->
 
 ---
 
-## Why
+## Why Pip exists
 
-My mom was on sick leave. Her follow-up sick note was issued two days late, so her health insurer did not pay sick
-pay for those two days, even though she was ill the whole time. The rule is simple once you know it: the next
-sick note must be issued no later than the next working day after the old one ends, and Saturdays do not count
-(§ 46 sentence 2 SGB V). Nobody told her. She was ill, tired, and not a computer person.
+Computers were supposed to make life easier. For many people, they made it harder.
 
-Paperwork hits hardest the people with the least strength for it: people who are ill, older people, people with
-disabilities, students, people new to the country. They do not need another app with settings. They need someone
-who reads the letter, keeps an eye on the date, and helps with the form.
+Almost everything that matters now happens on a screen: your insurance, your studies, your job, your money, your
+appointments. If you are good with computers, each of these takes a few minutes. If you are not, each one is a wall.
+And the digital world quietly expects everyone to climb it alone.
 
-## What Pip does
+Billions of people are left behind this way: people who are ill or tired, older people, people with disabilities,
+people new to a country, people who simply never learned. They don't lack intelligence. They lack a helper who knows
+their life and handles the screen for them.
 
-| | What the user sees |
-|---|---|
-| **Reads letters** | Drag a phone photo or PDF onto Pip. Pip cuts the sheet out of the photo, reads it, and says in two sentences what it is and what matters: *"Sick note from 20.10. to 30.10. I'll make sure there is no gap."* |
-| **Remembers and speaks up on its own** | Deadlines come from rules written in code, with their legal source, not invented by a model. On Thursday 18:00 Pip pops up with a notification and a voice: *"Your sick note ends tomorrow. If you're still sick, you need a new one by Monday, November 2."* Buttons: *Remind me Monday · I'm well again · Later*, and *Why?* shows the rule. |
-| **Acts on the screen** | *"Send the sick note to my health insurer."* Pip flies to each field, says what it types, and fills in the insurer's contact form. Before attaching the letter and before pressing *Submit* it shows a card: what, to whom, which file, and a picture of the exact button. Nothing happens until you press *Yes*. |
-| **Any form** | Open any online form (a university re-registration, an application) and click *Look at my screen*: Pip says what the page is, fills what it knows about you, asks only for what is missing and stops at the send button with one card. The second time it needs no question. |
-| **Shows what it did** | Tray or ask box -> *What Pip did for me*: a page in the browser with letters read, forms filled, sent (each after your yes), deadlines kept and time saved (seconds under a minute; no time tile before Pip saved any), plus *Copy text for a post*. Only the first name is on it, never numbers or addresses. Approving an attachment does not count as sent. |
-| **Feels alive** | Click Pip to ask, hold Pip to talk (mic while held). When a task is done Pip celebrates (a short confetti burst, off when Windows animations are off) and the numbers in the *Done* sentence (time, total saved, faster the 2nd time) show as chips. |
+**We think it should be the other way around: you shouldn't have to be good at computers. The computer should be
+good at helping you.** That is Pip.
 
-### Made for people who are not technical
+My mom is one of these people. She once lost money because a document was issued two days late. It was a deadline
+from her health insurer, and nobody told her. She was ill, tired, and not a computer person. **Pip is the helper I
+wish she had had.**
 
-We are technical. Our users are not. Every decision is checked against one question: *would my mom understand
-this the first time?*
+## Meet Pip
 
-- No setup screens, no files to edit. First start: Pip flies in, waves, asks only your first name, and says
-  *"Drag a letter onto me."* The insurer comes from your first letter; your state is asked only when a deadline needs it.
-- Pip always says what it is doing and why, in short sentences, German or English, with big text (20 px) and
-  big buttons (48 px).
-- You can stop Pip any time: move the mouse, press Esc, or press *Stop*. Pip answers *"I stopped. Nothing was sent."*
-- Errors are a friendly sentence with a next step, never a code: *"I can't reach the internet right now. Please
-  check the Wi-Fi, then press Try again."*
-- Pip never types passwords and hands logins, captchas and codes back to you.
-- No medical judgement and no legal advice: every reminder names the rule and its source and ends with
-  *"This is a hint, not legal advice."*
+Pip is not another app you have to learn. It is a small buddy in the corner of your screen. You click it, and it
+helps. It works with the programs and websites you already use, on your real screen.
 
-Paperwork is the main story, but nothing in the agent is specific to sick notes: memory, rules and on-screen
-actions are general modules, so the same Pip helps with applications, registrations or study deadlines.
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="design/readme/poses/think.png" alt="" width="64" align="right">
+      <h3>🧠 It remembers you</h3>
+      Your name, your insurer, your student number, and how each website worked last time. Every fact shows where
+      it came from: "from your letter of 14 October" or "you told me". Open <b>What Pip knows</b> and press
+      <b>Forget</b> on any line.
+    </td>
+    <td width="50%" valign="top">
+      <img src="design/readme/poses/listen.png" alt="" width="64" align="right">
+      <h3>🔔 It speaks up first</h3>
+      Show Pip a letter (a phone photo is enough). Pip says in two plain sentences what it is and what matters, and
+      keeps the dates. Each morning Pip says what is due and offers to do it: <i>"I can do this for you right now."</i>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="design/readme/poses/point.png" alt="" width="64" align="right">
+      <h3>🖱️ It does the work</h3>
+      Press <b>Look at my screen</b> on any page. Pip says what is open, then fills the whole form with what it
+      knows. It asks only for what it doesn't know. You watch Pip fly to each field, and you can stop it any time.
+    </td>
+    <td width="50%" valign="top">
+      <img src="design/readme/poses/ask.png" alt="" width="64" align="right">
+      <h3>✋ It asks only once</h3>
+      Looking, typing and opening pages need no permission. Before anything leaves your computer, Pip shows
+      <b>one clear card</b>: what, to whom, and which button. Nothing is sent without your yes. Tick
+      <b>Don't ask again</b> for a site you trust.
+    </td>
+  </tr>
+</table>
+
+**Pip is for you if**
+
+- ✅ letters and online forms make you tired before you even start
+- ✅ you have missed a date before, because nobody reminded you
+- ✅ you help a parent or a friend with their paperwork, and you can't always be there
+- ✅ you are new to a country and the forms are not in your language
+
+> **Pip helps, you decide.** Pip explains letters in plain words, keeps every date, finds the right form and fills it
+> in, and names the source of every rule it uses. It does not replace a doctor, a lawyer or a financial adviser.
+> Decisions about your health, your rights and your money stay yours.
+
+## See Pip at work
+
+**Any form, one button.** Open any online form and press **Look at my screen**. Pip says in one sentence what the
+page is and what it will do. Then it fills in everything it knows about you, asks only for what is missing, and stops
+at the send button with one card. If there is nothing to do, Pip offers two or three things it can do instead.
+
+**A university re-registration.** A student opens the (invented) Beispiel University page. Pip fills in the name from
+memory, ticks the fee box and asks once: *"What is your student number?"* Pip keeps the answer and learns how the
+page works. **The second time there is no question at all.**
+
+**A deadline from the insurer.** Erika (an invented person) gets a letter from her health insurer: they need a
+questionnaire back by a date. She shows Pip the photo. The next morning Pip says hi, names what is due, and offers to
+do it. One click: Pip opens the insurer's page, fills the questionnaire from what it knows and stops at one card.
+
+**One step ahead.** When you finish a task yourself, Pip checks the website for a service that fits your letters and
+deadlines. It offers one only when that heading is really on the page, and never twice.
+
+Every finished task ends with the time it took and an honest estimate by hand, for example *"Done in 17 s. By hand
+this takes about 4 minutes."*
 
 ## How Pip works
 
-```mermaid
-flowchart LR
-    subgraph Windows["Windows desktop"]
-        Pip["Pip overlay<br/>(Tauri 2, transparent, click-through)<br/>bubble · pointer · approval card"]
-        Screen["Screen + mouse/keyboard<br/>+ UI Automation"]
-    end
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/readme/how-it-works-dark.png">
+    <img src="design/readme/how-it-works.png" alt="Four steps: 1 Remembers, 2 Notices, 3 Does, 4 Asks once. A dotted arrow goes back from step 4 to step 1: every finished task teaches Pip something, and the second time is faster." width="100%">
+  </picture>
+</p>
 
-    subgraph Core["pip-core (Rust, OS-free)"]
-        Bus(("event bus"))
-        Agent["Agent loop<br/>screenshot → plan → ground → act"]
-        Gate{"Approval gate<br/>send · attach · pay · delete"}
-        Docs["Letter pipeline<br/>crop → read → check"]
-        Rules["Rule engine<br/>every minute"]
-        Mem[("SQLite memory<br/>letters · deadlines · profile · log")]
-    end
+Pip is one Rust program. A transparent Tauri 2 overlay sits on top of Windows. Under it, an OS-free core holds the
+agent loop, the approval gate, the letter reader, a rule engine for dates and a local SQLite memory.
 
-    subgraph Meta["Meta Model API"]
-        Spark["Muse Spark 1.3"]
-        SAM["SAM 3.1"]
-        Voice["Muse Voice Transcribe"]
-    end
+1. **See.** Pip reads the page in front of you as a list of named fields and buttons (Windows UI Automation) and
+   takes a screenshot.
+2. **Plan.** Muse Spark plans the next steps with tool calls. It can fill a whole form in one turn by field number.
+3. **Act.** Pip clicks and types on the real screen. If a field has no name, SAM 3.1 and Muse Spark find the exact
+   spot on the screenshot.
+4. **Learn.** After each task Pip saves a short playbook for that website: which field gets which fact, and which
+   button sends. The next visit follows the playbook.
 
-    Pip <-->|commands / events| Bus
-    Bus --> Agent
-    Bus --> Docs
-    Rules -->|reminders| Bus
-    Agent --> Gate -->|"only after Yes"| Screen
-    Agent -->|screenshot| Screen
-    Agent --> Spark
-    Agent --> SAM
-    Docs --> SAM
-    Docs --> Spark
-    Pip -->|push-to-talk| Voice
-    Docs --> Mem
-    Rules --> Mem
-    Agent --> Mem
-```
+Dates come from rules in code (weekends and public holidays included), never from a model's guess.
 
-1. **Letter in** – a photo goes to SAM 3.1 (`"sheet of paper"`), the sheet is cropped from the full-size photo;
-   a PDF goes straight to Muse Spark. Muse Spark fills a strict JSON schema (type, sender, dates, reference,
-   sick-note period, deadlines with a quote from the letter). Rust checks every field, stores the letter locally and
-   runs the rules.
-2. **Rules** – `au_lueckenlos` (gap-free sick notes, § 46 SGB V), `widerspruch_bescheid` (one month to object to a
-   decision, counting from the fourth day after the letter's date, § 37 (2) SGB X, § 64 SGG), and deadlines quoted
-   in the letter. Weekends and NRW public holidays (computed from Easter) are in code and tested day by day.
-   The engine ticks every minute and never fires a reminder twice.
-3. **On the screen** – each step: take a screenshot (Pip's own window greyed out), Muse Spark plans tool calls
-   (`click`, `type_text`, `key`, `scroll`, `open_url`, `ask_user`, `remember_fact`, `add_deadline`, `done` …).
-   To find a target, **SAM 3.1 and Muse Spark run in parallel**: SAM proposes exact element boxes, Spark points at
-   the described target; if Spark's point lies in a SAM box, Pip clicks the center of that box. If they disagree,
-   Spark picks one of the numbered boxes; if none fits, Spark's own point is used.
-4. **The approval gate** – a commit (send, submit, attach a private file, pay, buy, delete, cancel a contract) is
-   detected in three independent ways, and any one is enough: the model says so, a German/English word list on the
-   target, or the button's name from Windows UI Automation. Enter in a form always counts as sending. The card waits
-   up to 5 minutes; no answer means no.
+### Meta models inside Pip
 
-## Meta models and their roles
-
-| Model | Role in Pip | Status |
+| Model | Its job in Pip | Status |
 |---|---|---|
-| **Muse Spark 1.3** (`/v1/responses`) | The brain: plans each screen step with tool calls, reads letters into JSON (PDF as `input_file`), points at targets and picks among SAM boxes, writes Pip's plain-language sentences. | built |
-| **SAM 3.1** (`/v1/responses`, streamed) | The eyes for shapes: cuts the sheet out of a phone photo; proposes exact boxes for buttons on the screen so clicks land in the middle of the real element. | built |
-| **Muse Voice Transcribe 1.0** (`/v1/asr/transcribe`) | Hold Ctrl+Shift+Space (or the microphone button) and say what you need. | built; checked with a recorded sentence through `pip-cli transcribe` (Oct 26); microphone on Windows still to test |
-| **Muse Image 1.0** (`/v1/images/generations`, `/edits`) | Designed Pip: the character and its eight poses (idle, wave, listen, think, point, happy, ask, sleep). | used offline |
-| **Muse Glimmer** (open weights, local) / **Muse Spark Open** (open weights, Baseten) | Private mode: reads photos and scans of letters through an OpenAI-compatible endpoint (llama.cpp on the computer, or Baseten). SAM and the Meta API are not called for the letter. | built: private mode reads photos and scans through an OpenAI-compatible endpoint (llama.cpp or Baseten); tested against a mock server, live run pending |
+| **Muse Spark 1.3** | The brain, with reasoning and vision. Plans every step, reads letters into a strict and checked format, and writes Pip's plain sentences. | built |
+| **SAM 3.1** | The eyes for shapes. Finds the exact box of a button or field, and cuts the paper out of a phone photo. | built |
+| **Muse Voice Transcribe** | Hold Pip and say what you need. | built; microphone on Windows still to test |
+| **Muse Image** | Drew Pip and its poses. | used for the design |
+| **Muse Glimmer / Muse Spark Open** | Private mode: a letter is read by an open-weights model on your own computer or your own server. | built; tested against a mock server, live run pending |
 
-Pip uses Meta's colour world (blue to violet) but no Meta logo and no Meta character.
+### Measured, not promised
 
-## Safety and privacy
+From `pip-cli eval` with the real Meta API on invented data. These are dry runs on screenshots, so nothing is really
+sent. The full tables and the known weak spots are in [`eval/results.md`](eval/results.md).
 
-- **Nothing is sent without "yes".** Every commit goes through the approval card, and every decision is written to
-  `actions_log`.
-- **Demo mode is on by default.** With `DEMO_MODE` on (the default; `DEMO_MODE=0` turns it off), Pip may open and
-  submit only local demo pages: `localhost`, or pages inside Pip's own fixtures folders. The check looks at the page
-  that is really in the browser's address bar when it can read it, else at the page opened in the same task. The demo
-  insurer "Gesundkasse" and the second demo site, the invented "Beispiel University" with its re-registration form,
-  send nothing. Both are built into the exe. Each demo folder counts as its own site, so "Don't ask again" and the
-  learned steps for the insurer never cover the university.
-- **The card shows the real recipient.** Next to the name the model gives, the card shows the web address of the
-  page, and it lists what Pip typed into the form. Pip says the whole question aloud.
-- **Pip checks again after a slow "yes".** If the page under the button changed while the card was open, Pip does
-  not click and looks again.
-- **New pages, new addresses and new send targets ask first.** Opening an unknown website, storing an address or link,
-  or changing where letters are sent needs a "yes". Addresses that carry the user's data are refused.
-- **Your letters stay on your computer** (`%APPDATA%\Pip\memory.db`). Only what one call needs goes
-  to the Meta API: the letter image, or the current screenshot. In **private mode** (below) a letter photo goes only
-  to the open-weights model you chose, for example one running on the same computer; Pip then says
-  "Read here on your computer. Nothing left it."
-- **Screenshots live in memory only.** They are not written to disk.
-- **No secrets in logs.** The API key comes from the environment or `.env` and is redacted from every error text.
-  Letter contents and typed text are not logged.
-- **Screen text is data, not instructions.** The prompt says so. Even when the screen tries to talk the model into
-  something, the gate still asks before anything is sent.
-- **No passwords.** Password fields (UI Automation `IsPassword`) are never typed into. Pip asks you to type them yourself.
-
-## Build and run
-
-Needs Rust 1.85+ (edition 2024). The Windows build also needs the WebView2 runtime (Windows 10/11 have it).
-
-```sh
-# .env in the repo root or next to the exe (never committed)
-MODEL_API_KEY=...            # Meta Model API key
-# DEMO_MODE=1                # default: only local demo pages may be submitted
-
-cargo test --workspace                        # unit + mock-server tests, no API calls
-cargo test -p pip-core -- --ignored       # live tests against the Meta API (costs cents)
-
-# Windows app (on Windows)
-cargo build --release -p pip-app -p pip-cli
-# or cross-compile from Linux
-cargo xwin build --release --target x86_64-pc-windows-msvc -p pip-app -p pip-cli
-```
-
-Run `pip-app.exe`. Pip appears in the bottom-right corner. The demo pages are built into the exe (Pip writes them to
-`%APPDATA%\Pip\fixtures\demo-kasse\` and `…\demo-uni\`; open `demo-uni\index.html` in the browser for the second example); the `fixtures/` folder next to the exe is only needed for the example
-letters. Without a key, Pip shows a field to paste it (stored in `%APPDATA%\Pip\.env`).
-
-Switches for testing: `PIP_MOCK=1` (scripted demo without the API), `PIP_WINDOWED=1` (corner window instead of the
-full-screen overlay), `PIP_LANG=en`, `PIP_MUTE=1`, `DEMO_NOW=2026-10-29T18:00` (time travel for reminders),
-`PIP_MOUSE_STOP=0` (moving the mouse does not stop Pip; use it while recording the video), `PIP_AUTOSTART=0`
-(do not add Pip to the Windows start). `PIP_DEMO_PROFILE=1` seeds the invented person Erika; her story is told
-relative to the day the database is first created (sick note ends in two days, insurer's letter came yesterday).
-For the Thursday-evening reminder start Pip once to seed, then restart with
-`DEMO_NOW=<day the note ends minus 1>T18:00` (seeded today: tomorrow at 18:00). `PIP_DEMO_RESET=1` gives every
-recording day a fresh start: at launch Pip forgets everything and seeds Erika again for today (only when the memory
-belongs to Erika or to nobody; a memory with any other name is never wiped). `pip-cli eval` runs the eval below
-against the real API (a few cents) and writes `eval/results.md`.
-
-### Private mode (Meta open weights, the letter stays local)
-
-With private mode on, a dropped photo or scan of a letter is read by a Meta open-weights model behind an
-OpenAI-compatible `/chat/completions` endpoint, with the same strict letter schema as Muse Spark. The SAM sheet crop is
-skipped (it would send the photo to the cloud), and the Meta API sees nothing of the letter. Pip ends its sentence with
-"Read here on your computer. Nothing left it." PDFs are refused with a friendly sentence (no PDF renderer in Pip yet):
-take a photo of the letter, or turn private mode off. If the model server is not running, Pip says "My private reading
-model isn't answering. Please start it, or turn private mode off." (not "check the Wi-Fi"). Letters work in private mode
-even without `MODEL_API_KEY`; the screen agent still uses Muse Spark and needs the key.
-
-```sh
-PRIVATE_MODEL_BASE=http://127.0.0.1:8080/v1   # turns private mode on (llama.cpp, or a Baseten URL ending in /v1)
-PRIVATE_MODEL=muse-glimmer                    # default; on Baseten e.g. meta-models/muse-spark-open-1026
-PRIVATE_MODEL_KEY=...                         # optional, only for hosted endpoints (never logged)
-# PIP_PRIVATE=0                               # turns private mode off again without removing the lines above
-
-# local example with llama.cpp (vision model: also pass its --mmproj file)
-llama-server -m <muse-glimmer gguf> --port 8080
-PRIVATE_MODEL_BASE=http://127.0.0.1:8080/v1 pip-cli read fixtures/letters/au_erika_erst_foto.jpg
-```
-
-Tested against a mock server (`crates/core/tests/private_mode.rs`: the cloud mock receives zero requests). A live run
-against a real Muse Glimmer or Muse Spark Open endpoint is still pending:
-`cargo test -p pip-core --test private_mode -- --ignored` runs it when `PRIVATE_MODEL_BASE` is set. A 30B model on a
-laptop CPU can take minutes per letter (timeout 10 minutes).
-
-### Developer CLI (no overlay, same core)
-
-```sh
-pip-cli read fixtures/letters/au_erika_erst_foto.jpg      # crop + read + rules, compared with *.expected.json
-pip-cli sam fixtures/screens/kasse_form.png "button" --out boxes.png
-pip-cli ground fixtures/screens/kasse_form.png "Absenden button at the bottom right"
-pip-cli rules --now 2026-10-29T18:00                      # deadlines and the reminder that fires now
-pip-cli agent "Schick die Krankschreibung an die Gesundkasse"   # dry run on screenshots, nothing is clicked
-pip-cli eval                                              # the eval below -> eval/results.md
-pip-cli card --demo                                       # writes the 'Pip did this for me' page with invented numbers
-crates/app/tools/shot.sh                                  # headless screenshots of the overlay scenes (preview.html)
-```
-
-Example dry run (abridged):
-
-```
-Pip points at "deinen Vor- und Nachnamen" (name_field)
-  [input] click (462, 503) -> name_field
-  [input] type "Erika Beispiel"
-Pip points at "den grünen Knopf „Absenden“ unten rechts" (submit_button)
-  [GATE] card: Darf ich das abschicken? | Was: deine Krankschreibung vom 20.10. bis 30.10.2026 | An: Gesundkasse (Kontaktformular)
-  [GATE] answer: Noch nicht
-Outcome: Stopped. The send card stopped the click on "Absenden". Nothing was clicked there, nothing sent.
-```
-
-## Eval
-
-Tasks with invented data (`eval/tasks.json`), run with `pip-cli eval` against the real API: 5 letters (are fields
-and deadlines right?), 4 click targets (does the click land on the element?) and 3 agent tasks in a dry run on
-screenshots (nothing is really clicked or sent). One agent task checks that the send card stops *Absenden*. Two are
-sent with one approved send card and run **twice on the same memory**, so the 2nd run starts with what Pip learned
-the 1st time (the playbook for the site, remembered answers). Full table and notes:
-[`eval/results.md`](eval/results.md). Reproduce: `cargo run -p pip-cli -- eval` (a few cents, see
-[`eval/README.md`](eval/README.md)).
-
-| Measure | Result (two eval runs, Oct 26, 2026) |
+| What | Result |
 |---|---|
-| Agent, insurer form (EN, PAGE ELEMENTS) | 1st run 4 steps / 16.3 s / 0 questions, 2nd run 3 steps / 11.7 s / 0; again: 3 / 11.9 s / 0, then 3 / 10.7 s / 0 |
-| Agent, university re-registration ("Look at my screen") | 1st run asks 1 question (student number), 5 steps / 21.5 s; 2nd run 0 questions, 3 steps / 13.1 s. Again: 7 steps / 45.3 s / 0 questions, then 3 steps / 14.9 s |
-| Learning (2nd run faster: fewer steps and seconds, no more questions) | 2 of 2 tasks, then 1 of 2 (the insurer form already took 3 steps the 1st time) |
-| By hand (estimate) vs with Pip | insurer form about 4 to 6 min by hand vs 11 to 16 s; university about 4 min vs 13 to 45 s |
-| Sent after one approved send card | 4/4 and 4/4 runs |
-| Gate held at *Absenden* (send card refused) | 1/1 and 1/1 |
-| Letter fields correct | 41/41 and 41/41 (100 %) |
-| Deadlines correct | 5/5 and 5/5 letters |
-| Click targets hit | 3/4, then 4/4 |
-| Tokens per full eval run | about 180k to 190k |
+| Letter fields read correctly | 41 of 41 (5 letters) |
+| Deadlines right | 5 of 5 letters |
+| Send card held the *Submit* click when the user said no | 1 of 1 |
+| Sent after one approved send card | 6 of 6 runs |
+| University form, 1st run → 2nd run on the same memory | 6 steps, 46 s, 1 question → 3 steps, 17 s, no question |
+| Insurer questionnaire, 1st run → 2nd run | 8 steps, 43 s → 4 steps, 22 s |
+| Sending a letter to the insurer, 1st run → 2nd run | 4 steps, 20 s → 3 steps, 12 s |
 
-Honest limits (details in `eval/results.md`): the model does not answer the same way every time. In 2 of 3 extra
-single runs Pip pressed *Submit* on the university form with only the name typed instead of asking for the student
-number; the dry run cannot see the missing field, because the next screenshot already shows a filled form. Lone
-`say` steps that repeat the opening sentence still cost steps.
+In the latest run, all three repeated tasks were faster the second time. The model does not answer the same way every
+time, so earlier runs and the known weak spots are listed in `eval/results.md`.
 
-Oct 26, first run (5 letters, 4 click targets, 1 German agent task, no PAGE ELEMENTS, no learning measure):
+## Safe by design
 
-| Measure | Result |
+- **One card before anything is sent.** Every send, submit, pay or delete goes through the approval gate. The gate
+  notices it in three independent ways (the model, a word list and the button's name from Windows). Any one is
+  enough. No answer means no.
+- **You can always stop Pip.** Move the mouse firmly, press Esc, or press *Stop*. Pip says *"I stopped. Nothing was
+  sent."*
+- **It never closes your windows.** Clicks on a window's own buttons and closing shortcuts are blocked.
+- **No passwords, no health details.** Pip never types into a password field and hands logins, captchas and codes
+  back to you. Its memory refuses to store passwords, PINs, codes or diagnoses.
+- **Your data stays with you.** Letters and memory live on your computer (`%APPDATA%\Pip`). Only what one step needs
+  goes to the Meta API. In private mode, a letter goes only to the open-weights model you chose.
+- **Text on a page is data, not orders.** If a page tries to talk Pip into something, the gate still asks.
+- **Demo mode is on by default.** Pip may submit only the built-in local demo pages until you turn it off.
+
+## Quick start
+
+You need Windows 10 or 11 and a Meta Model API key. To build Pip yourself you need Rust 1.85 or newer.
+
+```sh
+# 1. Put your key in .env (never committed). PIP_DEMO_PROFILE=1 adds the invented person Erika.
+echo MODEL_API_KEY=your-key>  .env
+echo PIP_DEMO_PROFILE=1>> .env
+
+# 2. Build (on Windows) ...
+cargo build --release -p pip-app
+#    ... or cross-compile from Linux
+cargo xwin build --release --target x86_64-pc-windows-msvc -p pip-app
+
+# 3. Start Pip. It appears in the bottom-right corner of your screen.
+target\release\pip-app.exe
+```
+
+No key at hand? Start Pip anyway. It shows a field where you paste the key. Run all tests without any API calls
+with `cargo test --workspace`.
+
+<details>
+<summary><b>Switches, private mode and repository layout</b></summary>
+
+<br>
+
+| Switch | What it does |
 |---|---|
-| Letter fields correct | 41/41 and 41/41 (100 %) |
-| Deadlines correct | 5/5 and 5/5 letters |
-| Click targets hit | 4/4, then 3/4 (the second run clicked 50 px left of "Datei auswählen") |
-| Gate held at *Absenden* | 1/1 and 1/1 |
-| Tokens per full eval run | about 65k (all 10 tasks) |
-
-Still to come: runs on real Windows apps and browsers, more runs per task, and more screens than the demo forms.
-
-## Repository
+| `PIP_DEMO_PROFILE=1` | Adds the invented person Erika. Her story is set relative to today. |
+| `PIP_DEMO_RESET=1` | Starts a fresh demo day (only if the memory is Erika's or empty) |
+| `PIP_MOCK=1` | Scripted demo without the API |
+| `PIP_MUTE=1` | No voice |
+| `DEMO_NOW=2026-10-29T18:00` | Time travel for reminders |
+| `DEMO_MODE=0` | Allows real websites |
+| `PRIVATE_MODEL_BASE=http://127.0.0.1:8080/v1` | Private mode: an OpenAI-compatible endpoint with Muse Glimmer or Muse Spark Open |
 
 ```
-crates/core       OS-free core: Meta API client, agent loop + gate, letter pipeline, rules, SQLite memory, i18n
-crates/platform   screen capture, input, UI Automation (Windows); best-effort Linux; fake platform for tests
-crates/app        Pip overlay (Tauri 2): bubble, pointer, approval card, tray, hotkeys, voice, notifications
+crates/core       OS-free core: Meta API client, agent loop and gate, letter reader, rules, SQLite memory
+crates/platform   screen, input and UI Automation (Windows); a fake platform for tests
+crates/app        the Pip overlay (Tauri 2): bubble, pointer, approval card, tray, voice
 crates/cli        developer CLI and eval runner
-fixtures/         invented letters (PDF, PNG, phone photo) with expected results, demo insurer and university forms, screenshots
+fixtures/         invented letters, demo insurer and university pages, screenshots
 eval/             eval tasks and results
-design/pip/       Pip's poses
+design/           Pip's poses and the README images
 ```
 
-All people, insurers, offices and numbers in this repository are invented.
+Architecture, target finding, the gate in detail and the full eval: **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.
 
-License: Apache-2.0.
+</details>
+
+## Built for the Meta Global AI Developer Hackathon
+
+Pip was built from October 26 to November 4, 2026, in the **Indie track**, theme **"Build for your world"**. My
+world is a family where not everyone is good with computers.
+
+- **Impact:** a helper for everyone the digital world leaves behind.
+- **Meta AI at the core:** Muse Spark thinks and sees, SAM 3.1 finds the buttons, Muse Voice Transcribe listens,
+  Muse Image drew Pip, and Muse Glimmer / Muse Spark Open keep letters private.
+- **Technical depth:** all Rust, a real computer-use agent with an approval gate, a learning memory with per-site
+  playbooks, and proactive offers that are checked in code before Pip says a word.
+
+## Roadmap
+
+- [ ] Live run of private mode with a real Muse Glimmer / Muse Spark Open endpoint
+- [ ] Hold-to-talk tested on more Windows machines
+- [ ] Every second run faster than the first
+- [ ] More languages for Pip's voice and text
+- [ ] macOS and Linux overlays (the core is already OS-free)
+
+## License
+
+Apache-2.0. Made by Marco Patzelt, for his mom and for everyone like her. All people, insurers, universities and
+numbers in this repository are invented.
+
+<p align="center">
+  <img src="design/readme/poses/happy.png" alt="Pip, happy, with both arms up" width="90">
+</p>

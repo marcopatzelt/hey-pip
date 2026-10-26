@@ -1146,9 +1146,10 @@ impl Ctx {
     }
 
     /// After-task offer: OFFER_AFTER_SECS after a finished task Pip offers one thing on the insurer's services
-    /// page that fits an open deadline (`rules::after_task`, Rust only, no model call). Only when an open
-    /// deadline exists and no heading fits does the model look around once (Task::Discover); in every other
-    /// case (no open deadline, quiet days after "Not now", every fitting heading asked before) Pip stays quiet
+    /// page that fits an open deadline (`rules::after_task_on`, Rust only, no model call). The task just done
+    /// (`after`, its done summary) is never offered again. Only when the services page cannot be read by Rust
+    /// does the model look around once (Task::Discover); in every other case (no open deadline, quiet days
+    /// after "Not now", nothing fits on a readable page, every fitting heading asked before) Pip stays quiet
     /// and opens nothing. Off with PIP_DISCOVER=0 or without a services page.
     fn discover_later(self: &Arc<Self>, after: String) {
         if std::env::var("PIP_DISCOVER").is_ok_and(|v| matches!(v.trim(), "0" | "false" | "off" | "no")) {
@@ -1164,19 +1165,25 @@ impl Ctx {
             if me.paused.load(Ordering::SeqCst) || me.run.lock().expect("run lock").is_some() {
                 return;
             }
-            match me.after_task() {
-                AfterTask::Offer(o) => me.show_offer(o),
-                AfterTask::LookAround => me.start_job(Job::Task(Task::Discover { after })),
-                AfterTask::Silent => tracing::info!("after-task offer: nothing to offer"),
+            match me.after_task(&after) {
+                AfterTask::Offer(o) => {
+                    tracing::info!("after-task offer: Offer {}", o.offer.heading);
+                    me.show_offer(o)
+                }
+                AfterTask::LookAround => {
+                    tracing::info!("after-task offer: LookAround (the services page cannot be read here)");
+                    me.start_job(Job::Task(Task::Discover { after }))
+                }
+                AfterTask::Silent => tracing::info!("after-task offer: Silent: nothing to offer (reason above)"),
             }
         });
     }
 
-    /// What follows a finished task (`rules::after_task`). The services page is read once; a page on the web
+    /// What follows a finished task (`rules::after_task_on`; `just_done` = its done summary). The services page is read once; a page on the web
     /// (not file://) counts as one without headings, so only the model can look at it. A file:// page that
     /// cannot be read is gone for the model too: Silent. No memory or an error: Silent (never a page opened
     /// without words).
-    fn after_task(&self) -> AfterTask {
+    fn after_task(&self, just_done: &str) -> AfterTask {
         let Some(mem) = self.backend.memory.clone() else { return AfterTask::Silent };
         let Some(url) = self.backend.profile_get(DEMO_SERVICES_KEY) else { return AfterTask::Silent };
         let html = match file_url_path(&url).map(std::fs::read_to_string) {
@@ -1189,7 +1196,8 @@ impl Ctx {
         };
         let lang = self.lang();
         // Events carry the real time, so the 7 quiet days after "Not now" count in real time too.
-        match guard("offer", || pip_core::rules::after_task(&mem, chrono::Local::now(), lang, (&url, &html))) {
+        let now = chrono::Local::now();
+        match guard("offer", || pip_core::rules::after_task_on(&mem, now, lang, (&url, &html), just_done)) {
             Ok(next) => next,
             Err(e) => {
                 tracing::warn!("after-task offer failed: {e:#}");

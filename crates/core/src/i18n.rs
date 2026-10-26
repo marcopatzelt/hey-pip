@@ -578,6 +578,19 @@ static TABLE: &[(&str, &str, &str)] = &[
     ),
     // --- "Pip did this for me" card (tray entry and ask-box link) ---
     ("btn_my_card", "Was Pip für mich getan hat", "What Pip did for me"),
+    // --- loop guard (the same action a third time) ---
+    (
+        "loop_field",
+        "Ich bekomme das Feld „{label}“ nicht richtig hin. Kannst du kurz nachsehen?",
+        "I can't get the {label} field right. Can you check it?",
+    ),
+    ("btn_fixed", "Ich hab's korrigiert", "I fixed it"),
+    ("btn_skip", "Überspringen", "Skip it"),
+    (
+        "loop_stuck",
+        "Ich komme hier nicht weiter. Kannst du mal draufschauen?",
+        "I keep getting stuck here. Could you have a look?",
+    ),
 ];
 
 /// Lookup. Unknown key -> the key itself (visible in tests, never panics).

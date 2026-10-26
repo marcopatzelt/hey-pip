@@ -265,6 +265,47 @@ pub fn seed_demo_profile(
     Ok(true)
 }
 
+/// The demo person's memory has the whole story: `full_name` is exactly Erika's, all three
+/// DEMO_LETTER_FILES are letters in memory and the insurer's questionnaire deadline (`frist_aus_brief`)
+/// exists, in any status. A questionnaire the user already sent (deadline Done) is progress, not a stale
+/// seed: what Pip learned on the way (playbooks, facts) must survive a restart. False for any other
+/// person (the caller never touches their memory) and for an Erika seeded on an older day or by an older
+/// build (a letter or the deadline missing: the older seed skipped the future-dated letter): the app then
+/// seeds her again, so the proactive offer has something to offer on every recording day.
+pub fn demo_seed_is_complete(memory: &Memory) -> Result<bool> {
+    if memory.profile_get("full_name")?.as_deref() != Some(DEMO_FULL_NAME) {
+        return Ok(false);
+    }
+    let mut files: Vec<String> = Vec::new();
+    let mut questionnaire = false;
+    for t in ALL_DOC_TYPES {
+        for row in memory.documents_of_type(t)? {
+            if let Some(name) = row.path.file_name().and_then(|n| n.to_str()) {
+                files.push(name.to_string());
+            }
+            if memory.deadlines_for_document(row.id)?.iter().any(|dl| dl.rule_id.as_deref() == Some("frist_aus_brief"))
+            {
+                questionnaire = true;
+            }
+        }
+    }
+    let letters = DEMO_LETTER_FILES.iter().all(|f| files.iter().any(|have| have == f));
+    Ok(letters && questionnaire)
+}
+
+/// The demo person's full name (the profile's `full_name` after `seed_demo_profile`).
+const DEMO_FULL_NAME: &str = "Erika Beispiel";
+
+const ALL_DOC_TYPES: [DocType; 7] = [
+    DocType::AuBescheinigung,
+    DocType::Bescheid,
+    DocType::Rechnung,
+    DocType::Mahnung,
+    DocType::Vertrag,
+    DocType::Brief,
+    DocType::Sonstiges,
+];
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -361,6 +402,35 @@ mod tests {
         assert!(!seed_demo_profile(&mem, &rules, &letters_dir(), now).unwrap());
         assert_eq!(mem.profile_get("krankenkasse").unwrap(), None);
         assert!(mem.open_deadlines().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stale_erika_seed_is_detected() {
+        let now = local_at(d(2026, 10, 26), 10, 0);
+        // An Erika from an older build: name and full name, but no letters and no deadlines.
+        let (mem, rules) = setup(now);
+        mem.profile_set("name", "Erika").unwrap();
+        mem.profile_set("full_name", "Erika Beispiel").unwrap();
+        assert!(!demo_seed_is_complete(&mem).unwrap());
+        mem.wipe_everything().unwrap();
+        assert!(seed_demo_profile(&mem, &rules, &letters_dir(), now).unwrap());
+        assert!(demo_seed_is_complete(&mem).unwrap());
+        // The questionnaire sent (deadline Done): progress, not a stale seed. What Pip learned stays.
+        let q = mem
+            .open_deadlines()
+            .unwrap()
+            .into_iter()
+            .find(|dl| dl.rule_id.as_deref() == Some("frist_aus_brief"))
+            .unwrap();
+        mem.set_deadline_status(q.id, DeadlineStatus::Done).unwrap();
+        assert!(demo_seed_is_complete(&mem).unwrap());
+
+        // Someone else: never "complete", and this check changes nothing.
+        let (mem, _) = setup(now);
+        mem.profile_set("name", "Jonas").unwrap();
+        mem.profile_set("full_name", "Jonas Muster").unwrap();
+        assert!(!demo_seed_is_complete(&mem).unwrap());
+        assert_eq!(mem.profile_get("full_name").unwrap().as_deref(), Some("Jonas Muster"));
     }
 
     #[test]

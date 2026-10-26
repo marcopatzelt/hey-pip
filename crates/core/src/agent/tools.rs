@@ -26,11 +26,15 @@ pub enum Tool {
         description: String,
     },
     /// `commit_what` / `commit_to` fill the approval card ("deine Krankschreibung", "Gesundkasse").
+    /// Missing is_commit/commit_* parse as false/null: the live model leaves them out (26.10 Edge run).
     Click {
         sam_query: String,
         description: String,
+        #[serde(default)]
         is_commit: bool,
+        #[serde(default)]
         commit_what: Option<String>,
+        #[serde(default)]
         commit_to: Option<String>,
         /// Number (#n) from PAGE ELEMENTS: act on that element without finding it in the picture.
         #[serde(default)]
@@ -39,7 +43,10 @@ pub enum Tool {
     /// into_sam_query null = type where the focus is. `what` feeds "Ich trage {what} ein."
     TypeText {
         text: String,
+        /// Missing = the field_label or "the text" (see `lenient`).
+        #[serde(default)]
         what: String,
+        #[serde(default)]
         into_sam_query: Option<String>,
         /// The field's visible label ("Versichertennummer"): found in the UI tree at once, no model call.
         #[serde(default)]
@@ -50,8 +57,11 @@ pub enum Tool {
     },
     Key {
         combo: String,
+        #[serde(default)]
         is_commit: bool,
+        #[serde(default)]
         commit_what: Option<String>,
+        #[serde(default)]
         commit_to: Option<String>,
     },
     Scroll {
@@ -89,7 +99,9 @@ pub enum Tool {
     /// No URL and no free text: the app writes the sentence for the user itself.
     Suggest {
         page_quote: String,
+        #[serde(default)]
         reason_doc_id: Option<i64>,
+        #[serde(default)]
         reason_deadline_id: Option<i64>,
     },
 }
@@ -170,7 +182,7 @@ impl Tool {
             Value::String(s) => serde_json::from_str(s).context("arguments are not valid JSON")?,
             v => v.clone(),
         };
-        let args = lenient(args);
+        let args = lenient(&call.name, args);
         let tool: Tool = serde_json::from_value(json!({"name": call.name, "arguments": args}))
             .map_err(|e| anyhow!("invalid call of '{}': {e}", call.name))?;
         tool.validate()?;
@@ -283,8 +295,9 @@ impl Tool {
     }
 }
 
-/// Live Muse Spark sends nullable fields as the string "null" and sometimes numbers/bools as strings.
-fn lenient(mut args: Value) -> Value {
+/// Live Muse Spark sends nullable fields as the string "null", sometimes numbers/bools as strings, and
+/// sometimes leaves fields out. Value checks stay in `validate`; this only fills harmless gaps.
+fn lenient(name: &str, mut args: Value) -> Value {
     if let Some(o) = args.as_object_mut() {
         for (k, v) in o.iter_mut() {
             if k == "options" && v.is_null() {
@@ -297,10 +310,13 @@ fn lenient(mut args: Value) -> Value {
                 // An open question: the model sends "" or "null" instead of [] (seen in most dry runs).
                 "options" if t.is_empty() || t.eq_ignore_ascii_case("null") => *v = json!([]),
                 "into_sam_query" | "commit_what" | "commit_to" | "reason_doc_id" | "reason_deadline_id" | "element"
+                | "field_label"
                     if t.is_empty() || t.eq_ignore_ascii_case("null") =>
                 {
                     *v = Value::Null
                 }
+                // is_commit "" or "null": the model meant "not set", the gate still reads the button's label.
+                "is_commit" if t.is_empty() || t.eq_ignore_ascii_case("null") => *v = Value::Bool(false),
                 "reason_doc_id" | "reason_deadline_id" | "element" => {
                     if let Ok(n) = t.trim_start_matches('#').parse::<i64>() {
                         *v = Value::from(n)
@@ -317,8 +333,50 @@ fn lenient(mut args: Value) -> Value {
                 _ => {}
             }
         }
+        fill_gaps(name, o);
     }
     args
+}
+
+/// Missing or empty string (also "null").
+fn blank(v: Option<&Value>) -> bool {
+    match v {
+        None | Some(Value::Null) => true,
+        Some(Value::String(s)) => s.trim().is_empty() || s.trim().eq_ignore_ascii_case("null"),
+        Some(_) => false,
+    }
+}
+
+/// Defaults for fields the model left out. Only where the meaning is clear: an element number names the
+/// target, so its description and shape can be filled; `what` is only the wording of "I fill in {what}".
+fn fill_gaps(name: &str, o: &mut serde_json::Map<String, Value>) {
+    let element = o.get("element").and_then(Value::as_u64);
+    if name == "type_text" {
+        if blank(o.get("what")) {
+            let what = match o.get("field_label") {
+                Some(Value::String(l)) if !blank(o.get("field_label")) => l.trim().to_string(),
+                _ => "the text".to_string(),
+            };
+            o.insert("what".into(), Value::String(what));
+        }
+        // The model sometimes writes sam_query (click's name) instead of into_sam_query.
+        if blank(o.get("into_sam_query")) && !blank(o.get("sam_query")) {
+            let q = o.remove("sam_query").unwrap_or(Value::Null);
+            o.insert("into_sam_query".into(), q);
+        }
+        // An element without into_sam_query needs nothing: the loop falls back to 'text input field' itself.
+    }
+    if name == "click" {
+        if let Some(n) = element
+            && blank(o.get("description"))
+        {
+            o.insert("description".into(), Value::String(format!("element #{n}")));
+        }
+        // A shape is only a hint next to a named target; with neither, the call stays an error.
+        if blank(o.get("sam_query")) && !blank(o.get("description")) {
+            o.insert("sam_query".into(), Value::String("button".into()));
+        }
+    }
 }
 
 fn truncate_strings(v: Value, max: usize) -> Value {
@@ -432,7 +490,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         ),
         def(
             "key",
-            "Press a key or key combination: 'enter', 'tab', 'backspace', 'up', 'ctrl+a', 'alt+left'. \
+            "Press a key or key combination: 'enter', 'tab', 'shift+tab', 'up', 'alt+left'. \
              There is no esc: to close a dialog, click its cancel button.",
             obj(&[
                 ("combo", str_("Key combination, keys joined with '+'.")),
@@ -575,6 +633,80 @@ mod tests {
             let d = defs.iter().find(|d| d.name == name).unwrap();
             assert_eq!(d.parameters["properties"]["element"]["type"], json!(["integer", "null"]), "{name}");
         }
+    }
+
+    #[test]
+    fn missing_is_commit_defaults_to_false() {
+        let t = Tool::from_call(&call("click", json!({"element": 7, "sam_query": "button", "description": "Submit"})))
+            .unwrap();
+        assert!(matches!(
+            t,
+            Tool::Click { is_commit: false, commit_what: None, commit_to: None, element: Some(7), .. }
+        ));
+        let t = Tool::from_call(&call("key", json!({"combo": "tab"}))).unwrap();
+        assert_eq!(t, Tool::Key { combo: "tab".into(), is_commit: false, commit_what: None, commit_to: None });
+        // Also as a JSON string, the way the API sends it.
+        let t = Tool::from_call(&call("key", Value::String(r#"{"combo":"enter"}"#.into()))).unwrap();
+        assert!(matches!(t, Tool::Key { is_commit: false, .. }));
+        // "null" / "" for is_commit and field_label: not set, like the other nullable fields.
+        let t = Tool::from_call(&call("key", json!({"combo": "tab", "is_commit": "null"}))).unwrap();
+        assert!(matches!(t, Tool::Key { is_commit: false, .. }));
+        let t = Tool::from_call(&call("click", json!({"element": 7, "description": "Next", "is_commit": ""}))).unwrap();
+        assert!(matches!(t, Tool::Click { is_commit: false, .. }));
+        let t = Tool::from_call(&call("type_text", json!({"text": "x", "element": 3, "field_label": "null"}))).unwrap();
+        assert!(matches!(&t, Tool::TypeText { field_label: None, what, .. } if what == "the text"), "{t:?}");
+    }
+
+    #[test]
+    fn type_text_without_what_or_field_label_parses() {
+        let t = Tool::from_call(&call("type_text", json!({"text": "Erika Beispiel", "element": 3}))).unwrap();
+        assert!(
+            matches!(&t, Tool::TypeText { what, element: Some(3), into_sam_query: None, field_label: None, .. }
+                if what == "the text"),
+            "{t:?}"
+        );
+        let t = Tool::from_call(&call(
+            "type_text",
+            json!({"text": "G123", "what": "null", "field_label": "Insurance number"}),
+        ))
+        .unwrap();
+        assert!(matches!(&t, Tool::TypeText { what, .. } if what == "Insurance number"), "{t:?}");
+        let t = Tool::from_call(&call("type_text", json!({"text": "x", "sam_query": "text input field"}))).unwrap();
+        assert!(matches!(&t, Tool::TypeText { into_sam_query: Some(q), .. } if q == "text input field"), "{t:?}");
+    }
+
+    #[test]
+    fn element_call_without_description_is_accepted() {
+        let t = Tool::from_call(&call("click", json!({"element": "#3"}))).unwrap();
+        assert!(
+            matches!(&t, Tool::Click { description, sam_query, element: Some(3), is_commit: false, .. }
+                if description == "element #3" && sam_query == "button"),
+            "{t:?}"
+        );
+        let t = Tool::from_call(&call("click", json!({"element": 3, "description": ""}))).unwrap();
+        assert!(matches!(&t, Tool::Click { description, .. } if description == "element #3"));
+        // Without an element number nothing names the target: still an error.
+        assert!(Tool::from_call(&call("click", json!({"is_commit": false}))).is_err());
+        assert!(Tool::from_call(&call("click", json!({"sam_query": "button"}))).is_err());
+    }
+
+    #[test]
+    fn values_are_still_validated() {
+        assert!(Tool::from_call(&call("key", json!({"combo": "alt+s"}))).is_err(), "alt+letter");
+        assert!(Tool::from_call(&call("key", json!({"combo": "ctrl+hyper"}))).is_err(), "bad combo");
+        assert!(Tool::from_call(&call("key", json!({"combo": "alt+f4"}))).is_err(), "closing key");
+        assert!(Tool::from_call(&call("key", json!({}))).is_err(), "no combo");
+        assert!(Tool::from_call(&call("type_text", json!({"text": "", "element": 3}))).is_err(), "empty text");
+        assert!(Tool::from_call(&call("type_text", json!({"element": 3}))).is_err(), "no text");
+        assert!(Tool::from_call(&call("type_text", json!({"text": "a\nb", "element": 3}))).is_err(), "control char");
+        assert!(Tool::from_call(&call("remember_fact", json!({"key": "Bad Key", "value": "v"}))).is_err());
+        assert!(Tool::from_call(&call("suggest", json!({"page_quote": "Return your questionnaire"}))).is_err());
+        assert!(
+            Tool::from_call(&call("suggest", json!({"page_quote": "Return your questionnaire", "reason_doc_id": 2})))
+                .is_ok()
+        );
+        let long = "x".repeat(201);
+        assert!(Tool::from_call(&call("click", json!({"element": 3, "description": long}))).is_err(), "too long");
     }
 
     #[test]

@@ -66,6 +66,9 @@ pub struct Report {
     pub asked: Vec<String>,
     /// What this task takes by hand, in seconds (`Learned::by_hand_secs`; 0 when nothing was learned).
     pub by_hand_secs: u32,
+    /// What went into fields, in order: every typed text (keystrokes) and every field value that changed in the
+    /// PAGE ELEMENTS (a value set directly through UI Automation, or the field after typing). Trimmed.
+    pub typed: Vec<String>,
 }
 
 impl Report {
@@ -107,6 +110,43 @@ fn sibling_outline(screen: &Path) -> Option<PathBuf> {
 
 fn target_at(boxes: &Boxes, p: PhysPoint) -> Option<String> {
     boxes.iter().find(|(_, b)| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3]).map(|(k, _)| k.clone())
+}
+
+/// Field values of the PAGE ELEMENTS by id (only fields that take text).
+fn field_values(fake: &FakePlatform) -> BTreeMap<u32, String> {
+    fake.outline
+        .lock()
+        .map(|items| {
+            items.iter().filter(|i| i.takes_text()).map(|i| (i.id, i.value.clone().unwrap_or_default())).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What went into fields in one step: the typed texts, then each field whose value differs from `before`.
+fn typed_in_step(actions: &[Action], before: &BTreeMap<u32, String>, after: &BTreeMap<u32, String>) -> Vec<String> {
+    let typed = actions.iter().filter_map(|a| match a {
+        Action::Type(s) => Some(s.trim().to_string()),
+        _ => None,
+    });
+    let changed = after.iter().filter(|(id, v)| before.get(id) != Some(*v)).map(|(_, v)| v.trim().to_string());
+    typed.chain(changed).filter(|s| !s.is_empty()).collect()
+}
+
+/// A click on a radio button selects it like a browser does: it becomes "checked", the other radios in its row
+/// (one group on the demo pages) "unchecked". The fake platform itself only toggles checkboxes.
+fn select_clicked_radios(fake: &FakePlatform, actions: &[Action]) {
+    let Ok(mut items) = fake.outline.lock() else { return };
+    for a in actions {
+        let Action::Click(p) = a else { continue };
+        let Some(row) =
+            items.iter().find(|i| i.role == "radio" && !i.offscreen && i.rect.contains(*p)).map(|i| i.rect.y)
+        else {
+            continue;
+        };
+        for it in items.iter_mut().filter(|i| i.role == "radio" && (i.rect.y - row).abs() <= 10) {
+            it.value = Some(if it.rect.contains(*p) { "checked" } else { "unchecked" }.into());
+        }
+    }
 }
 
 fn center(r: &PhysRect) -> PhysPoint {
@@ -205,10 +245,12 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let mut outcome = None;
     let mut approved_before = 0usize;
     let mut calls_per_step = Vec::new();
+    let mut typed = Vec::new();
     let started = Instant::now();
     say(format!("Task: \"{}\"", o.task));
     while state.step < o.max_steps {
         let step_started = Instant::now();
+        let fields_before = field_values(&fake);
         let r = agent.step(&mut state, &cancel).await;
         let step_secs = step_started.elapsed().as_secs_f32();
         tokio::time::sleep(Duration::from_millis(50)).await; // let the printer catch up
@@ -218,6 +260,8 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             say(format!("  -- step {}: {} calls [{}] in {step_secs:.1} s", state.step, names.len(), names.join(", ")));
         }
         let actions = fake.take_actions();
+        select_clicked_radios(&fake, &actions);
+        typed.extend(typed_in_step(&actions, &fields_before, &field_values(&fake)));
         for a in &actions {
             let line = match a {
                 Action::Move(_) => continue,
@@ -247,7 +291,8 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         // A picture cannot show typing: the first screen (the empty form) gives way after the agent typed; any
         // screen gives way after a card was approved (a third screen, the confirmation, only after a send).
         let approved_now = cards.lock().expect("cards").iter().filter(|c| c.approved).count();
-        let typed = actions.iter().any(|a| matches!(a, Action::Type(_)));
+        // Typing by element sets the value through the UI tree first (no keystrokes): a changed field counts too.
+        let typed = actions.iter().any(|a| matches!(a, Action::Type(_))) || field_values(&fake) != fields_before;
         let progressed = (typed && screen_i == 0) || approved_now > approved_before;
         approved_before = approved_now;
         if progressed && screen_i + 1 < screens.len() {
@@ -288,6 +333,7 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         questions: asked.len() as u32,
         asked,
         by_hand_secs,
+        typed,
     };
 
     if !o.quiet {
@@ -321,6 +367,7 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             report.steps, secs, report.questions
         );
         println!("Calls per step: {:?}", report.calls_per_step);
+        println!("Typed into fields: {:?}", report.typed);
         if report.gate_held_at_submit() {
             println!("Gate: the send card stopped the click on \"Absenden\". Nothing was clicked there, nothing sent.");
         } else if report.cards.iter().any(|c| !c.attach) {
@@ -487,6 +534,66 @@ mod tests {
     }
 
     #[test]
+    fn the_questionnaire_outline_fits_its_screenshot() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-kasse-fragebogen.png")).unwrap();
+        let n = fake.load_outline(&dir.join("demo-kasse-fragebogen.outline.json")).unwrap();
+        assert!(n >= 7, "{n}");
+        assert_eq!(
+            sibling_outline(&dir.join("demo-kasse-fragebogen-thanks.png")),
+            Some(dir.join("demo-kasse-fragebogen-thanks.outline.json"))
+        );
+        assert_eq!(sibling_outline(&dir.join("demo-kasse-fragebogen-filled.png")), None);
+        let items = platform.ui.outline(80);
+        assert!(
+            items
+                .iter()
+                .any(|i| i.role == "edit" && i.name == "Sick since" && i.value.as_deref() == Some("dd.mm.yyyy")),
+            "the date field as Edge reports it"
+        );
+        for n in ["Full name", "Insurance number", "Employer"] {
+            assert!(items.iter().any(|i| i.role == "edit" && i.name == n), "{n}");
+        }
+        let radios: Vec<&str> = items.iter().filter(|i| i.role == "radio").map(|i| i.name.as_str()).collect();
+        assert_eq!(radios, ["Yes", "No"]);
+        let (w, h) = fake.screen.lock().unwrap().dimensions();
+        assert_eq!((w, h), (1600, 1000));
+        let submit = items.iter().find(|i| i.role == "button" && i.name == "Submit").expect("Submit");
+        let r = submit.rect;
+        assert!(r.x >= 0 && r.y >= 0 && r.x + r.w <= w as i32 && r.y + r.h <= h as i32, "{r:?}");
+        // The screenshot's boxes name the same Submit button.
+        let boxes = load_boxes(&dir.join("demo-kasse-fragebogen.png"));
+        assert_eq!(target_at(&boxes, center(&r)).as_deref(), Some("submit_button"));
+        for (n, i) in items.iter().enumerate() {
+            assert_eq!(i.id as usize, n + 1, "ids in order");
+        }
+    }
+
+    #[test]
+    fn a_click_on_a_radio_selects_it_and_clears_its_row() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-kasse-fragebogen.png")).unwrap();
+        fake.load_outline(&dir.join("demo-kasse-fragebogen.outline.json")).unwrap();
+        let radio = |name: &str| platform.ui.outline(80).into_iter().find(|i| i.name == name).unwrap();
+        let (yes, no) = (center(&radio("Yes").rect), center(&radio("No").rect));
+        select_clicked_radios(&fake, &[Action::Click(yes)]);
+        assert_eq!(radio("Yes").value.as_deref(), Some("checked"));
+        assert_eq!(radio("No").value.as_deref(), Some("unchecked"));
+        select_clicked_radios(&fake, &[Action::Click(no), Action::Click(PhysPoint { x: 1, y: 1 })]);
+        assert_eq!(radio("Yes").value.as_deref(), Some("unchecked"));
+        assert_eq!(radio("No").value.as_deref(), Some("checked"));
+    }
+
+    #[test]
+    fn typed_values_come_from_keystrokes_and_changed_fields() {
+        let before: BTreeMap<u32, String> = [(5, String::new()), (7, "dd.mm.yyyy".to_string())].into();
+        let after: BTreeMap<u32, String> = [(5, "Erika Beispiel".to_string()), (7, "2026-10-20".to_string())].into();
+        let actions = [Action::Click(PhysPoint { x: 1, y: 1 }), Action::Type(" Erika Beispiel ".into())];
+        assert_eq!(typed_in_step(&actions, &before, &after), ["Erika Beispiel", "Erika Beispiel", "2026-10-20"]);
+        assert!(typed_in_step(&[], &before, &before).is_empty(), "nothing typed, nothing changed");
+    }
+
+    #[test]
     fn gate_verdict_needs_a_refused_send_card_on_submit_and_no_click_there() {
         let card = |attach, approved, target: &str| CardSeen {
             title: String::new(),
@@ -507,6 +614,7 @@ mod tests {
             questions: 0,
             asked: vec![],
             by_hand_secs: 0,
+            typed: vec![],
         };
         assert!(r.gate_held_at_submit());
         r.clicks.push((PhysPoint { x: 859, y: 940 }, Some("submit_button".into())));

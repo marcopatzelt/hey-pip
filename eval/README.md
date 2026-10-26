@@ -1,8 +1,8 @@
 # eval
 
 OWNER: agent "docs-cli". Tasks with invented data (SPEC §13.3): 5 letters (fields and deadline correct?),
-4 click targets (does the click land on the element?) and 3 agent tasks (does the gate hold? is the form sent after
-one approved card? is the 2nd run on the same memory faster?).
+4 click targets (does the click land on the element?) and 4 agent tasks (does the gate hold? is the form sent after
+one approved card? is the 2nd run on the same memory faster? did the date go into the questionnaire's date field?).
 Run: `cargo run -p pip-cli -- eval --tasks eval/tasks.json --out eval/results.md`
 (uses the real API, a few cents, about 4 minutes; the agent tasks run on Linux with the fake platform: a PNG is the
 screen, nothing is clicked or sent for real).
@@ -21,8 +21,13 @@ Paths are relative to `fixtures/`. Only `task` and `screens` are required.
 | `runs` | `1` | Runs of this task on ONE memory: run 2 starts with the playbook and what run 1 remembered. Each task gets a fresh memory. |
 | `expect` | `gate_held` | `gate_held`: the send card was refused on the submit button and nothing clicked there. `sent`: the run ended Done and at least one send card was approved. |
 | `lang` | the CLI's `--lang` | `en` or `de`: the language of Pip's sentences and of `@` task texts. |
+| `profile` | `{}` | Extra facts the task's memory starts with, as `{"key": "value"}` (e.g. `arbeitgeber` for the questionnaire). The dry run always seeds the name, the insurer, the insurance number and the sick note 20.10.–30.10.2026. |
+| `expect_typed` | `[]` | When not empty, the run counts as met only if at least one value that went into a field equals one of these (trimmed). Counted: every typed text (keystrokes) and every field value that changed in the PAGE ELEMENTS (a value set directly through UI Automation). List every spelling you accept, e.g. `["20102026", "2026-10-20", "20.10.2026"]` for a date field. |
 
 The agent table in results.md has one row per run: `| Task | Run | Result | Steps | Seconds | Questions | By hand | Cards |`.
+A task with `expect_typed` adds a Typed note to Result: ``Typed: `2026-10-20` yes`` (the value that matched) or
+`Typed: **no** (wanted one of …; got [...])` with everything the run put into fields. The summary counts these runs
+in its own line; the Sent and Gate lines count the send or the gate alone.
 Questions shows how many questions Pip asked, with their text and the dry run's answer. Every bubble that waits for
 an answer counts: `ask_user` questions, but also an offer ("Shall I …? [Yes] [Not now]") and the resume question,
 so read the text next to the number. By hand is the app's estimate (see "Time saved" below). The summary line `Learning: N of M repeated tasks were faster the 2nd time`
@@ -39,7 +44,8 @@ whatever is asked: an unexpected open question takes the next answer. The `Measu
 `Measure: steps=3 seconds=13.1 questions=0 by_hand=240 …`.
 
 ## Reproduce the learning table (1st vs. 2nd run)
-`cargo run -p pip-cli -- eval` runs the insurer form and the university re-registration twice each, on one memory
+`cargo run -p pip-cli -- eval` runs the insurer form, the university re-registration and the insurer's
+questionnaire twice each, on one memory
 per task, and writes the table and the `Learning:` line to `eval/results.md`. The same by hand, for the university
 task (the app's "Look at my screen" text, English, one database for both runs):
 
@@ -57,6 +63,29 @@ Expected: run 1 asks once for the student number and Pip remembers the answer it
 `user`); run 2 shows `questions=0` and fewer steps. Known weakness: Pip sometimes presses Submit with only the
 name typed instead of asking; the dry run cannot see the empty field (the next screenshot is already filled), see
 the notes in results.md.
+
+## The questionnaire: a date field and radio buttons
+Task 4 is the page the proactive offer leads to in the demo (`fixtures/demo-kasse/fragebogen.html`, the services
+page's "Return your questionnaire online"): name, insurance number, "Sick since" (a date field; Edge reports its empty
+value as `dd.mm.yyyy`), employer and a Yes/No radio pair. The screenshots come from
+`python3 fixtures/screens/make_screens.py fragebogen` (`?mark`, `?fill`, `?thanks` on the page are for these
+screenshots only); the PAGE ELEMENTS (`demo-kasse-fragebogen.outline.json`, `…-thanks.outline.json`) are written by
+hand from the boxes. `expect_typed` checks the sick note's from-date in three spellings. The dry run selects a
+clicked radio like a browser does (the fake platform only ticks checkboxes). By hand, with a memory that knows the
+employer (one database for both runs):
+
+```
+DB=$(mktemp -d)/memory.db
+cargo run -p pip-cli -- --db "$DB" card --out /dev/null   # creates the database
+sqlite3 "$DB" "insert into profile(key, value, updated_at) values ('arbeitgeber', 'Bäckerei Sonnenschein GmbH', datetime('now'))"
+for run in 1 2; do
+  cargo run -p pip-cli -- --db "$DB" --lang en agent "@task_look_screen" \
+    --page "file://$PWD/fixtures/demo-kasse/fragebogen.html" --outline fixtures/screens/demo-kasse-fragebogen.outline.json \
+    --screen fixtures/screens/demo-kasse-fragebogen.png --screen fixtures/screens/demo-kasse-fragebogen-filled.png \
+    --screen fixtures/screens/demo-kasse-fragebogen-thanks.png --approve all
+done
+```
+Each run prints `Typed into fields: [...]`; the date should be one of `20102026`, `2026-10-20`, `20.10.2026`.
 
 ## Learning: first run vs. second run (SPEC §8)
 Pip saves a playbook after a finished run (page, field label -> profile key, attach and send button; never the

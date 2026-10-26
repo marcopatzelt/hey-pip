@@ -94,37 +94,73 @@ pub struct AfterTaskOffer {
 pub enum AfterTask {
     /// A heading of the services page fits an open deadline: offer it (no model call).
     Offer(AfterTaskOffer),
-    /// Open deadlines exist but no heading fits them: the model may look around once (Task::Discover).
+    /// Open deadlines exist but Rust cannot read the services page (no headings, e.g. a web page): the model
+    /// may look around once (Task::Discover). A readable page where nothing fits is Silent.
     LookAround,
     /// Nothing to do: no open deadline, the quiet days after "Not now", or every fitting heading was asked
     /// before. Pip stays idle, says nothing and opens nothing.
     Silent,
 }
 
-/// The next step after a finished task, in this order: no open deadline -> Silent; a "Not now" within
-/// DECLINE_COOLDOWN_DAYS before `now` (PIP_DISCOVER=always ignores it) -> Silent; a heading not asked
-/// before fits -> Offer; a heading fits but every fitting one was asked before -> Silent; else LookAround.
+/// The next step after a finished task (`after_task_on` without a summary of the task just done):
+/// no open deadline -> Silent; a "Not now" within DECLINE_COOLDOWN_DAYS before `now` (PIP_DISCOVER=always
+/// ignores it) -> Silent; a heading not asked before fits -> Offer; a readable page where nothing fits (or
+/// only headings asked before) -> Silent, since the model would find the same; LookAround only when the
+/// page has no readable headings (empty HTML: a web page Rust cannot read).
 /// `services`: (page URL, its HTML; empty when the page cannot be read).
 pub fn after_task(mem: &Memory, now: DateTime<Local>, lang: Lang, services: (&str, &str)) -> Result<AfterTask> {
-    let items = mem.open_deadlines()?;
-    if items.is_empty() {
-        return Ok(AfterTask::Silent);
+    after_task_on(mem, now, lang, services, "")
+}
+
+/// `after_task`, but the task that just finished is not offered again: a deadline whose title shares a
+/// long word with `just_done` (the agent's done summary) is skipped, so right after the questionnaire Pip
+/// offers the next fitting deadline or stays quiet. Words of the insurer's and the user's name and a few
+/// generic words do not count ("Sick note sent to Gesundkasse" must not hide the questionnaire for
+/// Gesundkasse). The reason of every Silent and LookAround is logged at info.
+pub fn after_task_on(
+    mem: &Memory,
+    now: DateTime<Local>,
+    lang: Lang,
+    services: (&str, &str),
+    just_done: &str,
+) -> Result<AfterTask> {
+    let quiet = |why: &str| {
+        tracing::info!("after-task offer: Silent: {why}");
+        Ok(AfterTask::Silent)
+    };
+    let open = mem.open_deadlines()?;
+    if open.is_empty() {
+        return quiet("no open deadline");
     }
     let events = mem.recent_events(EVENTS_SCAN)?;
     let always = std::env::var("PIP_DISCOVER").is_ok_and(|v| v.trim().eq_ignore_ascii_case("always"));
     let since = now - Duration::days(DECLINE_COOLDOWN_DAYS);
     if !always && events.iter().any(|e| e.kind == EV_DECLINED && e.at >= since) {
-        return Ok(AfterTask::Silent);
+        return quiet("the user said 'Not now' in the last days");
+    }
+    let done_words = task_words(mem, just_done)?;
+    let items: Vec<Deadline> =
+        open.into_iter().filter(|dl| !long_words(&dl.title).iter().any(|w| done_words.contains(w))).collect();
+    if items.is_empty() {
+        return quiet("the only open deadlines are the task just done");
     }
     let asked = asked_of(&events);
     let (url, html) = services;
+    let headings = page_headings(html);
+    let titles: Vec<&str> = items.iter().map(|dl| dl.title.as_str()).collect();
     let Some(offer) = find_offer(&items, url, html, |h| is_asked(&asked, h)) else {
-        // Something fits, but only the asked-filter removed it: asking again would nag, looking around
-        // would open the page and find the same heading. Stay quiet.
-        if find_offer(&items, url, html, |_| false).is_some() {
-            return Ok(AfterTask::Silent);
+        if headings.iter().all(|h| h.is_empty()) {
+            // Rust cannot read this page (a web page, or no headings): the model may look once.
+            tracing::info!(deadlines = ?titles, "after-task offer: LookAround: the services page has no readable headings");
+            return Ok(AfterTask::LookAround);
         }
-        return Ok(AfterTask::LookAround);
+        tracing::info!(deadlines = ?titles, headings = ?headings, "after-task offer: no heading fits");
+        // Something fits, but only the asked-filter removed it: asking again would nag. Nothing fits: the
+        // model would open the page and find the same headings. Either way Pip stays quiet.
+        if find_offer(&items, url, html, |_| false).is_some() {
+            return quiet("every fitting heading was offered before");
+        }
+        return quiet("no heading of the services page fits an open deadline");
     };
     let Some(dl) = items.iter().find(|dl| dl.id == offer.deadline_id) else { return Ok(AfterTask::Silent) };
     let doc = match dl.doc_id {
@@ -241,6 +277,25 @@ fn find_offer(items: &[Deadline], url: &str, html: &str, skip: impl Fn(&str) -> 
         }
     }
     None
+}
+
+/// Words that name no task: they appear in many summaries and deadline titles alike.
+const GENERIC_WORDS: &[&str] =
+    &["insurer", "insurance", "health", "krankenkasse", "letter", "online", "deadline", "erledigt", "geschickt"];
+
+/// Long words of a task summary that name the task: without the insurer's and the user's names and
+/// GENERIC_WORDS. Empty for an empty summary.
+fn task_words(mem: &Memory, summary: &str) -> Result<Vec<String>> {
+    if summary.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut names: Vec<String> = GENERIC_WORDS.iter().map(|w| w.to_string()).collect();
+    for key in ["krankenkasse", "full_name", "name"] {
+        if let Some(v) = mem.profile_get(key)? {
+            names.extend(long_words(&v));
+        }
+    }
+    Ok(long_words(summary).into_iter().filter(|w| !names.contains(w)).collect())
 }
 
 /// Lowercase words of at least MIN_WORD letters.
@@ -595,10 +650,70 @@ mod tests {
         let _env = env_lock();
         let mem = Memory::open_in_memory().unwrap();
         add(&mem, "Objection to the decision", d(2026, 11, 18), "widerspruch_bescheid", None);
+        // A readable page where nothing fits: the model would find the same, so Pip stays quiet.
         let html = "<h1>Services for you</h1><h2>Order a new insurance card</h2><h2>Change your address</h2>";
-        assert_eq!(after_task(&mem, now(), Lang::En, (URL, html)).unwrap(), AfterTask::LookAround);
-        // An unreadable page (empty HTML) with an open deadline: the model may look.
+        assert_eq!(after_task(&mem, now(), Lang::En, (URL, html)).unwrap(), AfterTask::Silent);
+        // An unreadable page (empty HTML, or no headings) with an open deadline: the model may look.
         assert_eq!(after_task(&mem, now(), Lang::En, (URL, "")).unwrap(), AfterTask::LookAround);
+        assert_eq!(after_task(&mem, now(), Lang::En, (URL, "<p>Loading…</p>")).unwrap(), AfterTask::LookAround);
+    }
+
+    #[test]
+    fn after_task_skips_the_deadline_just_done() {
+        let _env = env_lock();
+        let html = "<h2>Return your questionnaire online</h2><h2>Objection to a decision: write to us</h2>";
+        let done = "Sent the questionnaire to Gesundkasse";
+        // The questionnaire is skipped, the next fitting deadline is offered.
+        let (mem, q) = erika();
+        mem.profile_set("krankenkasse", "Gesundkasse Beispielstadt").unwrap();
+        match after_task_on(&mem, now(), Lang::En, (URL, html), done).unwrap() {
+            AfterTask::Offer(o) => {
+                assert_ne!(o.offer.deadline_id, q);
+                assert_eq!(o.offer.heading, "Objection to a decision: write to us");
+            }
+            other => panic!("expected the next offer, got {other:?}"),
+        }
+        // Nothing else fits on a readable page: silent, never a look around.
+        assert_eq!(after_task_on(&mem, now(), Lang::En, (URL, SERVICES), done).unwrap(), AfterTask::Silent);
+        // The insurer's name alone does not hide the questionnaire (the sick note went to the same insurer).
+        let sick = "Sent your sick note to Gesundkasse Beispielstadt.";
+        match after_task_on(&mem, now(), Lang::En, (URL, SERVICES), sick).unwrap() {
+            AfterTask::Offer(o) => assert_eq!(o.offer.deadline_id, q),
+            other => panic!("expected the questionnaire, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn after_task_wrapper_equals_after_task_on_with_empty_summary() {
+        let _env = env_lock();
+        let html_none = "<h2>Order a new insurance card</h2>";
+        let empty = Memory::open_in_memory().unwrap();
+        let (fits, _) = with_letter();
+        let (asked, _) = with_letter();
+        asked.add_event_at(now() - Duration::days(30), EV_ACCEPTED, "Return your questionnaire online").unwrap();
+        for (mem, html) in [(&empty, SERVICES), (&fits, SERVICES), (&fits, html_none), (&fits, ""), (&asked, SERVICES)]
+        {
+            assert_eq!(
+                after_task(mem, now(), Lang::En, (URL, html)).unwrap(),
+                after_task_on(mem, now(), Lang::En, (URL, html), "").unwrap(),
+                "{html}"
+            );
+        }
+    }
+
+    #[test]
+    fn after_task_on_the_real_services_page() {
+        let _env = env_lock();
+        let page = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo-kasse/services.html");
+        let html = std::fs::read_to_string(page).unwrap();
+        let (mem, q) = with_letter();
+        mem.profile_set("krankenkasse", "Gesundkasse Beispielstadt").unwrap();
+        match after_task_on(&mem, now(), Lang::En, (URL, &html), "Sent your sick note to Gesundkasse.").unwrap() {
+            AfterTask::Offer(o) => assert_eq!(o.offer.deadline_id, q),
+            other => panic!("expected the questionnaire, got {other:?}"),
+        }
+        let done = "Sent the questionnaire to Gesundkasse";
+        assert_eq!(after_task_on(&mem, now(), Lang::En, (URL, &html), done).unwrap(), AfterTask::Silent);
     }
 
     #[test]

@@ -8,13 +8,14 @@ use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
+use chrono::{DateTime, Local};
 use pip_core::agent::{Agent, Gate, PROFILE_LANG, PROFILE_SERVICES};
 use pip_core::clock::{Clock, SystemClock, clock_from_env};
 use pip_core::config::{Config, file_url};
 use pip_core::docs::DocPipeline;
 use pip_core::events::Bus;
 use pip_core::i18n::Lang;
-use pip_core::memory::{Memory, default_db_path, seed_demo_profile};
+use pip_core::memory::{Memory, default_db_path, demo_seed_is_complete, seed_demo_profile};
 use pip_core::meta::{MetaClient, OpenWeightsClient};
 use pip_core::rules::RuleEngine;
 
@@ -201,26 +202,7 @@ impl Backend {
             if let Err(e) = write_demo_letters(&dir) {
                 tracing::warn!("cannot write the demo letters: {e}");
             }
-            // PIP_DEMO_RESET=1: every recording day starts with a fresh Erika (the story is told relative to
-            // today). Only the invented person's memory is wiped, never a real one.
-            if env_flag("PIP_DEMO_RESET") {
-                let full_name = mem.profile_get("full_name").ok().flatten();
-                let name = mem.profile_get("name").ok().flatten();
-                if demo_reset_allowed(full_name.as_deref(), name.as_deref()) {
-                    match mem.wipe_everything() {
-                        Ok(()) => tracing::info!("demo memory wiped: seeding Erika again for today"),
-                        Err(e) => tracing::warn!("demo memory wipe failed: {e:#}"),
-                    }
-                } else {
-                    tracing::warn!("PIP_DEMO_RESET ignored: the memory belongs to someone other than the demo person");
-                }
-            }
-            let now = backend.clock.now();
-            match guard("demo profile", || seed_demo_profile(mem, rules, &dir, now)) {
-                Ok(true) => tracing::info!("seeded demo profile"),
-                Ok(false) => tracing::info!("demo profile not seeded: the profile already has a name"),
-                Err(e) => tracing::warn!("demo profile failed: {e:#}"),
-            }
+            seed_demo_memory(mem, rules, &dir, backend.clock.now(), env_flag("PIP_DEMO_RESET"));
         }
         // The agent reads the language from the profile; PIP_LANG wins so app and agent always agree.
         if let Ok(code) = std::env::var("PIP_LANG") {
@@ -283,6 +265,43 @@ impl Backend {
             .or_else(|| self.profile_get(PROFILE_LANG))
             .map(|s| Lang::from_code(&s))
             .unwrap_or_default()
+    }
+}
+
+/// PIP_DEMO_PROFILE: make sure the memory holds the demo person's whole story, then seed her.
+/// `reset` (PIP_DEMO_RESET=1): every recording day starts with a fresh Erika (the story is told relative to
+/// today). Without it, an Erika whose story is incomplete (seeded on an older day or by an older build:
+/// a letter or the questionnaire deadline missing) is seeded again, so the proactive offer always has
+/// something to offer. A questionnaire already sent (deadline Done) is progress, not a stale seed: what Pip
+/// learned survives a restart. Only the invented person's memory is ever wiped, never a real one.
+fn seed_demo_memory(
+    mem: &Memory,
+    rules: &RuleEngine,
+    letters_dir: &std::path::Path,
+    now: DateTime<Local>,
+    reset: bool,
+) {
+    let full_name = mem.profile_get("full_name").ok().flatten();
+    let name = mem.profile_get("name").ok().flatten();
+    let allowed = demo_reset_allowed(full_name.as_deref(), name.as_deref());
+    let wipe = |why: &str| match mem.wipe_everything() {
+        Ok(()) => tracing::info!("{why}"),
+        Err(e) => tracing::warn!("demo memory wipe failed: {e:#}"),
+    };
+    if reset {
+        if allowed {
+            wipe("demo memory wiped: seeding Erika again for today");
+        } else {
+            tracing::warn!("PIP_DEMO_RESET ignored: the memory belongs to someone other than the demo person");
+        }
+    } else if allowed && name.is_some() && demo_seed_is_complete(mem).ok() == Some(false) {
+        let letters = mem.documents_count().unwrap_or(0);
+        wipe(&format!("demo memory was stale (letters: {letters}): seeded Erika again for today"));
+    }
+    match guard("demo profile", || seed_demo_profile(mem, rules, letters_dir, now)) {
+        Ok(true) => tracing::info!("seeded demo profile"),
+        Ok(false) => tracing::info!("demo profile not seeded: the profile already has a name"),
+        Err(e) => tracing::warn!("demo profile failed: {e:#}"),
     }
 }
 
@@ -445,6 +464,55 @@ mod tests {
         assert!(demo_reset_allowed(full.as_deref(), mem.profile_get("name").unwrap().as_deref()));
         mem.wipe_everything().unwrap();
         assert!(seed_demo_profile(&mem, &rules, &letters, now).unwrap(), "after the wipe Erika is seeded again");
+    }
+
+    fn demo_setup() -> (tempfile::TempDir, std::path::PathBuf, Arc<Memory>, RuleEngine, DateTime<Local>) {
+        let dir = tempfile::tempdir().unwrap();
+        let letters = dir.path().join("demo-letters");
+        write_demo_letters(&letters).unwrap();
+        let mem = Arc::new(Memory::open_in_memory().unwrap());
+        let now = chrono::Local::now();
+        let rules = RuleEngine::new(mem.clone(), Arc::new(pip_core::clock::FixedClock::new(now)));
+        (dir, letters, mem, rules, now)
+    }
+
+    #[test]
+    fn stale_demo_memory_is_seeded_again() {
+        let (_dir, letters, mem, rules, now) = demo_setup();
+        // Erika from an older build: her name, no letters, no deadlines.
+        mem.profile_set("name", "Erika").unwrap();
+        mem.profile_set("full_name", "Erika Beispiel").unwrap();
+        mem.profile_set("old_note", "from an older build").unwrap();
+        seed_demo_memory(&mem, &rules, &letters, now, false);
+        assert!(demo_seed_is_complete(&mem).unwrap());
+        assert_eq!(mem.documents_count().unwrap(), 3);
+        assert!(mem.open_deadlines().unwrap().iter().any(|dl| dl.rule_id.as_deref() == Some("frist_aus_brief")));
+        assert_eq!(mem.profile_get("old_note").unwrap(), None, "wiped before seeding");
+        // A complete Erika is left alone (her playbooks and facts stay).
+        mem.profile_set("learned", "yes").unwrap();
+        seed_demo_memory(&mem, &rules, &letters, now, false);
+        assert_eq!(mem.profile_get("learned").unwrap().as_deref(), Some("yes"));
+        assert_eq!(mem.documents_count().unwrap(), 3);
+    }
+
+    #[test]
+    fn another_persons_memory_is_never_wiped() {
+        for reset in [false, true] {
+            let (_dir, letters, mem, rules, now) = demo_setup();
+            mem.profile_set("name", "Jonas").unwrap();
+            mem.profile_set("full_name", "Jonas Muster").unwrap();
+            mem.profile_set("krankenkasse", "Echte Kasse").unwrap();
+            seed_demo_memory(&mem, &rules, &letters, now, reset);
+            assert_eq!(mem.profile_get("full_name").unwrap().as_deref(), Some("Jonas Muster"), "reset={reset}");
+            assert_eq!(mem.profile_get("krankenkasse").unwrap().as_deref(), Some("Echte Kasse"));
+            assert_eq!(mem.documents_count().unwrap(), 0);
+            // A first name only may be a real person too.
+            let (_dir, letters, mem, rules, now) = demo_setup();
+            mem.profile_set("name", "Marta").unwrap();
+            seed_demo_memory(&mem, &rules, &letters, now, reset);
+            assert_eq!(mem.profile_get("name").unwrap().as_deref(), Some("Marta"));
+            assert_eq!(mem.documents_count().unwrap(), 0);
+        }
     }
 
     #[test]

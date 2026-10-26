@@ -20,7 +20,8 @@ pub use au::AuLueckenlos;
 pub use brief::FristAusBrief;
 pub use calendar::Calendar;
 pub use daily::{
-    AfterTask, AfterTaskOffer, Brief, BriefOffer, after_task, already_suggested, daily_brief, offer_after_task,
+    AfterTask, AfterTaskOffer, Brief, BriefOffer, after_task, after_task_on, already_suggested, daily_brief,
+    offer_after_task,
 };
 pub use engine::RuleEngine;
 pub use widerspruch::WiderspruchBescheid;

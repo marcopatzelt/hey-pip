@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pip banner</title>
+<!-- Source of design/readme/banner.png and banner-dark.png.
+     Render: design/readme/src/render.sh (headless Firefox, 1600x500). -->
+<style>
+  :root {
+    --bg: #F6F7FF;
+    --ink: #0B1533;
+    --muted: #4A5578;
+    --card: #FFFFFF;
+    --card-line: #E3E7F5;
+    --field: #F3F5FC;
+    --grid: rgba(8, 102, 255, 0.07);
+    --glow-a: rgba(8, 102, 255, 0.16);
+    --glow-b: rgba(139, 92, 246, 0.18);
+    --shadow: 0 30px 60px -20px rgba(20, 30, 90, 0.28), 0 8px 18px -8px rgba(20, 30, 90, 0.12);
+  }
+  .dark {
+    --bg: #0A1024;
+    --ink: #F2F4FF;
+    --muted: #A9B3D6;
+    --card: #141C38;
+    --card-line: #26305A;
+    --field: #1B2447;
+    --grid: rgba(120, 160, 255, 0.07);
+    --glow-a: rgba(8, 102, 255, 0.30);
+    --glow-b: rgba(139, 92, 246, 0.30);
+    --shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.6), 0 8px 18px -8px rgba(0, 0, 0, 0.4);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1600px; height: 500px; overflow: hidden; }
+  body {
+    font-family: "Manrope V5", "Manrope", "Ubuntu Sans", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    position: relative;
+  }
+  .grid {
+    position: absolute; inset: 0;
+    background-image: radial-gradient(var(--grid) 1.6px, transparent 1.6px);
+    background-size: 28px 28px;
+    mask-image: linear-gradient(90deg, transparent 0%, #000 45%, #000 100%);
+  }
+  .glow-a { position: absolute; width: 760px; height: 760px; right: 120px; top: -260px;
+    background: radial-gradient(circle, var(--glow-a), transparent 65%); }
+  .glow-b { position: absolute; width: 700px; height: 700px; right: -160px; bottom: -330px;
+    background: radial-gradient(circle, var(--glow-b), transparent 65%); }
+
+  .text { position: absolute; left: 96px; top: 70px; width: 820px; }
+  .brand { display: flex; align-items: center; gap: 18px; margin-bottom: 30px; }
+  .word {
+    font-size: 84px; font-weight: 800; letter-spacing: -3px; line-height: 0.9;
+    background: linear-gradient(100deg, #0866FF 0%, #5B5BF6 55%, #8B5CF6 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .tag {
+    font-size: 17px; font-weight: 600; color: var(--muted);
+    border: 1.5px solid var(--card-line); background: var(--card);
+    padding: 8px 16px; border-radius: 999px; margin-top: 10px;
+  }
+  h1 { font-size: 50px; line-height: 1.12; font-weight: 800; letter-spacing: -1.4px; }
+  h1 em { font-style: normal;
+    background: linear-gradient(100deg, #0866FF, #8B5CF6);
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .steps { display: flex; gap: 12px; margin-top: 34px; }
+  .step { font-size: 17px; font-weight: 700; color: var(--ink);
+    display: flex; align-items: center; gap: 9px; }
+  .step i { width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+    background: linear-gradient(135deg, #0866FF, #8B5CF6); }
+  .sep { color: var(--muted); opacity: 0.5; font-weight: 700; }
+
+  /* screen motif */
+  .win {
+    position: absolute; left: 790px; top: 70px; width: 480px; height: 350px;
+    background: var(--card); border: 1.5px solid var(--card-line); border-radius: 18px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .bar { height: 40px; border-bottom: 1.5px solid var(--card-line); display: flex; align-items: center; gap: 8px; padding: 0 16px; }
+  .bar b { width: 11px; height: 11px; border-radius: 50%; background: var(--card-line); display: inline-block; }
+  .bar .url { margin-left: 14px; height: 18px; width: 230px; border-radius: 9px; background: var(--field); }
+  .form { padding: 22px 26px; }
+  .ftitle { height: 14px; width: 190px; border-radius: 7px; background: var(--ink); opacity: 0.85; margin-bottom: 20px; }
+  .lab { height: 9px; width: 90px; border-radius: 5px; background: var(--muted); opacity: 0.45; margin: 14px 0 8px; }
+  .field { height: 40px; border-radius: 10px; background: var(--field); border: 1.5px solid var(--card-line);
+    display: flex; align-items: center; padding: 0 14px; font-size: 16px; font-weight: 600; color: var(--ink); }
+  .field.active { border: 2px solid #0866FF; box-shadow: 0 0 0 4px rgba(8, 102, 255, 0.15); }
+  .caret { width: 2px; height: 20px; background: #0866FF; margin-left: 2px; }
+  .check { color: #1DB27A; margin-left: auto; font-weight: 800; }
+  .send { position: absolute; right: 26px; bottom: 22px; height: 40px; width: 120px; border-radius: 10px;
+    background: linear-gradient(100deg, #0866FF, #7B5CF6); color: #fff; font-weight: 800; font-size: 16px;
+    display: flex; align-items: center; justify-content: center; }
+
+  .bubble {
+    position: absolute; left: 1236px; top: 62px; width: 300px;
+    background: var(--card); border: 1.5px solid var(--card-line); border-radius: 18px;
+    box-shadow: var(--shadow); padding: 16px 18px;
+  }
+  .bubble::after { content: ""; position: absolute; left: 150px; bottom: -11px; width: 20px; height: 20px;
+    background: var(--card); border-right: 1.5px solid var(--card-line); border-bottom: 1.5px solid var(--card-line);
+    transform: rotate(45deg); }
+  .bubble p { font-size: 18px; font-weight: 700; line-height: 1.3; }
+  .bubble .btns { display: flex; gap: 10px; margin-top: 12px; }
+  .bubble .y { flex: 1; height: 36px; border-radius: 10px; background: #0866FF; color: #fff; font-weight: 800;
+    font-size: 15px; display: flex; align-items: center; justify-content: center; }
+  .bubble .n { flex: 1; height: 36px; border-radius: 10px; background: var(--field); color: var(--ink); font-weight: 700;
+    font-size: 15px; display: flex; align-items: center; justify-content: center; border: 1.5px solid var(--card-line); }
+
+  .pip { position: absolute; left: 1318px; top: 236px; height: 225px; transform: scaleX(-1);
+    filter: drop-shadow(0 18px 22px rgba(40, 40, 160, 0.30)); }
+  .pip-shadow { position: absolute; left: 1335px; top: 452px; width: 170px; height: 18px; border-radius: 50%;
+    background: radial-gradient(ellipse, rgba(40, 40, 160, 0.22), transparent 70%); }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+  <div class="glow-a"></div>
+  <div class="glow-b"></div>
+
+  <div class="text">
+    <div class="brand">
+      <div class="word">Pip</div>
+      <div class="tag">a helper that lives on your screen</div>
+    </div>
+    <h1>No one should have to be<br>good at computers<br>to <em>live their life.</em></h1>
+    <div class="steps">
+      <span class="step"><i></i>Remembers</span><span class="sep">·</span>
+      <span class="step"><i></i>Notices</span><span class="sep">·</span>
+      <span class="step"><i></i>Does</span><span class="sep">·</span>
+      <span class="step"><i></i>Asks once</span>
+    </div>
+  </div>
+
+  <div class="win">
+    <div class="bar"><b></b><b></b><b></b><span class="url"></span></div>
+    <div class="form">
+      <div class="ftitle"></div>
+      <div class="lab"></div>
+      <div class="field">Erika Beispiel<span class="check">✓</span></div>
+      <div class="lab"></div>
+      <div class="field active">7654321<span class="caret"></span></div>
+    </div>
+    <div class="send">Send</div>
+  </div>
+
+  <div class="bubble">
+    <p>Ready to send this to your university?</p>
+    <div class="btns"><span class="y">Yes</span><span class="n">Not yet</span></div>
+  </div>
+
+  <div class="pip-shadow"></div>
+  <img class="pip" src="../poses/point.png" alt="">
+  <script>
+    if (location.hash === "#dark") document.body.classList.add("dark");
+  </script>
+</body>
+</html>

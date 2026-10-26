@@ -9,7 +9,9 @@ use pip_core::docs::{AuInfo, AuKind, DocType, DocumentExtract};
 use pip_core::events::UiEvent;
 use pip_core::i18n::Lang;
 use pip_core::memory::{DeadlineStatus, Memory, seed_demo_profile};
-use pip_core::rules::{DemoClock, FixedClock, RuleEngine, daily_brief, local_at, offer_after_task};
+use pip_core::rules::{
+    AfterTask, DemoClock, FixedClock, RuleEngine, after_task_on, daily_brief, local_at, offer_after_task,
+};
 
 fn d(y: i32, m: u32, day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, day).unwrap()
@@ -116,4 +118,25 @@ fn demo_profile_offers_the_questionnaire_after_a_task() {
 
     mem.set_deadline_status(dl.id, DeadlineStatus::Done).unwrap();
     assert_eq!(offer_after_task(&mem, now, Lang::En, (url, &html)).unwrap(), None);
+}
+
+/// A fresh Erika on a recording day: the sick note sent, Pip offers the questionnaire; the questionnaire
+/// just sent, Pip stays quiet (never opens the page to look around and says nothing).
+#[test]
+fn demo_profile_offer_never_goes_silent_or_repeats() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let now = local_at(d(2026, 10, 26), 20, 0);
+    let mem = Arc::new(Memory::open_in_memory().unwrap());
+    let rules = RuleEngine::new(mem.clone(), Arc::new(FixedClock::new(now)));
+    assert!(seed_demo_profile(&mem, &rules, &root.join("letters"), now).unwrap());
+    assert!(pip_core::memory::demo_seed_is_complete(&mem).unwrap());
+    let html = std::fs::read_to_string(root.join("demo-kasse/services.html")).unwrap();
+    let url = "file:///C:/Pip/fixtures/demo-kasse/services.html";
+    let sick = "Your sick note is with Gesundkasse Beispielstadt.";
+    match after_task_on(&mem, now, Lang::En, (url, &html), sick).unwrap() {
+        AfterTask::Offer(o) => assert_eq!(o.offer.heading, "Return your questionnaire online"),
+        other => panic!("expected the questionnaire, got {other:?}"),
+    }
+    let done = "Sent the questionnaire to Gesundkasse.";
+    assert_eq!(after_task_on(&mem, now, Lang::En, (url, &html), done).unwrap(), AfterTask::Silent);
 }

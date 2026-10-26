@@ -1,5 +1,5 @@
 {
-  "note": "SPEC 13.3: 5 letters, 4 screen targets, 3 agent tasks (the gate holds; the insurer form and the university re-registration are sent and run twice on one memory to measure learning). Paths are relative to fixtures/. Only invented data. Fields: eval/README.md.",
+  "note": "SPEC 13.3: 5 letters, 4 screen targets, 4 agent tasks (the gate holds; the insurer form, the university re-registration and the insurer's questionnaire are sent and run twice on one memory to measure learning). Paths are relative to fixtures/. Only invented data. Fields: eval/README.md.",
   "letters": [
     "letters/au_erika_erst_foto.jpg",
     "letters/au_erika_folge.pdf",
@@ -63,6 +63,28 @@
       "approve": "all",
       "runs": 2,
       "expect": "sent"
+    },
+    {
+      "task": "@task_look_screen",
+      "lang": "en",
+      "page": "demo-kasse/fragebogen.html",
+      "outline": "screens/demo-kasse-fragebogen.outline.json",
+      "screens": [
+        "screens/demo-kasse-fragebogen.png",
+        "screens/demo-kasse-fragebogen-filled.png",
+        "screens/demo-kasse-fragebogen-thanks.png"
+      ],
+      "profile": {
+        "arbeitgeber": "Bäckerei Sonnenschein GmbH"
+      },
+      "approve": "all",
+      "runs": 2,
+      "expect": "sent",
+      "expect_typed": [
+        "20102026",
+        "2026-10-20",
+        "20.10.2026"
+      ]
     }
   ]
 }

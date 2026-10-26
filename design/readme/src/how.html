@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>How Pip works</title>
+<!-- Source of design/readme/how-it-works.png and how-it-works-dark.png. Render: render.sh (1600x560). -->
+<style>
+  :root {
+    --bg: #F6F7FF; --ink: #0B1533; --muted: #4A5578; --card: #FFFFFF; --line: #E3E7F5;
+    --chip: #EEF2FF; --chip-ink: #3344AA;
+    --shadow: 0 24px 48px -22px rgba(20, 30, 90, 0.25), 0 6px 14px -8px rgba(20, 30, 90, 0.10);
+  }
+  .dark {
+    --bg: #0A1024; --ink: #F2F4FF; --muted: #A9B3D6; --card: #141C38; --line: #26305A;
+    --chip: #1E2A5A; --chip-ink: #B9C6FF;
+    --shadow: 0 24px 48px -22px rgba(0, 0, 0, 0.6), 0 6px 14px -8px rgba(0, 0, 0, 0.4);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1600px; height: 560px; overflow: hidden; }
+  body { font-family: "Manrope V5", "Manrope", "Ubuntu Sans", sans-serif; background: var(--bg); color: var(--ink); position: relative; }
+  .row { position: absolute; left: 60px; right: 60px; top: 56px; display: flex; gap: 52px; }
+  .card { flex: 1; background: var(--card); border: 1.5px solid var(--line); border-radius: 22px;
+    box-shadow: var(--shadow); padding: 26px 26px 24px; position: relative; height: 380px; }
+  .num { width: 36px; height: 36px; border-radius: 50%; color: #fff; font-weight: 800; font-size: 18px;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, #0866FF, #8B5CF6); }
+  .pip { position: absolute; right: 18px; top: 16px; height: 110px; }
+  h2 { font-size: 34px; font-weight: 800; letter-spacing: -0.8px; margin-top: 64px; }
+  p { font-size: 18px; line-height: 1.42; color: var(--muted); margin-top: 10px; font-weight: 500; }
+  .chips { position: absolute; left: 26px; right: 26px; bottom: 22px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { font-size: 14px; font-weight: 700; color: var(--chip-ink); background: var(--chip);
+    border-radius: 999px; padding: 6px 12px; }
+  .arrow { position: absolute; top: 200px; width: 52px; display: flex; justify-content: center; }
+  .arrow svg { width: 30px; height: 30px; }
+  .loop { position: absolute; left: 60px; right: 60px; top: 462px; height: 70px; }
+  .loop svg { width: 100%; height: 100%; overflow: visible; }
+  .loop-label { position: absolute; left: 50%; top: 500px; transform: translateX(-50%);
+    background: var(--bg); padding: 0 16px; font-size: 18px; font-weight: 800; color: var(--ink); }
+  .loop-label span { background: linear-gradient(100deg, #0866FF, #8B5CF6);
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="card">
+      <div class="num">1</div>
+      <img class="pip" src="../poses/think.png" alt="">
+      <h2>Remembers</h2>
+      <p>Your name, your insurer, and how each form worked last time. Each fact shows where it came from. Forget anything with one click.</p>
+      <div class="chips"><span class="chip">learning memory</span><span class="chip">site playbooks</span></div>
+    </div>
+    <div class="card">
+      <div class="num">2</div>
+      <img class="pip" src="../poses/listen.png" alt="">
+      <h2>Notices</h2>
+      <p>Reads your letters and keeps the dates. Greets you with what is due today and offers the next form before you have to ask.</p>
+      <div class="chips"><span class="chip">Muse Spark</span><span class="chip">daily brief</span></div>
+    </div>
+    <div class="card">
+      <div class="num">3</div>
+      <img class="pip" src="../poses/point.png" alt="">
+      <h2>Does</h2>
+      <p>Works on your real screen. Reads the page, fills the whole form in one go, and says what it is doing.</p>
+      <div class="chips"><span class="chip">SAM 3.1</span><span class="chip">UI Automation</span></div>
+    </div>
+    <div class="card">
+      <div class="num">4</div>
+      <img class="pip" src="../poses/ask.png" alt="">
+      <h2>Asks once</h2>
+      <p>One clear card before anything leaves your computer: what, to whom, which button. Nothing is sent without your yes.</p>
+      <div class="chips"><span class="chip">approval gate</span><span class="chip">“Don’t ask again”</span></div>
+    </div>
+  </div>
+
+  <!-- arrows between cards: card width = (1480 - 3*52) / 4 = 331 -->
+  <div class="arrow" style="left: 391px"><svg viewBox="0 0 24 24"><path d="M4 12h14m-5-6 6 6-6 6" fill="none" stroke="#5B5BF6" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+  <div class="arrow" style="left: 774px"><svg viewBox="0 0 24 24"><path d="M4 12h14m-5-6 6 6-6 6" fill="none" stroke="#5B5BF6" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+  <div class="arrow" style="left: 1157px"><svg viewBox="0 0 24 24"><path d="M4 12h14m-5-6 6 6-6 6" fill="none" stroke="#5B5BF6" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+
+  <div class="loop">
+    <svg viewBox="0 0 1480 70" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#0866FF"/><stop offset="1" stop-color="#8B5CF6"/></linearGradient>
+        <marker id="m" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+          <path d="M0 0 10 5 0 10z" fill="#0866FF"/></marker>
+      </defs>
+      <path d="M1314 0 V38 Q1314 56 1296 56 H184 Q166 56 166 38 V6" fill="none" stroke="url(#g)" stroke-width="3" stroke-dasharray="2 9" stroke-linecap="round" marker-end="url(#m)"/>
+    </svg>
+  </div>
+  <div class="loop-label"><span>Every finished task teaches Pip something. The second time is faster.</span></div>
+  <script>if (location.hash === "#dark") document.body.classList.add("dark");</script>
+</body>
+</html>

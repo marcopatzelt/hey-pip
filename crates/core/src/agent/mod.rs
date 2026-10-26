@@ -7,6 +7,7 @@ pub mod gate;
 pub mod loop_;
 pub mod prompt;
 pub mod tools;
+pub mod typing;
 
 pub use gate::{ApprovalAnswer, ApprovalCard, COMMIT_WORDS, Gate, Risk};
 pub use loop_::{

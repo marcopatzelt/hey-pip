@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Questionnaire: your sick leave – Gesundkasse</title>
 <!-- Demo page of an INVENTED health insurer. Nothing is sent anywhere: everything stays on this page.
-     Opened via file:// in DEMO_MODE. The questionnaire from the Gesundkasse letter (fixtures/letters/kasse_brief). Submit only shows a thank-you. -->
+     Opened via file:// in DEMO_MODE. The questionnaire from the Gesundkasse letter (fixtures/letters/kasse_brief). Submit only shows a thank-you.
+     ?mark colours the targets, ?fill / ?thanks show the filled form / the confirmation (fixture screenshots only:
+     fixtures/screens/make_screens.py fragebogen). -->
 <style>
   :root {
     --green: #0f7a5a; --green-dark: #0a5c44; --green-light: #e8f4ef;
@@ -76,6 +78,14 @@
   .radios label { display: flex; gap: 10px; align-items: center; }
   .radios input { width: 22px; height: 22px; accent-color: var(--green); }
   .invalid input[type=date] { border-color: var(--error); }
+  /* ?mark: solid colours so the eval script can find each target's box. */
+  .mark #f-name, .mark #f-nr, .mark #f-since, .mark #f-employer, .mark #submit { color: transparent !important; box-shadow: none !important; }
+  .mark #f-name { background: #ff0000 !important; border-color: #ff0000 !important; }
+  .mark #f-nr { background: #00ff00 !important; border-color: #00ff00 !important; }
+  .mark #f-since { background: #0000ff !important; border-color: #0000ff !important; }
+  .mark #f-employer { background: #ff00ff !important; border-color: #ff00ff !important; }
+  .mark #f-still-yes { appearance: none; margin: 0; border: 0; background: #ffff00 !important; }
+  .mark #submit { background: #00ffff !important; }
 </style>
 </head>
 <body>
@@ -149,6 +159,8 @@
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  if (params.has("mark")) document.body.classList.add("mark");
   $("form").addEventListener("submit", (e) => {
     e.preventDefault();
     const still = document.querySelector('input[name="still"]:checked');
@@ -172,6 +184,23 @@
     location.hash = "danke";
     window.scrollTo(0, 0);
   });
+
+  // Fixture screenshots only: ?fill = the form filled with the invented Erika's data, ?thanks = the confirmation.
+  if (params.has("fill") || params.has("thanks")) {
+    $("f-name").value = "Erika Beispiel";
+    $("f-nr").value = "G123456789";
+    $("f-since").value = "2026-10-20";
+    $("f-employer").value = "Bäckerei Sonnenschein GmbH";
+    $("f-still-yes").checked = true;
+  }
+  if (params.has("thanks")) {
+    $("t-when").textContent = "29/10/2026 at 18:06";
+    $("t-name").textContent = "Erika Beispiel";
+    $("t-nr").textContent = "G123456789";
+    $("t-since").textContent = "2026-10-20";
+    $("t-still").textContent = "Yes";
+    document.body.classList.add("done");
+  }
 })();
 </script>
 </body>

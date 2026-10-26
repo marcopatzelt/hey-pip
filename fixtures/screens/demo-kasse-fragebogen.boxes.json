@@ -1,0 +1,68 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-kasse-fragebogen.png",
+  "targets": {
+    "name_field": {
+      "box": [
+        467,
+        314,
+        1120,
+        368
+      ],
+      "sam_query": "text input field",
+      "description": "Text field Full name"
+    },
+    "nr_field": {
+      "box": [
+        467,
+        422,
+        1120,
+        476
+      ],
+      "sam_query": "text input field",
+      "description": "Text field Insurance number"
+    },
+    "since_field": {
+      "box": [
+        467,
+        555,
+        624,
+        609
+      ],
+      "sam_query": "text input field",
+      "description": "Date field Sick since"
+    },
+    "employer_field": {
+      "box": [
+        467,
+        663,
+        1120,
+        717
+      ],
+      "sam_query": "text input field",
+      "description": "Text field Employer"
+    },
+    "still_yes_radio": {
+      "box": [
+        467,
+        773,
+        488,
+        794
+      ],
+      "sam_query": "radio button",
+      "description": "Radio button Yes under Still unable to work?"
+    },
+    "submit_button": {
+      "box": [
+        962,
+        818,
+        1120,
+        875
+      ],
+      "sam_query": "button",
+      "description": "Button Submit"
+    }
+  }
+}

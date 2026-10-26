@@ -35,6 +35,8 @@ struct MockPlatform {
     caret: Mutex<(Option<PhysPoint>, bool)>,
     /// After the next click the window in front becomes this (a link that loads another page).
     on_click_window: Mutex<Option<WindowInfo>>,
+    /// After the next click the page shows these PAGE ELEMENTS (a wizard's next page), one list per click.
+    on_click_outline: Mutex<VecDeque<Vec<OutlineItem>>>,
     /// Calls of `outline` so far.
     outline_reads: Mutex<u32>,
     /// Typing does not change what the fields show (a page that rejects or cuts the text).
@@ -101,6 +103,9 @@ impl Input for MockPlatform {
         *self.caret.lock().unwrap() = (Some(p), false);
         if let Some(w) = self.on_click_window.lock().unwrap().take() {
             *self.foreground.lock().unwrap() = Some(w);
+        }
+        if let Some(items) = self.on_click_outline.lock().unwrap().pop_front() {
+            *self.outline.lock().unwrap() = items;
         }
         Ok(())
     }
@@ -2616,4 +2621,255 @@ async fn appended_text_without_repair_is_reported() {
     assert_eq!(h.platform.set_values.lock().unwrap().len(), 1, "the repair was tried once");
     assert!(outs[0].contains(r#"instead of "Erika Beispiel""#), "{outs:?}");
     assert!(outs[0].contains("Max AltErika Beispiel"), "{outs:?}");
+}
+
+// ---------- steady hands: loop guard, value first, date fields, one tab ----------
+
+fn employer_outline() -> Vec<OutlineItem> {
+    vec![
+        el(1, "edit", "Full name", (100, 100, 300, 40)),
+        el(2, "button", "Next", (700, 600, 200, 50)),
+        el(4, "edit", "Employer", (100, 400, 300, 40)),
+    ]
+}
+
+#[tokio::test]
+async fn third_identical_type_text_asks_once_then_moves_on() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    h.platform.set_outline(employer_outline());
+    *h.platform.appends.lock().unwrap() = true;
+    *h.platform.allow_set_value.lock().unwrap() = false;
+    let same = || calls("r", &[type_el("Bäckerei Sonnenschein GmbH", "your employer", 4)]);
+    h.agent_turns(vec![same(), same(), same(), calls("r4", &[done("Form filled.")])]);
+    h.answer_in_order(ApprovalAnswer::Yes, vec!["skip"]);
+    let out = h.run("Fill in the form").await;
+    assert_eq!(out, AgentOutcome::Done("Form filled.".into()));
+    let ev = h.drain();
+    let asked: Vec<(String, Vec<pip_core::events::Button>)> = ev
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Bubble { text, buttons, question_id: Some(_) } => Some((text.clone(), buttons.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].0.contains("I can't get the Employer field right"), "{asked:?}");
+    let labels: Vec<&str> = asked[0].1.iter().map(|b| b.label.as_str()).collect();
+    assert_eq!(labels, ["I fixed it", "Skip it"]);
+    assert_eq!(asked[0].1[1].id, "skip");
+    // Typed twice, the third time not.
+    let typed = h.platform.actions().iter().filter(|a| a.starts_with("type ")).count();
+    assert_eq!(typed, 4, "two tries in two chunks each: {:?}", h.platform.actions());
+    let reqs = h.requests();
+    assert!(reqs.len() <= 5, "{} steps", reqs.len());
+    assert_eq!(outputs(&reqs[3]), ["skip Employer; continue without it."]);
+}
+
+#[tokio::test]
+async fn third_identical_click_is_refused_with_advice() {
+    let h = Harness::new(false).await;
+    h.platform.set_outline(employer_outline());
+    let same = || calls("r", &[click_el("the Next button", 2, false)]);
+    h.agent_turns(vec![same(), same(), same(), calls("r4", &[done("ok")])]);
+    let out = h.run("Go on").await;
+    assert_eq!(out, AgentOutcome::Done("ok".into()));
+    assert_eq!(h.platform.clicks().len(), 2, "{:?}", h.platform.clicks());
+    let outs = outputs(&h.requests()[3]);
+    assert!(outs[0].starts_with("not done: you already did this twice in this task (#2 next)"), "{outs:?}");
+    assert!(outs[0].contains("ask_user"), "{outs:?}");
+}
+
+#[tokio::test]
+async fn next_on_every_wizard_page_is_no_repeat() {
+    // Three pages, each with its own fields and the same "Next" button (#2): all three clicks run.
+    let mut h = Harness::new(false).await;
+    let page =
+        |field: &str| vec![el(1, "edit", field, (100, 100, 300, 40)), el(2, "button", "Next", (700, 600, 200, 50))];
+    h.platform.set_outline(page("Full name"));
+    *h.platform.on_click_outline.lock().unwrap() = [page("Street"), page("Employer")].into();
+    let next = || calls("r", &[click_el("the Next button", 2, false)]);
+    h.agent_turns(vec![next(), next(), next(), calls("r4", &[done("ok")])]);
+    let out = h.run("Go on").await;
+    assert_eq!(out, AgentOutcome::Done("ok".into()));
+    assert_eq!(h.platform.clicks().len(), 3, "{:?}", h.platform.clicks());
+    assert!(outputs(&h.requests()[3])[0].starts_with("clicked"), "{:?}", outputs(&h.requests()[3]));
+    assert!(!h.drain().iter().any(|e| matches!(e, UiEvent::Bubble { question_id: Some(_), .. })));
+}
+
+#[tokio::test]
+async fn second_guard_hit_ends_the_run_as_needs_user() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    h.platform.set_outline(employer_outline());
+    let same = || calls("r", &[click_el("the Next button", 2, false)]);
+    h.agent_turns(vec![same(), same(), same(), same(), calls("r5", &[done("never")])]);
+    let out = h.run("Go on").await;
+    let stuck = "I keep getting stuck here. Could you have a look?";
+    assert_eq!(out, AgentOutcome::NeedsUser(stuck.into()));
+    assert_eq!(h.platform.clicks().len(), 2);
+    assert_eq!(h.requests().len(), 4, "the step budget is not burned");
+    assert!(bubbles(&h.drain()).iter().any(|b| b == stuck));
+}
+
+#[tokio::test]
+async fn value_pattern_is_tried_before_keystrokes_on_elements() {
+    let h = Harness::new(false).await;
+    h.platform.set_outline(form_outline());
+    *h.platform.allow_set_value.lock().unwrap() = true;
+    h.agent_turns(vec![calls("r1", &[type_el("Erika Beispiel", "your name", 1)]), calls("r2", &[done("ok")])]);
+    h.run("Fill in my name").await;
+    let acts: Vec<String> = h.platform.actions().into_iter().filter(|a| !a.starts_with("move")).collect();
+    assert_eq!(acts, ["click 250,120"], "no ctrl+a, backspace or typing");
+    assert_eq!(h.platform.set_values.lock().unwrap().len(), 1);
+    let outs = outputs(&h.requests()[1]);
+    assert_eq!(outs, [r#"typed your name into #1; the field now shows "Erika Beispiel""#]);
+}
+
+#[tokio::test]
+async fn keystrokes_when_the_tree_cannot_set_the_value() {
+    let h = Harness::new(false).await;
+    h.platform.set_outline(form_outline());
+    *h.platform.allow_set_value.lock().unwrap() = false;
+    h.agent_turns(vec![calls("r1", &[type_el("Erika Beispiel", "your name", 1)]), calls("r2", &[done("ok")])]);
+    h.run("Fill in my name").await;
+    let acts: Vec<String> = h.platform.actions().into_iter().filter(|a| !a.starts_with("move")).collect();
+    assert_eq!(acts, ["click 250,120", "key ctrl+a", "key backspace", "type Erika Beispiel"]);
+    assert!(outputs(&h.requests()[1])[0].contains(r#"the field now shows "Erika Beispiel""#));
+}
+
+#[tokio::test]
+async fn edge_appending_field_ends_with_the_exact_value() {
+    let h = Harness::new(false).await;
+    let mut items = employer_outline();
+    items[2].value = Some("Bäckerei Sonnenschein GmbH".into());
+    h.platform.set_outline(items);
+    *h.platform.appends.lock().unwrap() = true;
+    *h.platform.allow_set_value.lock().unwrap() = true;
+    h.agent_turns(vec![
+        calls("r1", &[type_el("Bäckerei Sonnenschein GmbH", "your employer", 4)]),
+        calls("r2", &[done("ok")]),
+    ]);
+    h.run("Fill in my employer").await;
+    let shown = h.platform.outline.lock().unwrap()[2].value.clone();
+    assert_eq!(shown.as_deref(), Some("Bäckerei Sonnenschein GmbH"), "not \"…GmbHnschein GmbH\"");
+    assert!(!h.platform.actions().iter().any(|a| a.starts_with("type ")), "{:?}", h.platform.actions());
+    let outs = outputs(&h.requests()[1]);
+    assert!(!outs[0].contains("instead of"), "{outs:?}");
+    assert!(outs[0].contains(r#"the field now shows "Bäckerei Sonnenschein GmbH""#), "{outs:?}");
+}
+
+async fn sick_since(allow_set_value: bool) -> (Harness, Vec<String>) {
+    let mut h = Harness::new(false).await;
+    let mut item = el(1, "edit", "Sick since", (100, 100, 300, 40));
+    item.value = Some("dd.mm.yyyy".into());
+    h.platform.set_outline(vec![item]);
+    *h.platform.allow_set_value.lock().unwrap() = allow_set_value;
+    h.agent_turns(vec![calls("r1", &[type_el("2026-10-18", "the day you got sick", 1)]), calls("r2", &[done("ok")])]);
+    h.run("Fill in the date").await;
+    let _ = h.drain();
+    let outs = outputs(&h.requests()[1]);
+    (h, outs)
+}
+
+#[tokio::test]
+async fn date_field_gets_digits_in_the_fields_order() {
+    let (h, outs) = sick_since(false).await;
+    let acts: Vec<String> = h.platform.actions().into_iter().filter(|a| a.starts_with("type ")).collect();
+    assert_eq!(acts, ["type 18102026"]);
+    assert!(outs[0].contains("the field now shows"), "{outs:?}");
+    assert!(!outs[0].contains("instead of"), "{outs:?}");
+
+    let (h, outs) = sick_since(true).await;
+    let set: Vec<String> = h.platform.set_values.lock().unwrap().iter().map(|(_, t)| t.clone()).collect();
+    assert_eq!(set, ["2026-10-18"], "ISO through the value");
+    assert!(!h.platform.actions().iter().any(|a| a.starts_with("type ")));
+    assert!(outs[0].contains(r#"the field now shows "2026-10-18""#), "{outs:?}");
+}
+
+#[tokio::test]
+async fn date_text_field_gets_the_written_date() {
+    // A plain text field named "Date of birth" (no mask as its value): the written date, not ISO or digits.
+    for allow_set_value in [true, false] {
+        let mut h = Harness::new(false).await;
+        h.platform.set_outline(vec![el(1, "edit", "Date of birth", (100, 100, 300, 40))]);
+        *h.platform.allow_set_value.lock().unwrap() = allow_set_value;
+        h.agent_turns(vec![calls("r1", &[type_el("2026-10-18", "your birth date", 1)]), calls("r2", &[done("ok")])]);
+        h.run("Fill in the date").await;
+        let _ = h.drain();
+        let shown = h.platform.outline.lock().unwrap()[0].value.clone();
+        assert_eq!(shown.as_deref(), Some("18.10.2026"), "set_value {allow_set_value}");
+        let outs = outputs(&h.requests()[1]);
+        assert!(outs[0].contains(r#"the field now shows "18.10.2026""#), "{outs:?}");
+    }
+}
+
+#[tokio::test]
+async fn open_url_opens_when_another_window_is_in_front() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let url = "file:///C:/demo/fixtures/demo-kasse/index.html";
+    let mut h = Harness::new(true).await;
+    let opened = Arc::new(AtomicUsize::new(0));
+    let o = opened.clone();
+    h.agent = h.agent.with_url_opener(Arc::new(move |_: &str| {
+        o.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }));
+    // Explorer in front (no address bar): the page this run opened is opened again, so the browser comes up.
+    *h.platform.foreground.lock().unwrap() =
+        Some(WindowInfo { title: "Downloads".into(), class: "CabinetWClass".into(), address: None });
+    h.agent_turns(vec![
+        calls("r1", &[("open_url", json!({"url": url}))]),
+        calls("r2", &[("open_url", json!({"url": url}))]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.run("Open the insurer's page").await;
+    assert_eq!(opened.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn open_url_reuses_the_page_in_front() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let url = "file:///C:/demo/fixtures/demo-kasse/index.html";
+    let mut h = Harness::new(true).await;
+    let opened = Arc::new(AtomicUsize::new(0));
+    let o = opened.clone();
+    h.agent = h.agent.with_url_opener(Arc::new(move |_: &str| {
+        o.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }));
+    *h.platform.foreground.lock().unwrap() = Some(WindowInfo {
+        title: "Gesundkasse - Microsoft Edge".into(),
+        class: "Chrome_WidgetWin_1".into(),
+        address: Some("C:/demo/fixtures/demo-kasse/index.html".into()),
+    });
+    h.agent_turns(vec![calls("r1", &[("open_url", json!({"url": url}))]), calls("r2", &[done("ok")])]);
+    h.run("Open the insurer's page").await;
+    assert_eq!(opened.load(Ordering::SeqCst), 0, "the page in front is not opened again");
+    assert!(outputs(&h.requests()[1])[0].starts_with("already open"));
+
+    // Address bar unreadable: the page this run opened is not opened a second time.
+    *h.platform.foreground.lock().unwrap() = None;
+    h.agent_turns(vec![
+        calls("r3", &[("open_url", json!({"url": url}))]),
+        calls("r4", &[("open_url", json!({"url": url}))]),
+        calls("r5", &[done("ok")]),
+    ]);
+    h.run("Open the insurer's page").await;
+    assert_eq!(opened.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_third_type_into_a_field_that_is_already_right_is_no_failure() {
+    let mut h = Harness::new(false).await;
+    h.platform.set_outline(employer_outline());
+    *h.platform.allow_set_value.lock().unwrap() = true;
+    let same = || calls("r", &[type_el("Erika Beispiel", "your name", 1)]);
+    h.agent_turns(vec![same(), same(), same(), same(), calls("r5", &[done("ok")])]);
+    let out = h.run("Fill in my name").await;
+    assert_eq!(out, AgentOutcome::Done("ok".into()), "no guard hit, so no stuck end either");
+    assert!(!h.drain().iter().any(|e| matches!(e, UiEvent::Bubble { question_id: Some(_), .. })));
+    let reqs = h.requests();
+    assert!(outputs(&reqs[3])[0].starts_with(r#"already done: #1 already shows "Erika Beispiel""#));
+    assert_eq!(h.platform.set_values.lock().unwrap().len(), 2, "typed twice, then left alone");
 }
