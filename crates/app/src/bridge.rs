@@ -98,6 +98,7 @@ const SETTING_KEYS: &[&str] = &[
     "trusted_send_hosts",
     "krankenkasse_kontaktformular",
     "krankenkasse_services",
+    "brief_shown_on",
 ];
 
 /// App-only events for the page (not part of the core bus).
@@ -196,6 +197,8 @@ pub struct Ctx {
     tray: Mutex<Option<tray::Tray>>,
     ingest_lock: tokio::sync::Mutex<()>,
     started: Instant,
+    /// The agent task behind "Yes, do it now" on the daily brief.
+    brief_task: Mutex<Option<String>>,
 }
 
 type Shared = Arc<Ctx>;
@@ -355,6 +358,7 @@ pub fn run() -> Result<()> {
                 tray: Mutex::new(None),
                 ingest_lock: tokio::sync::Mutex::new(()),
                 started: Instant::now(),
+                brief_task: Mutex::default(),
             });
             app.manage(ctx.clone());
             if let Some(win) = app.get_webview_window("pip") {
@@ -678,6 +682,9 @@ impl Ctx {
             self.pip(PipState::Idle);
             self.bus.emit(UiEvent::Onboarding { step: OnboardingStep::FirstLetter });
         } else {
+            if self.clone().show_brief() {
+                return;
+            }
             self.pip(PipState::Idle);
             let text = match name {
                 Some(n) => tf("welcome_back", lang, &[("name", &n)]),
@@ -685,6 +692,58 @@ impl Ctx {
             };
             self.say(text, vec![]);
         }
+    }
+
+    /// Daily brief at start (once a day): the next deadlines and, if the insurer's services page fits one,
+    /// "I can fill it in now" with [Yes, do it now] [Later]. False when there is nothing to say (then the
+    /// usual "welcome back"). `PIP_BRIEF=0` turns it off, `PIP_BRIEF=1` shows it on every start (video retakes).
+    fn show_brief(self: Arc<Self>) -> bool {
+        let Some(mem) = self.backend.memory.clone() else { return false };
+        let env = std::env::var("PIP_BRIEF").map(|v| v.trim().to_ascii_lowercase()).unwrap_or_default();
+        if self.backend.mock || matches!(env.as_str(), "0" | "false" | "off" | "no") {
+            return false;
+        }
+        let now = self.backend.clock.now();
+        let today = now.format("%Y-%m-%d").to_string();
+        let always = matches!(env.as_str(), "1" | "true" | "on" | "yes" | "always");
+        if !always && self.backend.profile_get("brief_shown_on").as_deref() == Some(today.as_str()) {
+            return false;
+        }
+        let services = self.backend.profile_get(DEMO_SERVICES_KEY).and_then(|url| {
+            let html = std::fs::read_to_string(file_url_path(&url)?).ok()?;
+            Some((url, html))
+        });
+        let lang = self.lang();
+        let name = self.backend.profile_get("name");
+        let brief = guard("brief", || {
+            pip_core::rules::daily_brief(
+                &mem,
+                now,
+                lang,
+                name.as_deref(),
+                services.as_ref().map(|(u, h)| (u.as_str(), h.as_str())),
+            )
+        });
+        let brief = match brief {
+            Ok(Some(b)) => b,
+            Ok(None) => return false,
+            Err(e) => {
+                tracing::warn!("daily brief failed: {e:#}");
+                return false;
+            }
+        };
+        let mut buttons = Vec::new();
+        if brief.offer.is_some() {
+            buttons.push(Button::new("app:brief_go", t("btn_brief_go", lang), true));
+        }
+        *self.brief_task.lock().expect("brief lock") = brief.offer.map(|o| o.task);
+        buttons.push(Button::new("close", t("btn_onb_later", lang), false));
+        self.backend.profile_set("brief_shown_on", &today);
+        self.pip(PipState::Happy);
+        self.bus.emit(UiEvent::Speak { text: brief.text.clone() });
+        self.say(brief.text, buttons);
+        self.idle_later(2500);
+        true
     }
 
     fn onboarding_answer(self: Arc<Self>, step: OnboardingStep, value: String) {
@@ -1040,6 +1099,15 @@ impl Ctx {
         match action.split_once(':').unwrap_or((action, "")) {
             ("pause", _) => self.set_paused(true),
             ("last_letter", _) => self.last_letter(),
+            ("brief_go", _) => {
+                let task = self.brief_task.lock().expect("brief lock").take();
+                if let Some(task) = task {
+                    // Straight to Task::Text: the task always says "Sending needs approval", so the word
+                    // heuristics of task_from_words could reroute it (e.g. a heading with "sick note").
+                    *self.last_text.lock().expect("text lock") = Some(task.clone());
+                    self.start_task(Task::Text(task));
+                }
+            }
             ("undo", id) => {
                 let Ok(id) = id.parse::<i64>() else { return };
                 let r = self.backend.rules.clone().map(|rules| guard("undo", || rules.undo_done(id, lang)));
@@ -1550,6 +1618,36 @@ fn canonical_state(value: &str) -> String {
         .map_or_else(|| value.to_string(), |s| s.to_string())
 }
 
+/// Local path of a `file://` URL (the services page the demo profile points to); same rules as the agent's:
+/// "file:///C:/x%20y/a.html" -> "C:/x y/a.html", "file:///home/a.html" -> "/home/a.html". Other URLs: None.
+fn file_url_path(url: &str) -> Option<PathBuf> {
+    let url = url.trim();
+    if !url.get(..7)?.eq_ignore_ascii_case("file://") {
+        return None;
+    }
+    let rest = &url[7..];
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    let rest = rest.split(['?', '#']).next()?;
+    let b = rest.as_bytes();
+    let mut bytes = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && let Some(v) = rest.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            bytes.push(v);
+            i += 3;
+            continue;
+        }
+        bytes.push(b[i]);
+        i += 1;
+    }
+    let path = String::from_utf8_lossy(&bytes).into_owned();
+    let b = path.as_bytes();
+    let path = if b.len() >= 3 && b[0] == b'/' && b[2] == b':' { path[1..].to_string() } else { path };
+    Some(PathBuf::from(path))
+}
+
 fn is_letter(p: &Path) -> bool {
     p.extension().and_then(|e| e.to_str()).is_some_and(|e| LETTER_EXT.iter().any(|x| x.eq_ignore_ascii_case(e)))
 }
@@ -1737,6 +1835,13 @@ mod tests {
 
     /// Every text the page asks for with s("…") is sent by ui_strings, and every key the
     /// Rust side uses exists in both languages (a missing key would show up as "btn_xyz").
+    #[test]
+    fn file_urls_to_paths() {
+        assert_eq!(file_url_path("file:///C:/Pip/a%20b.html"), Some(PathBuf::from("C:/Pip/a b.html")));
+        assert_eq!(file_url_path("file:///home/x/s.html#top"), Some(PathBuf::from("/home/x/s.html")));
+        assert_eq!(file_url_path("https://kasse.example/services"), None);
+    }
+
     #[test]
     fn every_used_key_exists() {
         let js = include_str!("../ui/main.js");

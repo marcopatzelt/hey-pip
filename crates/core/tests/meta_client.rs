@@ -2,11 +2,11 @@
 
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use pip_core::i18n::Lang;
 use pip_core::meta::{
     Content, Effort, InputItem, MetaClient, MetaError, ResponseEvent, ResponseRequest, RetryPolicy, ToolDef,
 };
-use futures_util::StreamExt;
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};

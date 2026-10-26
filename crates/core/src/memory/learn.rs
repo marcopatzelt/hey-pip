@@ -48,6 +48,16 @@ pub struct Learned {
     pub playbook_dropped: bool,
     /// Profile keys whose values went into the form.
     pub used_keys: Vec<String>,
+    /// The playbook as it was before this run updated it (only when an existing one was saved again).
+    pub before: Option<PriorRun>,
+}
+
+/// An earlier run on the same site and task: how often, how many steps, how many seconds (the last one).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PriorRun {
+    pub runs: i64,
+    pub steps: i64,
+    pub seconds: i64,
 }
 
 /// Higher wins. "letter:12" counts as "letter".
@@ -168,6 +178,7 @@ pub fn learn_from_run(mem: &Memory, run: &RunSummary) -> Result<Learned> {
     let url = run.url.as_deref().map(strip_query).unwrap_or_default();
     let p = match old {
         Some(mut p) => {
+            learned.before = Some(PriorRun { runs: p.runs, steps: p.steps, seconds: p.seconds });
             p.runs += 1;
             p.failed_since_ok = 0;
             if !url.is_empty() {
@@ -324,11 +335,12 @@ mod tests {
     #[test]
     fn runs_count_up_and_failures_drop_the_playbook() {
         let m = mem();
-        learn_from_run(&m, &run(true)).unwrap();
+        assert_eq!(learn_from_run(&m, &run(true)).unwrap().before, None);
         let mut second = run(true);
         second.steps = 3;
         let l = learn_from_run(&m, &second).unwrap();
         assert!(!l.playbook_new && l.playbook_saved);
+        assert_eq!(l.before, Some(PriorRun { runs: 1, steps: 7, seconds: 41 }), "values before this run");
         let p = m.playbook_get("www.gesundkasse.example", "send_au").unwrap().unwrap();
         assert_eq!((p.runs, p.steps), (2, 3));
         learn_from_run(&m, &run(false)).unwrap();

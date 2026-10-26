@@ -25,6 +25,7 @@ use crate::clock::Clock;
 use crate::docs::DocType;
 use crate::events::{Bus, Button, PipState, UiEvent};
 use crate::i18n::{Lang, t, tf};
+use crate::memory::db::PLAYBOOK_MAX_FAILS;
 use crate::memory::{
     ActionLog, DeadlineStatus, Learned, Memory, NewDeadline, RecallQuery, RunSummary, SENSITIVE_REFUSAL,
     is_protected_key, is_sensitive_key, is_sensitive_value, learn_from_run, recall, set_fact,
@@ -197,6 +198,8 @@ pub struct RunState {
     pub enter_after_attach: bool,
     /// What was really sent in this run (approved send commits that were executed).
     pub sent: Vec<String>,
+    /// The playbook for this site and task before the run: (runs, seconds of the last run).
+    pub prior: Option<(i64, i64)>,
     /// Page opened with open_url in THIS run (DEMO_MODE commits need it when the address bar is unreadable).
     pub last_url: Option<String>,
     /// What Pip typed in this run: (what, text), shown on the approval card.
@@ -304,6 +307,7 @@ impl RunState {
             enter_after_attach: false,
             sent: Vec::new(),
             last_url: None,
+            prior: None,
             typed: Vec::new(),
             typed_fields: Vec::new(),
             answers: Vec::new(),
@@ -630,7 +634,7 @@ impl Agent {
             o => o,
         };
         let learned = self.learn_run(&state, &outcome).await;
-        self.finish(&outcome, &state, learned.as_ref().is_some_and(|l| l.playbook_new), lang);
+        self.finish(&outcome, &state, learned.as_ref(), lang);
         if matches!(outcome, AgentOutcome::Stopped | AgentOutcome::NeedsUser(_)) && state.sent.is_empty() {
             *self.paused_run.lock().expect("paused lock") = Some(state);
         }
@@ -715,8 +719,9 @@ impl Agent {
         }
     }
 
-    /// UI and memory after a run. `learned_form`: a new playbook was saved ("Next time will be faster").
-    fn finish(&self, outcome: &AgentOutcome, state: &RunState, learned_form: bool, lang: Lang) {
+    /// UI and memory after a run. `learned`: a new playbook says "Next time will be faster"; an updated one
+    /// says how much faster this run was than the last one (only when it really was).
+    fn finish(&self, outcome: &AgentOutcome, state: &RunState, learned: Option<&Learned>, lang: Lang) {
         if let Some(id) = self.open_card.lock().expect("card lock").take() {
             self.emit(UiEvent::ApprovalClosed { id });
         }
@@ -732,8 +737,12 @@ impl Agent {
                     summary.clone()
                 } else {
                     let mut line = tf("done_remember", lang, &[("fact", summary)]);
-                    if learned_form {
-                        line = format!("{line} {}", t("done_learned_form", lang));
+                    if let Some(l) = learned {
+                        if l.playbook_new {
+                            line = format!("{line} {}", t("done_learned_form", lang));
+                        } else if let Some(faster) = faster_than_before(l, state, lang) {
+                            line = format!("{line} {faster}");
+                        }
                     }
                     self.bubble(line.clone(), true);
                     line
@@ -1060,7 +1069,20 @@ impl Agent {
             (Task::Discover { .. }, Some(_)) => "fill_form",
             (task, _) => task_kind(task),
         };
-        let query = RecallQuery { task_text, site, task_kind: kind.to_string(), ..RecallQuery::default() };
+        let query =
+            RecallQuery { task_text, site: site.clone(), task_kind: kind.to_string(), ..RecallQuery::default() };
+        // A page Pip knows: say so at once (the visible half of the learning memory).
+        if state.phase != Phase::Discover
+            && let Some(site) = site.as_deref()
+            && let Some(p) = self.memory.playbook_get(site, kind)?
+            && p.failed_since_ok < PLAYBOOK_MAX_FAILS
+        {
+            // Once per run: a resumed run builds its header again, the user saw the line already.
+            if state.prior.is_none() {
+                self.progress(known_site_line(p.seconds, lang));
+            }
+            state.prior = Some((p.runs, p.seconds));
+        }
         s.push_str(&recall(&self.memory, &query)?);
         s.push_str("\nTASK\n");
         match &state.task {
@@ -2412,7 +2434,11 @@ impl Agent {
     }
 
     /// The user said "no" to a suggestion in the last days: do not look around at all.
+    /// PIP_DISCOVER=always skips this: for demo retakes, a 'Not now' must not silence Pip for 7 days.
     fn declined_lately(&self) -> Result<bool> {
+        if std::env::var("PIP_DISCOVER").is_ok_and(|v| v.trim().eq_ignore_ascii_case("always")) {
+            return Ok(false);
+        }
         let since = chrono::Local::now() - chrono::Duration::days(DECLINE_COOLDOWN_DAYS);
         Ok(self.memory.recent_events(200)?.iter().any(|e| e.kind == EV_DECLINED && e.at >= since))
     }
@@ -3000,6 +3026,48 @@ fn key_label(combo: &str, lang: Lang) -> String {
 }
 
 /// "Das dauert zu lange …", without "Nichts wurde abgeschickt" once something was sent.
+/// Start of a run on a page with a playbook: "I know this page: last time took 41 s."
+fn known_site_line(seconds: i64, lang: Lang) -> String {
+    let s = seconds.max(1);
+    match lang {
+        Lang::De => format!("Die Seite kenne ich schon: letztes Mal {s} s."),
+        Lang::En => format!("I know this page: last time took {s} s."),
+    }
+}
+
+/// End of a repeated run: "2nd time on this site: 14 s instead of 41 s last time."
+fn faster_line(n: i64, now: u64, before: i64, lang: Lang) -> String {
+    match lang {
+        Lang::De => format!("Zum {n}. Mal auf dieser Seite: {now} s statt {before} s beim letzten Mal."),
+        Lang::En => format!("{} time on this site: {now} s instead of {before} s last time.", ordinal(n)),
+    }
+}
+
+/// 1st 2nd 3rd 4th … 11th 12th 13th … 21st.
+fn ordinal(n: i64) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+/// The speed-up sentence, only when this run updated the same playbook Pip knew at the start and was really
+/// faster (never claim a speed-up that did not happen). A resumed run only counts the time after the pause,
+/// so it makes no claim.
+fn faster_than_before(learned: &Learned, state: &RunState, lang: Lang) -> Option<String> {
+    if state.resumed {
+        return None;
+    }
+    let (runs, seconds) = state.prior?;
+    let before = learned.before.filter(|b| learned.playbook_saved && b.runs == runs && b.seconds == seconds)?;
+    let now = state.active_time().as_secs().max(1);
+    (now < u64::try_from(before.seconds).unwrap_or(0)).then(|| faster_line(before.runs + 1, now, before.seconds, lang))
+}
+
 fn too_long(state: &RunState, lang: Lang) -> String {
     if state.sent.is_empty() {
         t("err_too_long", lang).to_string()
@@ -3239,6 +3307,17 @@ mod tests {
         assert!(!super::names_differ("Datei auswählen", "Datei auswählen Keine ausgewählt"));
         assert!(!super::names_differ(" Absenden ", "absenden"));
         assert!(super::names_differ("Datei auswählen", "Absenden"));
+    }
+
+    #[test]
+    fn ordinals_and_the_faster_sentence() {
+        let got: Vec<String> = [1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 101, 111].into_iter().map(super::ordinal).collect();
+        assert_eq!(got, ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "23rd", "101st", "111th"]);
+        assert_eq!(
+            super::faster_line(2, 14, 41, crate::i18n::Lang::En),
+            "2nd time on this site: 14 s instead of 41 s last time."
+        );
+        assert_eq!(super::known_site_line(41, crate::i18n::Lang::En), "I know this page: last time took 41 s.");
     }
 
     use super::*;

@@ -3,12 +3,12 @@
 //! Needs MODEL_API_KEY in the environment or in the repo's .env. OWNER: agent "meta".
 //! Optional: ASR_TEST_WAV=<path to a mono 16 kHz WAV with speech>.
 
+use futures_util::StreamExt;
+use image::{Rgb, RgbImage};
 use pip_core::i18n::Lang;
 use pip_core::meta::{
     Content, Effort, InputItem, MODEL_SPARK, MetaClient, ResponseEvent, ResponseRequest, ToolDef, fit_image,
 };
-use futures_util::StreamExt;
-use image::{Rgb, RgbImage};
 use serde_json::json;
 
 fn client() -> MetaClient {

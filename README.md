@@ -167,7 +167,10 @@ letters. Without a key, Pip shows a field to paste it (stored in `%APPDATA%\Pip\
 Switches for testing: `PIP_MOCK=1` (scripted demo without the API), `PIP_WINDOWED=1` (corner window instead of the
 full-screen overlay), `PIP_LANG=en`, `PIP_MUTE=1`, `DEMO_NOW=2026-10-29T18:00` (time travel for reminders),
 `PIP_MOUSE_STOP=0` (moving the mouse does not stop Pip; use it while recording the video), `PIP_AUTOSTART=0`
-(do not add Pip to the Windows start).
+(do not add Pip to the Windows start). `PIP_DEMO_PROFILE=1` seeds the invented person Erika; her story is told
+relative to the day the database is first created (sick note ends in two days, insurer's letter came yesterday).
+For the Thursday-evening reminder start Pip once to seed, then restart with
+`DEMO_NOW=<day the note ends minus 1>T18:00` (seeded today: tomorrow at 18:00).
 
 ### Developer CLI (no overlay, same core)
 

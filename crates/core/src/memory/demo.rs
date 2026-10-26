@@ -36,8 +36,32 @@ const PROFILE: &[(&str, &str)] = &[
     ("onboarded", "1"),
 ];
 
+/// The day the demo story is told: the day after the insurer's letter, two days before the sick note ends.
+/// Every demo date moves by `now - STORY_DAY`, so the story lives on any day.
+pub const STORY_DAY: NaiveDate = NaiveDate::from_ymd_opt(2026, 10, 28).expect("valid story day");
+
 fn d(y: i32, m: u32, day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, day).expect("valid demo date")
+}
+
+/// "30 October 2026"
+fn en(d: NaiveDate) -> String {
+    d.format("%-d %B %Y").to_string()
+}
+
+/// "20 October"
+fn en_day(d: NaiveDate) -> String {
+    d.format("%-d %B").to_string()
+}
+
+/// "13 Oct"
+fn en_short(d: NaiveDate) -> String {
+    d.format("%-d %b").to_string()
+}
+
+/// "30.10.2026"
+fn de(d: NaiveDate) -> String {
+    d.format("%d.%m.%Y").to_string()
 }
 
 struct DemoLetter {
@@ -45,10 +69,15 @@ struct DemoLetter {
     /// When Erika gave it to Pip (local time).
     read_at: (NaiveDate, u32, u32),
     extract: DocumentExtract,
-    text: &'static str,
+    text: String,
 }
 
-fn letters() -> Vec<DemoLetter> {
+/// The three letters with every story date moved by `shift` (zero on STORY_DAY).
+fn letters(shift: Duration) -> Vec<DemoLetter> {
+    let d = |y, m, day| d(y, m, day) + shift;
+    let wg_date = d(2026, 10, 14);
+    let (au_from, au_until) = (d(2026, 10, 20), d(2026, 10, 30));
+    let (kasse_date, kasse_due) = (d(2026, 10, 27), d(2026, 11, 13));
     vec![
         DemoLetter {
             file: "bescheid_wohngeld.pdf",
@@ -57,9 +86,10 @@ fn letters() -> Vec<DemoLetter> {
                 doc_type: DocType::Bescheid,
                 sender: "Stadt Beispielstadt, Amt für Wohnen und Soziales".into(),
                 recipient: "Erika Beispiel".into(),
-                date: Some(d(2026, 10, 14)),
+                date: Some(wg_date),
                 reference: Some("50.2-WG-2026-04711".into()),
                 person: Some("Erika Beispiel".into()),
+                // The benefit period is not a story date: it stays as printed.
                 summary_simple: "The city grants you housing benefit (Wohngeld) of 96.00 euros a month from \
                                  1 October 2026 to 30 September 2027. Your sick pay was counted as income. Tell the \
                                  city at once if your income or rent changes."
@@ -72,36 +102,42 @@ fn letters() -> Vec<DemoLetter> {
                 ),
                 confidence: 0.93,
             },
-            text: "Stadt Beispielstadt – Amt für Wohnen und Soziales. Aktenzeichen 50.2-WG-2026-04711. \
-                   Datum 14.10.2026. Bescheid über Wohngeld (Mietzuschuss). Ihr Antrag vom 01.09.2026. \
-                   Sehr geehrte Frau Beispiel, auf Ihren Antrag vom 01.09.2026 bewillige ich Ihnen für die Zeit \
-                   vom 01.10.2026 bis 30.09.2027 Wohngeld in Höhe von monatlich 96,00 Euro. Begründung: Bei der \
-                   Berechnung wurde ein monatliches Gesamteinkommen von 1.684,00 Euro und eine zu \
-                   berücksichtigende Miete von 612,00 Euro zugrunde gelegt. Ihr Krankengeld wurde als Einkommen \
-                   angerechnet. Ändert sich Ihr Einkommen oder Ihre Miete, teilen Sie mir das bitte sofort mit. \
-                   Rechtsbehelfsbelehrung: Gegen diesen Bescheid kann innerhalb eines Monats nach Bekanntgabe \
-                   Widerspruch erhoben werden.",
+            text: format!(
+                "Stadt Beispielstadt – Amt für Wohnen und Soziales. Aktenzeichen 50.2-WG-2026-04711. \
+                 Datum {}. Bescheid über Wohngeld (Mietzuschuss). Ihr Antrag vom 01.09.2026. \
+                 Sehr geehrte Frau Beispiel, auf Ihren Antrag vom 01.09.2026 bewillige ich Ihnen für die Zeit \
+                 vom 01.10.2026 bis 30.09.2027 Wohngeld in Höhe von monatlich 96,00 Euro. Begründung: Bei der \
+                 Berechnung wurde ein monatliches Gesamteinkommen von 1.684,00 Euro und eine zu \
+                 berücksichtigende Miete von 612,00 Euro zugrunde gelegt. Ihr Krankengeld wurde als Einkommen \
+                 angerechnet. Ändert sich Ihr Einkommen oder Ihre Miete, teilen Sie mir das bitte sofort mit. \
+                 Rechtsbehelfsbelehrung: Gegen diesen Bescheid kann innerhalb eines Monats nach Bekanntgabe \
+                 Widerspruch erhoben werden.",
+                de(wg_date)
+            ),
         },
         DemoLetter {
             file: "au_erika_erst_foto.jpg",
-            read_at: (d(2026, 10, 20), 11, 40),
+            read_at: (au_from, 11, 40),
             extract: DocumentExtract {
                 doc_type: DocType::AuBescheinigung,
                 sender: "Dr. med. Max Beispiel".into(),
                 recipient: "Gesundkasse Beispielstadt".into(),
-                date: Some(d(2026, 10, 20)),
+                date: Some(au_from),
                 reference: Some("G123456789".into()),
                 person: Some("Erika Beispiel".into()),
-                summary_simple: "Sick note from Dr. Max Beispiel: you are unable to work from 20 October to \
-                                 30 October 2026. It is a first certificate. Keep this copy for your records."
-                    .into(),
+                summary_simple: format!(
+                    "Sick note from Dr. Max Beispiel: you are unable to work from {} to {}. It is a first \
+                     certificate. Keep this copy for your records.",
+                    en_day(au_from),
+                    en(au_until)
+                ),
                 requests: vec![],
                 deadlines: vec![],
                 au: Some(AuInfo {
-                    from: d(2026, 10, 20),
-                    until: d(2026, 10, 30),
+                    from: au_from,
+                    until: au_until,
                     first_or_follow: AuKind::Erst,
-                    issued: Some(d(2026, 10, 20)),
+                    issued: Some(au_from),
                 }),
                 consequences_if_ignored: Some(
                     "If you are still ill afterwards and the next sick note leaves a gap, the health insurer \
@@ -110,11 +146,15 @@ fn letters() -> Vec<DemoLetter> {
                 ),
                 confidence: 0.9,
             },
-            text: "Arbeitsunfähigkeitsbescheinigung. Krankenkasse: Gesundkasse Beispielstadt. Beispiel, Erika, \
-                   Lindenweg 7, 40999 Beispielstadt, geb. am 12.08.1971. Versicherten-Nr. G123456789. \
-                   Erstbescheinigung. Arbeitsunfähig seit 20.10.2026, voraussichtlich arbeitsunfähig bis \
-                   einschließlich 30.10.2026, festgestellt am 20.10.2026. Ausgestellt am 20.10.2026. \
-                   Dr. med. Max Beispiel, Facharzt für Allgemeinmedizin.",
+            text: format!(
+                "Arbeitsunfähigkeitsbescheinigung. Krankenkasse: Gesundkasse Beispielstadt. Beispiel, Erika, \
+                 Lindenweg 7, 40999 Beispielstadt, geb. am 12.08.1971. Versicherten-Nr. G123456789. \
+                 Erstbescheinigung. Arbeitsunfähig seit {from}, voraussichtlich arbeitsunfähig bis \
+                 einschließlich {until}, festgestellt am {from}. Ausgestellt am {from}. \
+                 Dr. med. Max Beispiel, Facharzt für Allgemeinmedizin.",
+                from = de(au_from),
+                until = de(au_until)
+            ),
         },
         DemoLetter {
             file: "kasse_brief.pdf",
@@ -123,45 +163,63 @@ fn letters() -> Vec<DemoLetter> {
                 doc_type: DocType::Brief,
                 sender: "Gesundkasse Beispielstadt".into(),
                 recipient: "Erika Beispiel".into(),
-                date: Some(d(2026, 10, 27)),
+                date: Some(kasse_date),
                 reference: Some("G123456789".into()),
                 person: Some("Erika Beispiel".into()),
-                summary_simple: "Gesundkasse got your sick note of 20 October. To check your sick pay they need \
-                                 the enclosed questionnaire, filled in and signed, and your IBAN if it changed. \
-                                 Please send both by 13 November 2026."
-                    .into(),
+                summary_simple: format!(
+                    "Gesundkasse got your sick note of {}. To check your sick pay they need the enclosed \
+                     questionnaire, filled in and signed, and your IBAN if it changed. Please send both by {}.",
+                    en_day(au_from),
+                    en(kasse_due)
+                ),
                 requests: vec![
                     "Fill in and sign the questionnaire about your inability to work.".into(),
                     "Send your bank details (IBAN) if they changed.".into(),
                 ],
                 deadlines: vec![ExtractedDeadline {
                     title: "Send the questionnaire back to Gesundkasse".into(),
-                    due: d(2026, 11, 13),
-                    source_text: "Bitte senden Sie uns die Unterlagen bis spätestens 13.11.2026 zurück.".into(),
+                    due: kasse_due,
+                    source_text: format!(
+                        "Bitte senden Sie uns die Unterlagen bis spätestens {} zurück.",
+                        de(kasse_due)
+                    ),
                 }],
                 au: None,
                 consequences_if_ignored: Some("Your sick pay may be paid later.".into()),
                 confidence: 0.94,
             },
-            text: "Gesundkasse – Die Krankenkasse für Beispielstadt. Frau Erika Beispiel, Lindenweg 7, 40999 \
-                   Beispielstadt. Versicherten-Nr. G123456789. Datum 27.10.2026. Ihre Krankschreibung vom \
-                   20.10.2026 – bitte Fragebogen zurücksenden. Damit wir Ihren Anspruch auf Krankengeld prüfen \
-                   können, brauchen wir noch: den beiliegenden Fragebogen zur Arbeitsunfähigkeit, ausgefüllt und \
-                   unterschrieben, Ihre Bankverbindung (IBAN), falls sie sich geändert hat. Bitte senden Sie uns \
-                   die Unterlagen bis spätestens 13.11.2026 zurück. Wenn die Unterlagen später kommen, kann sich \
-                   die Zahlung verzögern. Kontaktformular: www.gesundkasse.example/kontakt",
+            text: format!(
+                "Gesundkasse – Die Krankenkasse für Beispielstadt. Frau Erika Beispiel, Lindenweg 7, 40999 \
+                 Beispielstadt. Versicherten-Nr. G123456789. Datum {}. Ihre Krankschreibung vom \
+                 {} – bitte Fragebogen zurücksenden. Damit wir Ihren Anspruch auf Krankengeld prüfen \
+                 können, brauchen wir noch: den beiliegenden Fragebogen zur Arbeitsunfähigkeit, ausgefüllt und \
+                 unterschrieben, Ihre Bankverbindung (IBAN), falls sie sich geändert hat. Bitte senden Sie uns \
+                 die Unterlagen bis spätestens {} zurück. Wenn die Unterlagen später kommen, kann sich \
+                 die Zahlung verzögern. Kontaktformular: www.gesundkasse.example/kontakt",
+                de(kasse_date),
+                de(au_from),
+                de(kasse_due)
+            ),
         },
     ]
 }
 
-/// Earlier history (kind, local time, text), oldest first.
-fn history() -> Vec<(&'static str, (NaiveDate, u32, u32), &'static str)> {
-    vec![("done", (d(2026, 10, 14), 16, 40), "Sent the sick note of 13 Oct to Gesundkasse Beispielstadt.")]
+/// Earlier history (kind, local time, text), oldest first, moved by `shift` like the letters.
+fn history(shift: Duration) -> Vec<(&'static str, (NaiveDate, u32, u32), String)> {
+    let d = |y, m, day| d(y, m, day) + shift;
+    vec![(
+        "done",
+        (d(2026, 10, 14), 16, 40),
+        format!("Sent the sick note of {} to Gesundkasse Beispielstadt.", en_short(d(2026, 10, 13))),
+    )]
 }
 
 /// Fill an empty memory with the invented demo person. Only runs when the profile has no `name`
 /// yet (never overwrites a real profile); returns true if it seeded.
-/// Letters dated after `now` are left out, and `rules` (with its own clock) creates deadlines and
+/// The story is told relative to `now` (DEMO_NOW or the real clock): the sick note ends in two days,
+/// the insurer's letter came yesterday, the housing-benefit decision is two weeks old. The invented
+/// PDFs/photo keep their printed October dates; the demo only needs the memory.
+/// Letters dated after `now` are left out (a guard only; after the shift every letter lies before `now`), and `rules` (with its own clock) creates deadlines and
 /// reminders exactly like a real read, so past reminders are not planned again.
 /// `letters_dir` holds DEMO_LETTER_FILES (paths in memory point there).
 pub fn seed_demo_profile(
@@ -179,24 +237,25 @@ pub fn seed_demo_profile(
     }
     let lang = Lang::En;
 
+    let shift = now.date_naive() - STORY_DAY;
     let mut events: Vec<(DateTime<Local>, &str, String)> = Vec::new();
-    for l in letters() {
+    for l in letters(shift) {
         if l.extract.date.is_some_and(|date| date > now.date_naive()) {
             continue;
         }
         let path = letters_dir.join(l.file);
         // The real file hash, so giving Pip the same file again is recognised as known.
         let sha = std::fs::read(&path).map(|b| sha256_hex(&b)).unwrap_or_else(|_| format!("demo:{}", l.file));
-        let id = memory.insert_document(&path, &sha, &l.extract, l.text)?;
+        let id = memory.insert_document(&path, &sha, &l.extract, &l.text)?;
         let deadlines = rules.apply_document(id, &l.extract)?;
         let (day, h, m) = l.read_at;
         let at = local_at(day, h, m).min(now - Duration::minutes(5));
         events.push((at, "letter", bubble_text(&l.extract, &deadlines, lang)));
     }
-    for (kind, (day, h, m), text) in history() {
+    for (kind, (day, h, m), text) in history(shift) {
         let at = local_at(day, h, m);
         if at < now {
-            events.push((at, kind, text.to_string()));
+            events.push((at, kind, text));
         }
     }
     events.sort_by_key(|(at, _, _)| *at);
@@ -279,19 +338,70 @@ mod tests {
     }
 
     #[test]
-    fn letters_after_today_wait_and_a_real_profile_is_kept() {
-        // 26 Oct: the insurer's letter of 27 Oct has not come yet.
+    fn story_moves_with_today() {
+        // 26 Oct: two days before STORY_DAY, the whole story moves back two days.
         let now = local_at(d(2026, 10, 26), 10, 0);
         let (mem, rules) = setup(now);
         assert!(seed_demo_profile(&mem, &rules, &letters_dir(), now).unwrap());
-        assert!(mem.documents_of_type(DocType::Brief).unwrap().is_empty());
+        let briefe = mem.documents_of_type(DocType::Brief).unwrap();
+        assert_eq!(briefe.len(), 1);
+        assert!(briefe[0].extract.summary_simple.contains("11 November 2026"), "{}", briefe[0].extract.summary_simple);
+        let au = mem.documents_of_type(DocType::AuBescheinigung).unwrap();
+        assert!(au[0].extract.summary_simple.contains("28 October 2026"));
+        assert!(!mem.search_documents("28.10.2026", 5).unwrap().is_empty());
+        assert!(!mem.search_documents("11.11.2026", 5).unwrap().is_empty());
+        // The sick note ends Wednesday 28 Oct: the next one is due Thursday 29 Oct.
         let due: Vec<_> = mem.open_deadlines().unwrap().iter().map(|dl| dl.due).collect();
-        assert_eq!(due, vec![d(2026, 11, 2), d(2026, 11, 18)]);
+        assert_eq!(due, vec![d(2026, 10, 29), d(2026, 11, 11), d(2026, 11, 16)]);
+        assert!(mem.recent_events(10).unwrap().iter().all(|e| e.at < now));
+        assert_eq!(mem.recent_events(10).unwrap().len(), 4);
 
         let (mem, rules) = setup(now);
         mem.profile_set("name", "Jonas").unwrap();
         assert!(!seed_demo_profile(&mem, &rules, &letters_dir(), now).unwrap());
         assert_eq!(mem.profile_get("krankenkasse").unwrap(), None);
         assert!(mem.open_deadlines().unwrap().is_empty());
+    }
+
+    #[test]
+    fn judges_day_is_alive() {
+        // Friday 6 Nov, nine days after STORY_DAY.
+        let now = local_at(d(2026, 11, 6), 9, 0);
+        let (mem, rules) = setup(now);
+        assert!(seed_demo_profile(&mem, &rules, &letters_dir(), now).unwrap());
+        let au = mem.documents_of_type(DocType::AuBescheinigung).unwrap();
+        assert_eq!(au[0].extract.au.as_ref().unwrap().until, d(2026, 11, 8));
+        let open: Vec<_> = mem.open_deadlines().unwrap().into_iter().map(|dl| (dl.rule_id.unwrap(), dl.due)).collect();
+        assert_eq!(
+            open,
+            vec![
+                ("au_lueckenlos".to_string(), d(2026, 11, 9)),
+                ("frist_aus_brief".to_string(), d(2026, 11, 22)),
+                ("widerspruch_bescheid".to_string(), d(2026, 11, 27)),
+            ]
+        );
+        assert!(open.iter().all(|(_, due)| *due >= now.date_naive()));
+        assert!(!mem.search_documents("22.11.2026", 5).unwrap().is_empty());
+        let events = mem.recent_events(10).unwrap();
+        assert_eq!(events.len(), 4);
+        assert!(events.iter().all(|e| e.at < now));
+        assert!(events.iter().any(|e| e.kind == "done" && e.text.contains("sick note of 22 Oct")));
+    }
+
+    #[test]
+    fn thursday_evening_reminder_after_story_day() {
+        use crate::clock::DemoClock;
+        use crate::events::UiEvent;
+
+        let now = local_at(STORY_DAY, 14, 0);
+        let (mem, rules) = setup(now);
+        assert!(seed_demo_profile(&mem, &rules, &letters_dir(), now).unwrap());
+        // Restart with DEMO_NOW=2026-10-29T18:00.
+        let rules =
+            RuleEngine::new(mem.clone(), Arc::new(DemoClock::parse("2026-10-29T18:00").unwrap()) as Arc<dyn Clock>);
+        let fired = rules.tick().unwrap();
+        assert_eq!(fired.len(), 1);
+        let UiEvent::Reminder { text, .. } = rules.reminder_event(&fired[0], Lang::En) else { panic!() };
+        assert!(text.starts_with("Your sick note ends tomorrow."), "{text}");
     }
 }

@@ -14,7 +14,7 @@ use crate::docs::DocType;
 /// Default size of the memory block (characters).
 pub const DEFAULT_BUDGET: usize = 4500;
 /// Profile keys the model never needs.
-const HIDDEN_KEYS: &[&str] = &["onboarded", "screen_notice_ok", PROFILE_TRUSTED_SEND];
+const HIDDEN_KEYS: &[&str] = &["onboarded", "screen_notice_ok", PROFILE_TRUSTED_SEND, "brief_shown_on"];
 /// Task kinds that may borrow the newest playbook of another site (the same job somewhere else).
 const SPECIFIC_KINDS: &[&str] = &["send_au", "send_letter"];
 

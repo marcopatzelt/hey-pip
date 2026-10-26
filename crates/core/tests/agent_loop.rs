@@ -775,10 +775,7 @@ async fn send_latest_document_without_letter_asks_for_it() {
     let h = Harness::new(false).await;
     let out = h
         .agent
-        .run(
-            Task::SendLatestDocument { doc_type: pip_core::docs::DocType::AuBescheinigung },
-            CancellationToken::new(),
-        )
+        .run(Task::SendLatestDocument { doc_type: pip_core::docs::DocType::AuBescheinigung }, CancellationToken::new())
         .await
         .unwrap();
     assert!(matches!(out, AgentOutcome::NeedsUser(_)));
@@ -911,10 +908,7 @@ async fn the_approved_letter_is_typed_into_the_file_dialog() {
     h.auto_answer(ApprovalAnswer::Yes, "");
     let out = h
         .agent
-        .run(
-            Task::SendLatestDocument { doc_type: pip_core::docs::DocType::AuBescheinigung },
-            CancellationToken::new(),
-        )
+        .run(Task::SendLatestDocument { doc_type: pip_core::docs::DocType::AuBescheinigung }, CancellationToken::new())
         .await
         .unwrap();
     assert_eq!(out, AgentOutcome::Done("Angehängt.".into()));
@@ -1726,8 +1720,12 @@ async fn suggest_unknown_doc_id_refused() {
     assert!(questions(&x.h.drain()).is_empty());
 }
 
+/// Tests that read or set PIP_DISCOVER hold this (the environment is shared by all tests in this binary).
+static DISCOVER_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn declined_suggestion_is_not_repeated() {
+    let _env = DISCOVER_ENV.lock().await;
     // Suggested before (no answer yet): the same heading is refused.
     let x = discover_setup(SERVICES_HTML).await;
     x.h.memory.add_event("suggested", QUOTE).unwrap();
@@ -1754,6 +1752,24 @@ async fn declined_suggestion_is_not_repeated() {
     assert_eq!(y.h.requests().len(), before, "no model call after a no");
     assert!(questions(&y.h.drain()).is_empty());
     assert_eq!(y.h.opened.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn declined_cooldown_is_skipped_with_discover_always() {
+    let _env = DISCOVER_ENV.lock().await;
+    let x = discover_setup(SERVICES_HTML).await;
+    x.h.memory.add_event("suggestion_declined", QUOTE).unwrap();
+    x.h.agent_turns(vec![calls("r1", &[("open_url", json!({"url": x.url}))]), calls("r2", &[done("nothing")])]);
+    assert_eq!(discover(&x.h).await, AgentOutcome::Done("nothing".into()));
+    assert!(x.h.requests().is_empty(), "a 'Not now' keeps Pip quiet for a week");
+
+    // For a demo retake: look again anyway.
+    // SAFETY: DISCOVER_ENV serialises every test that reads PIP_DISCOVER.
+    unsafe { std::env::set_var("PIP_DISCOVER", " Always ") };
+    let out = discover(&x.h).await;
+    unsafe { std::env::remove_var("PIP_DISCOVER") };
+    assert_eq!(out, AgentOutcome::Done("nothing".into()));
+    assert!(!x.h.requests().is_empty(), "PIP_DISCOVER=always skips the cooldown");
 }
 
 #[tokio::test]
@@ -1949,6 +1965,63 @@ async fn the_second_run_on_the_same_form_starts_with_last_time() {
     assert!(!header.contains("G123456789\\\" <-"), "values are never in the playbook");
     assert!(!bubbles(&h.drain()).iter().any(|t| t.contains("Nächstes Mal")));
     assert_eq!(h.memory.playbook_get("www.gesundkasse.example", "send_au").unwrap().unwrap().runs, 2);
+}
+
+/// Second run on a known form: the playbook says it took `seconds` last time.
+async fn second_run_with_prior(seconds: i64) -> (Vec<UiEvent>, Vec<UiEvent>) {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("full_name", "Erika Beispiel").unwrap();
+    h.memory.profile_set("versichertennummer", "G123456789").unwrap();
+    h.memory.profile_set("krankenkasse_kontaktformular", "https://www.gesundkasse.example/kontakt").unwrap();
+    store_letter(&h, "C:\\Briefe\\au.pdf");
+    h.auto_answer(ApprovalAnswer::Yes, "");
+    let task = || Task::SendLatestDocument { doc_type: pip_core::docs::DocType::AuBescheinigung };
+    h.agent_turns(form_turns());
+    h.sam(&[sam_box(100, 100, 300, 140), sam_box(100, 200, 300, 240), sam_box(700, 600, 900, 640)]);
+    h.agent.run(task(), CancellationToken::new()).await.unwrap();
+    let first = h.drain();
+
+    let site = "www.gesundkasse.example";
+    let mut p = h.memory.playbook_get(site, "send_au").unwrap().expect("playbook");
+    p.seconds = seconds;
+    h.memory.playbook_upsert(&p).unwrap();
+    h.agent_turns(form_turns());
+    h.sam(&[sam_box(100, 100, 300, 140), sam_box(100, 200, 300, 240), sam_box(700, 600, 900, 640)]);
+    let out = h.agent.run(task(), CancellationToken::new()).await.unwrap();
+    assert!(matches!(out, AgentOutcome::Done(_)), "{out:?}");
+    (first, h.drain())
+}
+
+#[tokio::test]
+async fn the_second_run_says_how_much_faster() {
+    let (first, second) = second_run_with_prior(41).await;
+    assert!(!progress(&first).iter().any(|t| t.starts_with("Die Seite kenne ich schon")), "{:?}", progress(&first));
+    assert!(
+        progress(&second).iter().any(|t| t == "Die Seite kenne ich schon: letztes Mal 41 s."),
+        "{:?}",
+        progress(&second)
+    );
+    let b = bubbles(&second);
+    // The run itself takes a second or two (pauses between steps); the number is real, not made up.
+    let line =
+        b.iter().find_map(|t| t.split_once("Zum 2. Mal auf dieser Seite: ").map(|(_, r)| r)).expect("faster line");
+    let now: u64 = line.strip_suffix(" s statt 41 s beim letzten Mal.").expect(line).parse().expect(line);
+    assert!((1..41).contains(&now), "{line}");
+    assert!(!b.iter().any(|t| t.contains("Nächstes Mal")), "{b:?}");
+}
+
+#[tokio::test]
+async fn no_speed_claim_when_not_faster() {
+    // Last time took 1 s; this run takes at least that long, so it was not faster.
+    let (_, second) = second_run_with_prior(1).await;
+    assert!(
+        progress(&second).iter().any(|t| t == "Die Seite kenne ich schon: letztes Mal 1 s."),
+        "{:?}",
+        progress(&second)
+    );
+    let b = bubbles(&second);
+    assert!(!b.iter().any(|t| t.contains("statt")), "{b:?}");
+    assert!(!b.iter().any(|t| t.contains("Nächstes Mal geht es schneller")), "{b:?}");
 }
 
 #[tokio::test]

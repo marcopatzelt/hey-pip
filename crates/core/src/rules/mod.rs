@@ -6,6 +6,7 @@
 pub mod au;
 pub mod brief;
 pub mod calendar;
+pub mod daily;
 pub mod engine;
 pub mod text;
 pub mod widerspruch;
@@ -18,6 +19,7 @@ pub use crate::clock::{Clock, DemoClock, FixedClock, SystemClock};
 pub use au::AuLueckenlos;
 pub use brief::FristAusBrief;
 pub use calendar::Calendar;
+pub use daily::{Brief, BriefOffer, daily_brief};
 pub use engine::RuleEngine;
 pub use widerspruch::WiderspruchBescheid;
 

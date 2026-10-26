@@ -202,7 +202,8 @@ impl MetaClient {
         body["stream"] = Value::Bool(false);
         // PIP_DUMP_REQ=folder: keep each request body for latency tests (contains the screenshot).
         if let Ok(dir) = std::env::var("PIP_DUMP_REQ") {
-            let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+            let n =
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
             let _ = std::fs::write(std::path::Path::new(&dir).join(format!("req-{n}.json")), body.to_string());
         }
         let started = std::time::Instant::now();
