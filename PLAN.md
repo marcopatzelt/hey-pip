@@ -188,3 +188,21 @@ Quellen: FAQ von Cerebral Valley im Discord (26.10.), https://dev.meta.ai/events
 - [ ] X-Konto: Reichweite prüfen, erste Build-in-Public-Clips planen
 - [ ] Meta Model API Key besorgen (Marco: Login nötig)
 - [ ] Bestätigung der Teilnahme (Approval 26.10.) in der Mail prüfen
+
+## Kickoff 26.10.2026 (Zusammenfassung der Mitschrift)
+
+- **Indie-Track:** bewertet Kreativität, technischen Anspruch, ob es funktioniert. Thema für Pip: **„Build for your world“**.
+- **Regeln:** nur neue Arbeit (Vorarbeit in der Abgabe nennen); **Repo öffentlich** (erledigt 26.10.); nur zeigen, was im Hackathon gebaut wurde. Unerwünscht: einfache Chat-Hüllen, einfache RAG-Apps, Bild-Analysierer, **„medical advice generators“** → Pip nie als Medizin-Ratgeber zeigen; die Krankschreibung ist nur ein Papier mit Daten und Frist.
+- **Bewertung:** (1) bestanden/nicht (Thema, Meta-KI genutzt) → (2) Meta-Jury 0–10 nach Rubrik → (3) Top 5 live am 9.11. per 3-Minuten-Video.
+- **Rubrik (Reihenfolge):** **Impact** (echter Nutzen, wer profitiert, Problem klar) → Einsatz der Meta-Modelle → technische Tiefe → Demo.
+- **Bonus:** Most viral (X-Link im Abgabeformular), Best on Meta open weights (Muse Glimmer / Spark Open), Community vote (Galerie, Sieger 16.11.), **Best agentic use case 5k** (passt), Best creative build 5k. Bei der Abgabe angeben.
+- **Termine (deutsche Zeit):** Meta-Workshops Di 27.10. + Mi 28.10. 17:00; Fireworks-Workshop Fr; Office Hours werktags vormittags ET im Discord; Abgabe **5.11. 03:00**; Judging 5.–8.11.; Finale 9.11.
+- **Credits:** Meta 150 $ (erledigt), Baseten 100 $ (Auswahl, Mail), Modal 100 $ (erste 1.000 Teams), Fireworks 25 $ – Formulare auf der Event-Seite (Info-Symbol).
+- **Video:** schneidet Marco selbst mit seinem Schnitt-Agenten; wir liefern nur funktionierende Szenen.
+
+## Rubrik → was wir priorisieren
+
+1. **Impact:** echte Geschichte (Mutter, Krankengeld-Lücke), klar benannter Nutzer (Laien), messbarer Nutzen (Frist nie verpasst, Formular in 30 s statt 10 min).
+2. **Meta-Modelle:** Muse Spark (Lesen, Handeln), SAM 3.1 (Zielwahl), Voice Transcribe (Sprechen); ggf. Muse Spark Open/Glimmer für den Open-Weights-Bonus.
+3. **Technische Tiefe:** komplett Rust, Overlay, Freigabe-Tor mit Angriffstests, lernendes Gedächtnis (Rezepte pro Seite), proaktive Vorschläge mit Prüfung.
+4. **Demo:** läuft zuverlässig auf Windows mit Demo-Profil; schnell; eine Karte am Ende.
