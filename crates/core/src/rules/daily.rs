@@ -1,6 +1,6 @@
 //! Daily brief: when Pip starts, he says what is coming up (the next deadlines) and offers to do the next
 //! thing with one click, if the insurer's services page has a heading that fits one of them.
-//! After a finished task the same matching gives the proactive offer (`offer_after_task`): "Your insurer
+//! After a finished task the same matching gives the proactive offer (`after_task`): "Your insurer
 //! also offers "…", which fits their letter of …". Deterministic, no model call, no IO (the app reads the
 //! services page).
 //! OWNER: agent "memory-rules".
@@ -89,27 +89,44 @@ pub struct AfterTaskOffer {
     pub insurer: String,
 }
 
-/// None when nothing fits, every fitting heading was offered before, or the user said "Not now" within
-/// DECLINE_COOLDOWN_DAYS before `now` (PIP_DISCOVER=always ignores that). `services`: (page URL, its HTML).
-pub fn offer_after_task(
-    mem: &Memory,
-    now: DateTime<Local>,
-    lang: Lang,
-    services: (&str, &str),
-) -> Result<Option<AfterTaskOffer>> {
+/// What Pip does after a finished task (`after_task`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AfterTask {
+    /// A heading of the services page fits an open deadline: offer it (no model call).
+    Offer(AfterTaskOffer),
+    /// Open deadlines exist but no heading fits them: the model may look around once (Task::Discover).
+    LookAround,
+    /// Nothing to do: no open deadline, the quiet days after "Not now", or every fitting heading was asked
+    /// before. Pip stays idle, says nothing and opens nothing.
+    Silent,
+}
+
+/// The next step after a finished task, in this order: no open deadline -> Silent; a "Not now" within
+/// DECLINE_COOLDOWN_DAYS before `now` (PIP_DISCOVER=always ignores it) -> Silent; a heading not asked
+/// before fits -> Offer; a heading fits but every fitting one was asked before -> Silent; else LookAround.
+/// `services`: (page URL, its HTML; empty when the page cannot be read).
+pub fn after_task(mem: &Memory, now: DateTime<Local>, lang: Lang, services: (&str, &str)) -> Result<AfterTask> {
+    let items = mem.open_deadlines()?;
+    if items.is_empty() {
+        return Ok(AfterTask::Silent);
+    }
     let events = mem.recent_events(EVENTS_SCAN)?;
     let always = std::env::var("PIP_DISCOVER").is_ok_and(|v| v.trim().eq_ignore_ascii_case("always"));
     let since = now - Duration::days(DECLINE_COOLDOWN_DAYS);
     if !always && events.iter().any(|e| e.kind == EV_DECLINED && e.at >= since) {
-        return Ok(None);
+        return Ok(AfterTask::Silent);
     }
     let asked = asked_of(&events);
-    let items = mem.open_deadlines()?;
     let (url, html) = services;
     let Some(offer) = find_offer(&items, url, html, |h| is_asked(&asked, h)) else {
-        return Ok(None);
+        // Something fits, but only the asked-filter removed it: asking again would nag, looking around
+        // would open the page and find the same heading. Stay quiet.
+        if find_offer(&items, url, html, |_| false).is_some() {
+            return Ok(AfterTask::Silent);
+        }
+        return Ok(AfterTask::LookAround);
     };
-    let Some(dl) = items.iter().find(|dl| dl.id == offer.deadline_id) else { return Ok(None) };
+    let Some(dl) = items.iter().find(|dl| dl.id == offer.deadline_id) else { return Ok(AfterTask::Silent) };
     let doc = match dl.doc_id {
         Some(id) => mem.document_by_id(id)?,
         None => None,
@@ -124,7 +141,20 @@ pub fn offer_after_task(
         .filter(|v| !v.is_empty())
         .map(|v| truncate(&v, 60))
         .unwrap_or_else(|| t("sugg_insurer", lang).to_string());
-    Ok(Some(AfterTaskOffer { offer, reason, insurer }))
+    Ok(AfterTask::Offer(AfterTaskOffer { offer, reason, insurer }))
+}
+
+/// The offer of `after_task`, None for LookAround and Silent. `services`: (page URL, its HTML).
+pub fn offer_after_task(
+    mem: &Memory,
+    now: DateTime<Local>,
+    lang: Lang,
+    services: (&str, &str),
+) -> Result<Option<AfterTaskOffer>> {
+    Ok(match after_task(mem, now, lang, services)? {
+        AfterTask::Offer(o) => Some(o),
+        _ => None,
+    })
 }
 
 /// `heading` was offered before (by the brief, the after-task offer or the agent), any answer.
@@ -202,7 +232,7 @@ fn find_offer(items: &[Deadline], url: &str, html: &str, skip: impl Fn(&str) -> 
         let words = long_words(&dl.title);
         if let Some(heading) = headings.iter().find(|h| long_words(h).iter().any(|w| words.contains(w))) {
             let task = format!(
-                "Open {url}. Click „{heading}“ (or its 'Open form' link). Fill the form with facts from WHAT YOU \
+                "Open {url}. Click \"{heading}\" (or its 'Open form' link). Fill the form with facts from WHAT YOU \
                  KNOW; ask me only for what is missing. Sending needs approval (is_commit=true). This is for \
                  deadline #{}.",
                 dl.id
@@ -361,7 +391,7 @@ mod tests {
         assert_eq!(o.heading, "Return your questionnaire online");
         assert_eq!(o.deadline_id, q);
         assert!(o.task.contains(URL), "{}", o.task);
-        assert!(o.task.contains("„Return your questionnaire online“"), "{}", o.task);
+        assert!(o.task.contains("\"Return your questionnaire online\""), "{}", o.task);
         assert!(o.task.contains(&format!("#{q}")), "{}", o.task);
         assert!(o.task.contains("is_commit=true"), "{}", o.task);
         assert!(b.text.ends_with("I can do \"Return your questionnaire online\" for you right now."), "{}", b.text);
@@ -502,6 +532,91 @@ mod tests {
         let (mem, q) = erika();
         mem.set_deadline_status(q, crate::memory::DeadlineStatus::Done).unwrap();
         assert_eq!(offer_after_task(&mem, now(), Lang::En, (URL, SERVICES)).unwrap(), None);
+    }
+
+    #[test]
+    fn after_task_offers_when_a_heading_fits() {
+        let _env = env_lock();
+        let (mem, q) = with_letter();
+        match after_task(&mem, now(), Lang::En, (URL, SERVICES)).unwrap() {
+            AfterTask::Offer(o) => {
+                assert_eq!(o.offer.heading, "Return your questionnaire online");
+                assert_eq!(o.offer.deadline_id, q);
+                assert!(o.offer.task.contains("\"Return your questionnaire online\""), "{}", o.offer.task);
+                assert!(!o.offer.task.contains('„'), "{}", o.offer.task);
+            }
+            other => panic!("expected an offer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn after_task_is_silent_without_open_deadlines() {
+        let _env = env_lock();
+        let mem = Memory::open_in_memory().unwrap();
+        assert_eq!(after_task(&mem, now(), Lang::En, (URL, SERVICES)).unwrap(), AfterTask::Silent);
+        let (mem, _) = erika();
+        for dl in mem.open_deadlines().unwrap() {
+            mem.set_deadline_status(dl.id, crate::memory::DeadlineStatus::Done).unwrap();
+        }
+        assert_eq!(after_task(&mem, now(), Lang::En, (URL, SERVICES)).unwrap(), AfterTask::Silent);
+        // Without open deadlines even an unreadable page does not start the model.
+        assert_eq!(after_task(&mem, now(), Lang::En, (URL, "")).unwrap(), AfterTask::Silent);
+    }
+
+    #[test]
+    fn after_task_is_silent_when_every_fitting_heading_was_asked() {
+        let _env = env_lock();
+        for kind in [EV_ACCEPTED, EV_DECLINED] {
+            let (mem, _) = with_letter();
+            mem.add_event_at(now() - Duration::days(30), kind, "Return your questionnaire online").unwrap();
+            assert_eq!(after_task(&mem, now(), Lang::En, (URL, SERVICES)).unwrap(), AfterTask::Silent, "{kind}");
+        }
+    }
+
+    #[test]
+    fn after_task_is_silent_in_the_cooldown() {
+        let _env = env_lock();
+        let (mem, _) = with_letter();
+        mem.add_event_at(now() - Duration::days(3), EV_DECLINED, "Something else entirely").unwrap();
+        assert_eq!(after_task(&mem, now(), Lang::En, (URL, SERVICES)).unwrap(), AfterTask::Silent);
+        // A page with nothing fitting does not turn the quiet days into a look around either.
+        let html = "<h2>Order a new insurance card</h2>";
+        assert_eq!(after_task(&mem, now(), Lang::En, (URL, html)).unwrap(), AfterTask::Silent);
+
+        // SAFETY: DISCOVER_ENV serialises every test in this binary that reads PIP_DISCOVER.
+        unsafe { std::env::set_var("PIP_DISCOVER", "always") };
+        let r = after_task(&mem, now(), Lang::En, (URL, SERVICES));
+        unsafe { std::env::remove_var("PIP_DISCOVER") };
+        assert!(matches!(r.unwrap(), AfterTask::Offer(_)), "PIP_DISCOVER=always ignores the quiet days");
+    }
+
+    #[test]
+    fn after_task_looks_around_when_nothing_fits() {
+        let _env = env_lock();
+        let mem = Memory::open_in_memory().unwrap();
+        add(&mem, "Objection to the decision", d(2026, 11, 18), "widerspruch_bescheid", None);
+        let html = "<h1>Services for you</h1><h2>Order a new insurance card</h2><h2>Change your address</h2>";
+        assert_eq!(after_task(&mem, now(), Lang::En, (URL, html)).unwrap(), AfterTask::LookAround);
+        // An unreadable page (empty HTML) with an open deadline: the model may look.
+        assert_eq!(after_task(&mem, now(), Lang::En, (URL, "")).unwrap(), AfterTask::LookAround);
+    }
+
+    #[test]
+    fn offer_after_task_wrapper_matches_after_task() {
+        let _env = env_lock();
+        let html_none = "<h2>Order a new insurance card</h2>";
+        let empty = Memory::open_in_memory().unwrap();
+        let (fits, _) = with_letter();
+        let (asked, _) = with_letter();
+        asked.add_event_at(now() - Duration::days(30), EV_ACCEPTED, "Return your questionnaire online").unwrap();
+        for (mem, html) in [(&empty, SERVICES), (&fits, SERVICES), (&fits, html_none), (&asked, SERVICES)] {
+            let full = after_task(mem, now(), Lang::En, (URL, html)).unwrap();
+            let wrapped = offer_after_task(mem, now(), Lang::En, (URL, html)).unwrap();
+            match full {
+                AfterTask::Offer(o) => assert_eq!(wrapped, Some(o)),
+                _ => assert_eq!(wrapped, None, "{full:?}"),
+            }
+        }
     }
 
     #[test]

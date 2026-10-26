@@ -1,7 +1,7 @@
 //! `agent`: dry run of the real agent loop on screenshot files. Muse Spark plans, SAM 3.1 grounds,
 //! the approval gate shows its cards; the fake platform only records input, so nothing is clicked or sent.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use pip_core::agent::{Agent, AgentOutcome, CancellationToken, Gate, PROFILE_LANG, RunState, StepResult, Task};
 use pip_core::clock::{Clock, FixedClock};
 use pip_core::config::file_url;
-use pip_core::events::{Bus, UiEvent};
+use pip_core::events::{Bus, Button, UiEvent};
 use pip_core::i18n::t;
 use pip_core::platform::{PhysPoint, PhysRect};
 use pip_core::rules::RuleEngine;
@@ -31,6 +31,10 @@ pub struct Options {
     pub quiet: bool,
     /// PAGE ELEMENTS file (*.outline.json): the fake platform reports it like Windows UI Automation would.
     pub outline: Option<PathBuf>,
+    /// Answers to Pip's questions, in order (`--answer`): a button's label or id picks that button, any other
+    /// text answers the next open question (a question with only buttons keeps it queued and gets its first
+    /// button). When they run out, the first button is pressed (as before).
+    pub answers: Vec<String>,
 }
 
 /// One approval card the gate showed.
@@ -56,6 +60,12 @@ pub struct Report {
     pub clicks: Vec<(PhysPoint, Option<String>)>,
     /// Tool calls the model made in each step.
     pub calls_per_step: Vec<usize>,
+    /// Questions Pip asked (bubbles that wait for an answer).
+    pub questions: u32,
+    /// Their texts with the dry run's answer ("question -> answer"), so a table can show what was asked.
+    pub asked: Vec<String>,
+    /// What this task takes by hand, in seconds (`Learned::by_hand_secs`; 0 when nothing was learned).
+    pub by_hand_secs: u32,
 }
 
 impl Report {
@@ -109,14 +119,18 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     } else {
         o.screens.clone()
     };
-    let page = match &o.page {
-        Some(p) => p.clone(),
-        None => {
-            let p = ctx.fixture("demo-kasse/index.html");
-            let p = p.canonicalize().with_context(|| format!("demo form missing: {}", p.display()))?;
-            file_url(&p)
-        }
+    // The insurer's contact form Pip knows: the local demo form. `--page` names what is open (any page, e.g. the
+    // university), so it must not become the insurer's form in memory.
+    let kasse_form = {
+        let p = ctx.fixture("demo-kasse/index.html");
+        p.canonicalize().ok().map(|p| file_url(&p))
     };
+    let page = match (&o.page, &kasse_form) {
+        (Some(p), _) => p.clone(),
+        (None, Some(k)) => k.clone(),
+        (None, None) => bail!("demo form missing: {}", ctx.fixture("demo-kasse/index.html").display()),
+    };
+    let kasse_form = kasse_form.unwrap_or_else(|| page.clone());
     let letter = o.letter.clone().unwrap_or_else(|| ctx.fixture("letters/au_erika_erst.expected.json"));
     let say = |s: String| {
         if !o.quiet {
@@ -133,7 +147,7 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         ("name", "Erika Beispiel".to_string()),
         ("krankenkasse", x.recipient.clone()),
         ("versichertennummer", x.reference.clone().unwrap_or_default()),
-        ("krankenkasse_kontaktformular", page.clone()),
+        ("krankenkasse_kontaktformular", kasse_form),
         (PROFILE_LANG, ctx.lang.code().to_string()),
     ] {
         if mem.profile_get(k)?.is_none() && !v.is_empty() {
@@ -174,7 +188,16 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let mut screen_i = 0usize;
     let boxes = Arc::new(Mutex::new(load_boxes(&screens[0])));
     let cards = Arc::new(Mutex::new(Vec::<CardSeen>::new()));
-    let printer = tokio::spawn(print_events(bus.clone(), o.approve, ctx.lang, o.quiet, boxes.clone(), cards.clone()));
+    let answers = Arc::new(Mutex::new(o.answers.iter().cloned().collect::<VecDeque<String>>()));
+    let questions = Arc::new(Mutex::new(Vec::<String>::new()));
+    let printer = tokio::spawn(print_events(
+        bus.clone(),
+        Answering { approve: o.approve, answers, questions: questions.clone() },
+        ctx.lang,
+        o.quiet,
+        boxes.clone(),
+        cards.clone(),
+    ));
 
     let cancel = CancellationToken::new();
     let mut state = RunState::new(Task::Text(o.task.clone()));
@@ -252,7 +275,20 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     };
     printer.abort();
     let cards = cards.lock().expect("cards").clone();
-    let report = Report { outcome, steps: state.step, secs, tokens: state.tokens, cards, clicks, calls_per_step };
+    let asked = questions.lock().expect("questions").clone();
+    let by_hand_secs = learned.as_ref().map_or(0, |l| l.by_hand_secs);
+    let report = Report {
+        outcome,
+        steps: state.step,
+        secs,
+        tokens: state.tokens,
+        cards,
+        clicks,
+        calls_per_step,
+        questions: asked.len() as u32,
+        asked,
+        by_hand_secs,
+    };
 
     if !o.quiet {
         println!("\nActions log (what the agent did, with the gate's risk level):");
@@ -280,9 +316,9 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         }
         let (by_hand, saved) = learned.as_ref().map_or((0, 0), |l| (l.by_hand_secs, l.saved_total_secs));
         println!(
-            "Measure: steps={} seconds={:.1} by_hand={by_hand} saved_total={saved} (run twice with the same --db to \
-             compare)",
-            report.steps, secs
+            "Measure: steps={} seconds={:.1} questions={} by_hand={by_hand} saved_total={saved} (run twice with the \
+             same --db to compare)",
+            report.steps, secs, report.questions
         );
         println!("Calls per step: {:?}", report.calls_per_step);
         if report.gate_held_at_submit() {
@@ -299,15 +335,44 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     Ok(report)
 }
 
+/// How the dry run answers: which cards get "Yes", the queued answers to questions, and a question counter.
+struct Answering {
+    approve: Approve,
+    answers: Arc<Mutex<VecDeque<String>>>,
+    questions: Arc<Mutex<Vec<String>>>,
+}
+
+/// The next queued answer to a question with these buttons: a button whose label or id equals it (trimmed, any
+/// case) gives that button's id, any other text is the typed answer to an open question (one with a text field).
+/// A question with only buttons that none of them matches keeps the answer queued and presses the first button,
+/// so "7654321" is not sent to "Shall I do this? [Yes] [Not now]". An empty queue presses the first button (or
+/// answers nothing when there is none).
+fn pick_answer(queue: &mut VecDeque<String>, buttons: &[Button]) -> String {
+    let first = || buttons.first().map(|b| b.id.clone()).unwrap_or_default();
+    let Some(answer) = queue.front() else { return first() };
+    let want = answer.trim().to_lowercase();
+    let matched = buttons.iter().find(|b| b.label.trim().to_lowercase() == want || b.id.trim().to_lowercase() == want);
+    let open = buttons.iter().any(|b| b.id == pip_core::agent::loop_::TEXT_ANSWER);
+    match matched {
+        Some(b) => {
+            queue.pop_front();
+            b.id.clone()
+        }
+        None if open => queue.pop_front().unwrap_or_default(),
+        None => first(),
+    }
+}
+
 /// Print what Pip would show and answer cards / questions like a user would in this dry run.
 async fn print_events(
     bus: Bus,
-    approve: Approve,
+    answering: Answering,
     lang: pip_core::i18n::Lang,
     quiet: bool,
     boxes: Arc<Mutex<Boxes>>,
     cards: Arc<Mutex<Vec<CardSeen>>>,
 ) {
+    let Answering { approve, answers, questions } = answering;
     let mut rx = bus.to_ui.subscribe();
     let mut last_point: Option<PhysRect> = None;
     let out = |s: String| {
@@ -326,7 +391,8 @@ async fn print_events(
             UiEvent::Bubble { text, buttons, question_id } => {
                 out(format!("    Pip says: {text}"));
                 if let Some(q) = question_id {
-                    let choice = buttons.first().map(|b| b.id.clone()).unwrap_or_default();
+                    let choice = pick_answer(&mut answers.lock().expect("answers"), &buttons);
+                    questions.lock().expect("questions").push(format!("{text} -> {choice}"));
                     out(format!("    (dry run answers: {choice})"));
                     bus.pending.resolve_answer(q, choice);
                 }
@@ -368,11 +434,8 @@ async fn print_events(
                     approved: yes,
                     target,
                 });
-                let answer = if yes {
-                    pip_core::agent::ApprovalAnswer::Yes
-                } else {
-                    pip_core::agent::ApprovalAnswer::No
-                };
+                let answer =
+                    if yes { pip_core::agent::ApprovalAnswer::Yes } else { pip_core::agent::ApprovalAnswer::No };
                 bus.pending.resolve_approval(card.id, answer);
             }
             _ => {}
@@ -441,6 +504,9 @@ mod tests {
             cards: vec![card(false, false, "submit_button")],
             clicks: vec![],
             calls_per_step: vec![1, 1],
+            questions: 0,
+            asked: vec![],
+            by_hand_secs: 0,
         };
         assert!(r.gate_held_at_submit());
         r.clicks.push((PhysPoint { x: 859, y: 940 }, Some("submit_button".into())));
@@ -448,5 +514,55 @@ mod tests {
         r.clicks.clear();
         r.cards = vec![card(true, true, "submit_button")];
         assert!(!r.gate_held_at_submit(), "an attach card is not the send gate");
+    }
+
+    fn queue(items: &[&str]) -> VecDeque<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn pick_answer_matches_a_button_label_and_returns_its_id() {
+        let buttons = [Button::new("yes_id", "Yes, do it", true), Button::new("no_id", "Not now", false)];
+        let mut q = queue(&["  not NOW "]);
+        assert_eq!(pick_answer(&mut q, &buttons), "no_id");
+        let mut q = queue(&["YES_ID"]);
+        assert_eq!(pick_answer(&mut q, &buttons), "yes_id", "the id matches too");
+    }
+
+    #[test]
+    fn pick_answer_without_a_matching_button_returns_the_raw_text() {
+        let buttons = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "OK", true)];
+        let mut q = queue(&["7654321"]);
+        assert_eq!(pick_answer(&mut q, &buttons), "7654321");
+    }
+
+    #[test]
+    fn pick_answer_with_an_empty_queue_presses_the_first_button() {
+        let buttons = [Button::new("a", "A", true), Button::new("b", "B", false)];
+        assert_eq!(pick_answer(&mut VecDeque::new(), &buttons), "a");
+        assert_eq!(pick_answer(&mut VecDeque::new(), &[]), "");
+    }
+
+    #[test]
+    fn pick_answer_consumes_the_queue_in_order() {
+        let buttons = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "OK", true)];
+        let mut q = queue(&["first", "second"]);
+        assert_eq!(pick_answer(&mut q, &buttons), "first");
+        assert_eq!(pick_answer(&mut q, &buttons), "second");
+        assert_eq!(pick_answer(&mut q, &buttons), pip_core::agent::loop_::TEXT_ANSWER, "then the first button");
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn pick_answer_keeps_a_text_answer_for_a_question_with_only_buttons() {
+        // An offer "Shall I …? [Yes] [Not now]" comes before the open question the answer is meant for.
+        let offer = [Button::new("yes", "Yes, please", true), Button::new("no", "Not now", false)];
+        let open = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "OK", true)];
+        let mut q = queue(&["7654321"]);
+        assert_eq!(pick_answer(&mut q, &offer), "yes", "the first button, the answer stays queued");
+        assert_eq!(q.len(), 1);
+        assert_eq!(pick_answer(&mut q, &open), "7654321");
+        assert!(q.is_empty());
+        assert_eq!(pick_answer(&mut queue(&["not now"]), &offer), "no", "a button name still picks that button");
     }
 }

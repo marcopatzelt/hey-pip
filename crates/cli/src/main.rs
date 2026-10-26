@@ -9,6 +9,7 @@
 //!   pip-cli agent "Schick die Krankschreibung an die Gesundkasse"
 //!   pip-cli agent "Send my sick note" --screen fixtures/screens/demo-kasse.png \
 //!       --outline fixtures/screens/demo-kasse.outline.json
+//!   pip-cli --lang en agent "…" --page file://…/fixtures/demo-uni/index.html --answer 7654321
 //!   pip-cli transcribe sample.wav
 //!   pip-cli eval
 
@@ -82,12 +83,14 @@ enum Cmd {
     },
     /// Dry run of the agent on screenshot files: the model plans, SAM grounds, nothing is really clicked.
     Agent {
+        /// What the user asks. "@task_look_screen" = the text of that i18n key (the app's "Look at my screen").
         task: String,
         /// Screens in order; the next one is shown after the agent typed or a card was approved
         /// (default: the empty, then the filled demo form)
         #[arg(long = "screen")]
         screens: Vec<PathBuf>,
-        /// The page open in the browser (default: the local demo form, file://…/fixtures/demo-kasse/index.html)
+        /// The page open in the browser (default: the local demo form, file://…/fixtures/demo-kasse/index.html).
+        /// Pip's memory always knows the demo form as the insurer's contact form, whatever is open.
         #[arg(long)]
         page: Option<String>,
         /// The sick note the user has given Pip (*.expected.json, no API call)
@@ -102,6 +105,11 @@ enum Cmd {
         /// ticking change it like a real form. Without it: the picture only (like Linux).
         #[arg(long)]
         outline: Option<PathBuf>,
+        /// Answer to Pip's question, repeatable (in order). A button's label picks that button; any other text
+        /// answers the next open question (a question with only buttons gets its first button and keeps the
+        /// answer). Without (or after the last one) the first button is pressed.
+        #[arg(long = "answer")]
+        answers: Vec<String>,
     },
     /// Speech to text for a WAV file (Muse Voice Transcribe).
     Transcribe { wav: PathBuf },
@@ -114,7 +122,8 @@ enum Cmd {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Approve {
     /// Answer every card with "Noch nicht"
     None,
@@ -185,8 +194,14 @@ async fn main() -> Result<()> {
             screen::ground(&ctx, &image, &description, &query, &out).await
         }
         Cmd::Rules { letters } => letters::rules(&ctx, &letters),
-        Cmd::Agent { task, screens, page, letter, approve, max_steps, outline } => {
-            let opts = agent_cmd::Options { task, screens, page, letter, approve, max_steps, quiet: false, outline };
+        Cmd::Agent { task, screens, page, letter, approve, max_steps, outline, answers } => {
+            // "@task_look_screen" = the app's own button text for that i18n key (same rule as eval/tasks.json).
+            let task = match task.strip_prefix('@') {
+                Some(key) => pip_core::i18n::t(key, ctx.lang).to_string(),
+                None => task,
+            };
+            let opts =
+                agent_cmd::Options { task, screens, page, letter, approve, max_steps, quiet: false, outline, answers };
             agent_cmd::run(&ctx, opts).await.map(|_| ())
         }
         Cmd::Transcribe { wav } => {

@@ -39,6 +39,13 @@ struct MockPlatform {
     outline_reads: Mutex<u32>,
     /// Typing does not change what the fields show (a page that rejects or cuts the text).
     frozen_fields: Mutex<bool>,
+    /// Ctrl+A and Backspace do not clear the field: typed text lands behind the old value (the lost select-all
+    /// seen on Windows).
+    appends: Mutex<bool>,
+    /// Calls of `set_value_at` (the direct ValuePattern repair) so far.
+    set_values: Mutex<Vec<(PhysPoint, String)>>,
+    /// `set_value_at` works (else it answers false, like a field without ValuePattern).
+    allow_set_value: Mutex<bool>,
 }
 
 impl MockPlatform {
@@ -112,7 +119,7 @@ impl Input for MockPlatform {
     }
     fn key(&self, combo: &str) -> anyhow::Result<()> {
         self.actions.lock().unwrap().push(format!("key {combo}"));
-        if combo == "ctrl+a" {
+        if combo == "ctrl+a" && !*self.appends.lock().unwrap() {
             self.caret.lock().unwrap().1 = true;
         }
         Ok(())
@@ -155,6 +162,20 @@ impl UiTree for MockPlatform {
     fn value_at(&self, p: PhysPoint) -> Option<String> {
         let items = self.outline.lock().unwrap();
         items.iter().find(|i| i.rect.contains(p) && !i.is_password).and_then(|i| i.value.clone())
+    }
+    fn set_value_at(&self, p: PhysPoint, text: &str) -> bool {
+        self.set_values.lock().unwrap().push((p, text.to_string()));
+        if !*self.allow_set_value.lock().unwrap() {
+            return false;
+        }
+        let mut items = self.outline.lock().unwrap();
+        match items.iter_mut().find(|i| i.rect.contains(p) && i.role == "edit") {
+            Some(it) => {
+                it.value = Some(text.to_string());
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -1844,7 +1865,7 @@ async fn yes_switches_to_act_and_submit_still_shows_card() {
     let reqs = x.h.requests();
     assert_eq!(reqs.len(), 4);
     let o = outputs(&reqs[2]);
-    assert!(o[0].starts_with("The user said yes. Click „Return your questionnaire online“"), "{o:?}");
+    assert!(o[0].starts_with("The user said yes. Click \"Return your questionnaire online\""), "{o:?}");
     assert!(o[1].starts_with("not done"), "{o:?}");
     // Act phase: the normal tools (no suggest), and the task now says what the user agreed to.
     let names = tool_names(&reqs[2]);
@@ -1852,7 +1873,7 @@ async fn yes_switches_to_act_and_submit_still_shows_card() {
     assert!(!names.contains(&"suggest".to_string()));
     assert_eq!(names.len(), 13);
     let header = reqs[2]["input"][0].to_string();
-    assert!(header.contains("The user agreed to do „Return your questionnaire online“"), "{header}");
+    assert!(header.contains(r#"The user agreed to do \"Return your questionnaire online\""#), "{header}");
     assert!(!header.contains("Look ONCE"));
     // Sending still needs the card.
     let ev = x.h.drain();
@@ -2441,4 +2462,157 @@ async fn the_saved_seconds_total_never_blocks_an_address() {
     ]);
     h.run("Open the form").await;
     assert_eq!(h.opened.lock().unwrap().len(), 1, "{:?}", outputs(&h.requests()[1]));
+}
+
+// ---------- fewer, honest steps ----------
+
+fn say(text: &str) -> (&'static str, Value) {
+    ("say", json!({"text": text}))
+}
+
+#[tokio::test]
+async fn a_repeated_say_is_shown_only_once() {
+    let mut h = Harness::new(false).await;
+    h.platform.set_outline(form_outline());
+    h.agent_turns(vec![
+        calls("r1", &[say("Ich fülle das Formular aus."), type_el("Erika", "your name", 1)]),
+        calls("r2", &[say("Ich  fülle das Formular aus.")]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.run("Füll das aus").await;
+    let b = bubbles(&h.drain());
+    assert_eq!(b.iter().filter(|t| t.contains("fülle das Formular")).count(), 1, "{b:?}");
+    let reqs = h.requests();
+    let outs = outputs(&reqs[2]);
+    assert!(outs[0].contains("already said"), "{outs:?}");
+}
+
+#[tokio::test]
+async fn a_say_only_turn_is_told_to_act() {
+    let h = Harness::new(false).await;
+    h.agent_turns(vec![calls("r1", &[say("Moment.")]), calls("r2", &[done("ok")])]);
+    h.run("Füll das aus").await;
+    let outs = outputs(&h.requests()[1]);
+    assert!(outs[0].contains("This turn had no action"), "{outs:?}");
+
+    // Control: say together with an action is just "said".
+    let h = Harness::new(false).await;
+    h.platform.set_outline(form_outline());
+    h.agent_turns(vec![
+        calls("r1", &[say("Ich trage deinen Namen ein."), type_el("Erika", "your name", 1)]),
+        calls("r2", &[done("ok")]),
+    ]);
+    h.run("Füll das aus").await;
+    let outs = outputs(&h.requests()[1]);
+    assert_eq!(outs[0], "said");
+}
+
+/// First part of a task that types a name on gesundkasse and then stops at an unanswered send card.
+fn stopped_turns() -> Vec<Value> {
+    vec![
+        calls("r1", &[("open_url", json!({"url": "https://www.gesundkasse.example/kontakt"}))]),
+        calls(
+            "r2",
+            &[(
+                "type_text",
+                json!({"text": "Erika Beispiel", "what": "your name", "into_sam_query": "text input field",
+                       "field_label": "Name"}),
+            )],
+        ),
+        calls("r3", &[click("den Knopf „Absenden“", true)]),
+    ]
+}
+
+fn done_in(b: &[String]) -> u64 {
+    let line = b.iter().find_map(|t| t.split_once("Done in ").map(|(_, r)| r)).expect("done line");
+    line.split_once(" s").expect(line).0.parse().expect(line)
+}
+
+#[tokio::test]
+async fn resumed_run_counts_the_time_before_the_pause() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    h.agent = h.agent.with_approval_timeout(Duration::from_millis(50)).with_pace(Duration::from_millis(700));
+    h.agent_turns(stopped_turns());
+    h.sam(&[sam_box(100, 100, 300, 140), sam_box(700, 600, 900, 640)]);
+    assert!(matches!(h.run("Fill this in").await, AgentOutcome::NeedsUser(_)));
+    assert!(h.agent.can_resume());
+    let _ = h.drain();
+    h.agent = h.agent.with_pace(Duration::ZERO);
+    h.agent_turns(vec![calls("r4", &[done("Filled in.")])]);
+    let out = h.agent.resume(CancellationToken::new()).await.unwrap();
+    assert_eq!(out, Some(AgentOutcome::Done("Filled in.".into())));
+    let b = bubbles(&h.drain());
+    assert!(done_in(&b) >= 1, "{b:?}");
+    let p = h.memory.playbook_get("www.gesundkasse.example", "text").unwrap().expect("playbook");
+    assert!(p.seconds >= 1, "the time before the pause counts: {}", p.seconds);
+
+    // A resumed run that really is faster than last time may say so.
+    let mut p = p;
+    p.seconds = 60;
+    h.memory.playbook_upsert(&p).unwrap();
+    h.agent = h.agent.with_pace(Duration::from_millis(700));
+    h.agent_turns(stopped_turns());
+    h.sam(&[sam_box(100, 100, 300, 140), sam_box(700, 600, 900, 640)]);
+    assert!(matches!(h.run("Fill this in").await, AgentOutcome::NeedsUser(_)));
+    let _ = h.drain();
+    h.agent = h.agent.with_pace(Duration::ZERO);
+    h.agent_turns(vec![calls("r5", &[done("Filled in.")])]);
+    h.agent.resume(CancellationToken::new()).await.unwrap();
+    let b = bubbles(&h.drain());
+    assert!(b.iter().any(|t| t.contains("time on this site") && t.contains("instead of 60 s")), "{b:?}");
+}
+
+/// The user reads the question and looks for the answer before "Weiter": that pause is not Pip's time and
+/// never lands in "Done in", the playbook or a speed-up claim.
+#[tokio::test]
+async fn the_pause_until_weiter_is_not_counted() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    h.agent = h.agent.with_approval_timeout(Duration::from_millis(50)).with_pace(Duration::ZERO);
+    h.agent_turns(stopped_turns());
+    h.sam(&[sam_box(100, 100, 300, 140), sam_box(700, 600, 900, 640)]);
+    assert!(matches!(h.run("Fill this in").await, AgentOutcome::NeedsUser(_)));
+    let _ = h.drain();
+    // 5 s away; the active part of this run is well under that even on a busy machine (no pace).
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    h.agent_turns(vec![calls("r4", &[done("Filled in.")])]);
+    h.agent.resume(CancellationToken::new()).await.unwrap();
+    let b = bubbles(&h.drain());
+    let p = h.memory.playbook_get("www.gesundkasse.example", "text").unwrap().expect("playbook");
+    assert!(p.seconds < 5, "the pause until Weiter does not count: {} s", p.seconds);
+    assert!(done_in(&b) < 5, "{b:?}");
+}
+
+async fn appended_name(allow_repair: bool) -> (Harness, Vec<String>) {
+    let mut h = Harness::new(false).await;
+    let mut items = form_outline();
+    items[0].value = Some("Max Alt".into());
+    h.platform.set_outline(items);
+    *h.platform.appends.lock().unwrap() = true;
+    *h.platform.allow_set_value.lock().unwrap() = allow_repair;
+    h.agent_turns(vec![calls("r1", &[type_el("Erika Beispiel", "your name", 1)]), calls("r2", &[done("ok")])]);
+    h.run("Fill in my name").await;
+    let _ = h.drain();
+    let outs = outputs(&h.requests()[1]);
+    (h, outs)
+}
+
+#[tokio::test]
+async fn appended_text_is_repaired_through_the_ui_tree() {
+    let (h, outs) = appended_name(true).await;
+    let set: Vec<String> = h.platform.set_values.lock().unwrap().iter().map(|(_, t)| t.clone()).collect();
+    assert_eq!(set, ["Erika Beispiel"]);
+    assert!(outs[0].contains(r#"the field now shows "Erika Beispiel""#), "{outs:?}");
+    assert!(!outs[0].contains("Max Alt"), "{outs:?}");
+    let shown = h.platform.outline.lock().unwrap()[0].value.clone();
+    assert_eq!(shown.as_deref(), Some("Erika Beispiel"), "not \"Max AltErika Beispiel\"");
+}
+
+#[tokio::test]
+async fn appended_text_without_repair_is_reported() {
+    let (h, outs) = appended_name(false).await;
+    assert_eq!(h.platform.set_values.lock().unwrap().len(), 1, "the repair was tried once");
+    assert!(outs[0].contains(r#"instead of "Erika Beispiel""#), "{outs:?}");
+    assert!(outs[0].contains("Max AltErika Beispiel"), "{outs:?}");
 }

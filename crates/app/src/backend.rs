@@ -55,6 +55,18 @@ const DEMO_LETTERS: &[(&str, &[u8])] = &[
     ("kasse_brief.pdf", include_bytes!("../../../fixtures/letters/kasse_brief.pdf")),
 ];
 
+/// The invented demo person (`seed_demo_profile`); PIP_DEMO_RESET wipes only her memory.
+const DEMO_FULL_NAME: &str = "Erika Beispiel";
+
+/// PIP_DEMO_RESET may wipe the memory only when it is the demo person's (`full_name` exactly DEMO_FULL_NAME)
+/// or holds no name at all. Any other stored name may be a real person: never wiped.
+fn demo_reset_allowed(full_name: Option<&str>, name: Option<&str>) -> bool {
+    match full_name {
+        Some(f) => f == DEMO_FULL_NAME,
+        None => name.is_none(),
+    }
+}
+
 pub fn env_flag(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
 }
@@ -172,6 +184,20 @@ impl Backend {
             let dir = cfg.data_dir.join("demo-letters");
             if let Err(e) = write_demo_letters(&dir) {
                 tracing::warn!("cannot write the demo letters: {e}");
+            }
+            // PIP_DEMO_RESET=1: every recording day starts with a fresh Erika (the story is told relative to
+            // today). Only the invented person's memory is wiped, never a real one.
+            if env_flag("PIP_DEMO_RESET") {
+                let full_name = mem.profile_get("full_name").ok().flatten();
+                let name = mem.profile_get("name").ok().flatten();
+                if demo_reset_allowed(full_name.as_deref(), name.as_deref()) {
+                    match mem.wipe_everything() {
+                        Ok(()) => tracing::info!("demo memory wiped: seeding Erika again for today"),
+                        Err(e) => tracing::warn!("demo memory wipe failed: {e:#}"),
+                    }
+                } else {
+                    tracing::warn!("PIP_DEMO_RESET ignored: the memory belongs to someone other than the demo person");
+                }
             }
             let now = backend.clock.now();
             match guard("demo profile", || seed_demo_profile(mem, rules, &dir, now)) {
@@ -330,7 +356,9 @@ mod tests {
     fn built_in_uni_page_is_written_and_is_its_own_site() {
         let dir = tempfile::tempdir().unwrap();
         let fx = write_demo_form(&dir.path().join("fixtures")).expect("written");
-        for rel in ["demo-kasse/index.html", "demo-kasse/services.html", "demo-kasse/fragebogen.html", "demo-uni/index.html"] {
+        for rel in
+            ["demo-kasse/index.html", "demo-kasse/services.html", "demo-kasse/fragebogen.html", "demo-uni/index.html"]
+        {
             assert!(fx.join(rel).is_file(), "{rel}");
         }
         let gate = Gate::new(true).with_fixtures(&[&fx]);
@@ -380,6 +408,27 @@ mod tests {
         let wohngeld = mem.search_documents("Wohngeld", 5).unwrap();
         assert!(wohngeld.iter().any(|d| d.path == letters.join("bescheid_wohngeld.pdf") && d.path.exists()));
         assert!(!seed_demo_profile(&mem, &rules, &letters, now).unwrap());
+    }
+
+    #[test]
+    fn demo_reset_wipes_only_the_invented_person() {
+        assert!(demo_reset_allowed(Some("Erika Beispiel"), Some("Erika")));
+        assert!(demo_reset_allowed(None, None), "an empty memory");
+        assert!(!demo_reset_allowed(Some("Marta Muster"), Some("Marta")));
+        assert!(!demo_reset_allowed(Some("erika beispiel"), None), "exactly the invented name");
+        assert!(!demo_reset_allowed(None, Some("Marta")), "a first name only: maybe a real person");
+        // The guard and the seed agree on who the demo person is.
+        let dir = tempfile::tempdir().unwrap();
+        let letters = dir.path().join("demo-letters");
+        write_demo_letters(&letters).unwrap();
+        let mem = Arc::new(Memory::open_in_memory().unwrap());
+        let now = chrono::Local::now();
+        let rules = RuleEngine::new(mem.clone(), Arc::new(pip_core::clock::FixedClock::new(now)));
+        assert!(seed_demo_profile(&mem, &rules, &letters, now).unwrap());
+        let full = mem.profile_get("full_name").unwrap();
+        assert!(demo_reset_allowed(full.as_deref(), mem.profile_get("name").unwrap().as_deref()));
+        mem.wipe_everything().unwrap();
+        assert!(seed_demo_profile(&mem, &rules, &letters, now).unwrap(), "after the wipe Erika is seeded again");
     }
 
     #[test]

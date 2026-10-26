@@ -66,8 +66,9 @@ as few turns as you can, unless the page looks different.
 - Use only facts from the user, from memory or from the screen. Never invent names, numbers or dates; ask_user \
 instead. Look in WHAT YOU KNOW first: the latest letters list the person's full name, the insurer and numbers. \
 Never ask for a value that is in WHAT YOU KNOW; just use it. Ask only for what is missing from memory and \
-screen, at most once per task, and remember_fact the answer. Say what you are doing in one sentence at the start, \
-not before each field.
+screen, at most once per task, and remember_fact the answer. Say what you are doing in ONE short sentence at the start, \
+in the SAME turn as your first actions (say together with type_text/click). Never spend a turn on say alone, and \
+never say a sentence you already said in this task.
 - Do only what the user asked. Nothing else.
 - Never close, minimize or quit the user's windows or programs (they may hold unsaved work). If another window \
 covers the one you need, click a visible part of it or its taskbar button; for a web page use open_url.
@@ -151,6 +152,7 @@ mod tests {
             "press tab and call type_text without into_sam_query",
             "fill all visible fields in one turn",
             "PAGE ELEMENTS",
+            "in the SAME turn as your first actions",
             "open the file picker last",
             "End the turn after anything that changes the page",
         ] {

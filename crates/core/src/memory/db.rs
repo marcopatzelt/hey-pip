@@ -468,6 +468,21 @@ impl Memory {
         Ok(true)
     }
 
+    /// Forget everything (PIP_DEMO_RESET: a fresh demo day): every row of every table, the search index
+    /// included, in one transaction. The schema and its version stay. Files on disk stay.
+    pub fn wipe_everything(&self) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        // Contentless FTS5: 'delete-all' empties the index (a plain DELETE is not allowed on it).
+        tx.execute("INSERT INTO documents_fts(documents_fts) VALUES ('delete-all')", [])?;
+        // Children before parents (foreign keys are on).
+        for table in ["reminders", "deadlines", "documents", "profile", "playbooks", "events", "actions_log"] {
+            tx.execute(&format!("DELETE FROM {table}"), [])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Keeps memory small and fresh: drops playbooks that failed twice since their last success or were not
     /// used for 180 days; keeps at most 50 playbooks, 500 events and 5000 action rows (the newest).
     pub fn prune(&self) -> Result<()> {

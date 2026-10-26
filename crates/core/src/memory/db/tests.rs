@@ -322,3 +322,30 @@ fn forgetting_a_letter_removes_it_from_search_and_its_deadlines() {
     let k = m.knowledge().unwrap();
     assert!(k.letters.is_empty());
 }
+
+#[test]
+fn wipe_everything_empties_every_table() {
+    let m = mem();
+    m.profile_set("name", "Erika Beispiel").unwrap();
+    let id = m
+        .insert_document(
+            Path::new("C:/b/au.pdf"),
+            "sha-w",
+            &au_doc(d(2026, 10, 20), d(2026, 10, 30)),
+            "Arbeitsunfähigkeit Gesundkasse",
+        )
+        .unwrap();
+    let now = local_at(d(2026, 10, 28), 9, 0);
+    m.add_deadline(&NewDeadline { doc_id: Some(id), ..deadline("Neue AU", d(2026, 11, 2), vec![now]) }).unwrap();
+    m.add_event("suggestion_accepted", "Return your questionnaire online").unwrap();
+    m.wipe_everything().unwrap();
+    for table in ["profile", "documents", "deadlines", "reminders", "events", "actions_log", "playbooks"] {
+        let n: i64 = m.conn().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "{table}");
+    }
+    assert_eq!(m.profile_get("name").unwrap(), None);
+    assert!(m.search_documents("Arbeitsunfähigkeit", 5).unwrap().is_empty(), "the search index is empty too");
+    assert!(m.open_deadlines().unwrap().is_empty());
+    // The same letter can come in again after a wipe.
+    m.insert_document(Path::new("C:/b/au.pdf"), "sha-w", &au_doc(d(2026, 10, 20), d(2026, 10, 30)), "AU").unwrap();
+}

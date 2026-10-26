@@ -242,6 +242,13 @@ pub struct RunState {
     after_element_type: bool,
     /// A file dialog was in front when this turn started (or after its last click): no typing by element there.
     dialog_open: bool,
+    /// Every sentence shown with `say` in this task (squashed, lowercase), kept across a resume: the same
+    /// sentence is never shown or spoken twice.
+    said: Vec<String>,
+    /// The current turn holds only `say`/`wait` calls (no action): the say output tells the model to act.
+    talk_only_turn: bool,
+    /// Active time of the parts of this task before the last resume (the budget restarts, the clock does not).
+    active_before: Duration,
 }
 
 /// A yes that could not be used because the page changed under the button.
@@ -328,6 +335,9 @@ impl RunState {
             outline: Vec::new(),
             after_element_type: false,
             dialog_open: false,
+            said: Vec::new(),
+            talk_only_turn: false,
+            active_before: Duration::ZERO,
         }
     }
 
@@ -344,9 +354,13 @@ impl RunState {
         }
     }
 
-    /// Fresh time and step budget and a fresh model conversation; what was done stays in `history`.
+    /// Fresh time and step budget and a fresh model conversation; what was done stays in `history`, the
+    /// sentences already said stay in `said`, and the active time so far moves to `active_before` (so the
+    /// "Done in" time and the playbook count the whole task, while the budget starts again). The pause itself
+    /// (from the stop until "Weiter") was booked as a wait when the run was parked, so it does not count.
     fn prepare_resume(&mut self) {
         self.step = 0;
+        self.active_before += active_time(self.started, &self.user_wait);
         self.started = Instant::now();
         self.previous_response_id = None;
         self.pending_input.clear();
@@ -361,8 +375,14 @@ impl RunState {
         self.outline.clear();
     }
 
-    /// Run time without the time spent waiting for the user.
+    /// Active time of the whole task without the time spent waiting for the user, including the parts before
+    /// a pause ("Weiter").
     pub fn active_time(&self) -> Duration {
+        self.active_before + self.budget_time()
+    }
+
+    /// Active time since the run (or its last resume) started: what counts against the time budget.
+    fn budget_time(&self) -> Duration {
         active_time(self.started, &self.user_wait)
     }
 }
@@ -585,7 +605,7 @@ impl Agent {
                 break AgentOutcome::Stopped;
             }
             let (max_steps, max_time) = state.budget();
-            if state.step >= max_steps || state.active_time() >= max_time {
+            if state.step >= max_steps || state.budget_time() >= max_time {
                 break AgentOutcome::Failed(too_long(&state, lang));
             }
             let res = tokio::select! {
@@ -637,6 +657,9 @@ impl Agent {
         let learned = self.learn_run(&state, &outcome).await;
         self.finish(&outcome, &state, learned.as_ref(), lang);
         if matches!(outcome, AgentOutcome::Stopped | AgentOutcome::NeedsUser(_)) && state.sent.is_empty() {
+            // The pause until "Weiter" is the user's time (reading the question, looking for the answer), not
+            // Pip's: it is a wait until `prepare_resume` books the active time.
+            state.user_wait.lock().expect("wait lock").since = Some(Instant::now());
             *self.paused_run.lock().expect("paused lock") = Some(state);
         }
         Ok(outcome)
@@ -880,6 +903,8 @@ impl Agent {
         };
         state.pending_input.clear();
         state.last_calls = out.calls.clone();
+        state.talk_only_turn =
+            !out.calls.is_empty() && out.calls.iter().all(|c| matches!(c.name.as_str(), "say" | "wait"));
         let tokens = out.usage.input_tokens + out.usage.output_tokens;
         state.tokens += tokens;
         state.step += 1;
@@ -1253,7 +1278,23 @@ impl Agent {
         let quick = std::mem::take(&mut state.after_element_type);
         match tool {
             Tool::Say { text } => {
+                let key = squash(text).to_lowercase();
+                if state.said.contains(&key) {
+                    // No second bubble and no second TTS of the same sentence.
+                    return Ok(ToolRun::out(
+                        Risk::Free,
+                        "already said earlier in this task; the user read it. Act now.",
+                    ));
+                }
                 self.bubble(text.clone(), true);
+                state.said.push(key);
+                if state.talk_only_turn && state.phase == Phase::Act {
+                    return Ok(ToolRun::out(
+                        Risk::Free,
+                        "said. This turn had no action: next time call say together with your actions, or act \
+without say.",
+                    ));
+                }
                 Ok(ToolRun::out(Risk::Free, "said"))
             }
             Tool::Point { sam_query, description } => {
@@ -2430,14 +2471,14 @@ impl Agent {
                     (None, None) => String::new(),
                 };
                 state.accepted = Some(format!(
-                    "The user agreed to do „{quote}“ together (it fits {ids}). Click „{quote}“ (or its 'Open form' \
+                    "The user agreed to do \"{quote}\" together (it fits {ids}). Click \"{quote}\" (or its 'Open form' \
                      link), fill the form with facts from WHAT YOU KNOW, ask_user for anything missing; attaching and \
                      sending need approval (is_commit=true).\n"
                 ));
                 Ok(ToolRun::out(
                     Risk::Free,
                     format!(
-                        "The user said yes. Click „{quote}“ (or its 'Open form' link), fill the form with facts from \
+                        "The user said yes. Click \"{quote}\" (or its 'Open form' link), fill the form with facts from \
                          WHAT YOU KNOW, ask_user for anything missing; attaching and sending need approval."
                     ),
                 ))
@@ -3121,12 +3162,9 @@ fn ordinal(n: i64) -> String {
 }
 
 /// The speed-up sentence, only when this run updated the same playbook Pip knew at the start and was really
-/// faster (never claim a speed-up that did not happen). A resumed run only counts the time after the pause,
-/// so it makes no claim.
+/// faster (never claim a speed-up that did not happen). A resumed run counts the active time before the
+/// pause too, so its claim is honest.
 fn faster_than_before(learned: &Learned, state: &RunState, lang: Lang) -> Option<String> {
-    if state.resumed {
-        return None;
-    }
     let (runs, seconds) = state.prior?;
     let before = learned.before.filter(|b| learned.playbook_saved && b.runs == runs && b.seconds == seconds)?;
     let now = state.active_time().as_secs().max(1);

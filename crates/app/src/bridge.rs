@@ -18,6 +18,7 @@ use pip_core::memory::{DeadlineStatus, Knowledge, untrust_site};
 use pip_core::meta::MetaError;
 use pip_core::rules::daily::{EV_ACCEPTED, EV_DECLINED, EV_SUGGESTED};
 use pip_core::rules::text::fmt_date;
+use pip_core::rules::{AfterTask, AfterTaskOffer};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -997,7 +998,7 @@ impl Ctx {
         }
         // The start bubble already says what goes to Meta's AI, and pressing a job is the user's yes:
         // no second question. PIP_SCREEN_NOTICE=1 brings the old one-time notice back.
-        if matches!(job, Job::Task(_))
+        if matches!(job, Job::Task(_) | Job::Offered(_))
             && env_flag("PIP_SCREEN_NOTICE")
             && self.backend.profile_get("screen_notice_ok").is_none()
         {
@@ -1048,13 +1049,14 @@ impl Ctx {
             *run = Some(token.clone());
             token
         };
-        if let Job::Task(task) = &job
+        if let Job::Task(task) | Job::Offered(task) = &job
             && !matches!(task, Task::Discover { .. })
         {
             *self.last_task.lock().expect("task lock") = Some(task.clone());
         }
-        // A finished normal task may be followed by one look at the insurer's services page.
-        let discover_after = matches!(&job, Job::Task(task) if !matches!(task, Task::Discover { .. }));
+        // A finished normal task may be followed by one look at the insurer's services page; a task the
+        // user started from an offer is not (it was the offer).
+        let discover_after = discover_after(&job);
         // The ask box had the keyboard: give it back to the page before Pip presses keys.
         self.release_focus();
         self.set_acting(true);
@@ -1066,7 +1068,7 @@ impl Ctx {
                 let tk = token.clone();
                 guard_async("agent", async move {
                     match job {
-                        Job::Task(task) => agent.run(task, tk).await,
+                        Job::Task(task) | Job::Offered(task) => agent.run(task, tk).await,
                         Job::Resume => Ok(agent.resume(tk).await?.unwrap_or(AgentOutcome::Stopped)),
                     }
                 })
@@ -1101,8 +1103,10 @@ impl Ctx {
     }
 
     /// After-task offer: OFFER_AFTER_SECS after a finished task Pip offers one thing on the insurer's services
-    /// page that fits an open deadline (`rules::offer_after_task`, Rust only, no model call). Only when nothing
-    /// fits does the model look around once (Task::Discover). Off with PIP_DISCOVER=0 or without a services page.
+    /// page that fits an open deadline (`rules::after_task`, Rust only, no model call). Only when an open
+    /// deadline exists and no heading fits does the model look around once (Task::Discover); in every other
+    /// case (no open deadline, quiet days after "Not now", every fitting heading asked before) Pip stays quiet
+    /// and opens nothing. Off with PIP_DISCOVER=0 or without a services page.
     fn discover_later(self: &Arc<Self>, after: String) {
         if std::env::var("PIP_DISCOVER").is_ok_and(|v| matches!(v.trim(), "0" | "false" | "off" | "no")) {
             return;
@@ -1117,34 +1121,43 @@ impl Ctx {
             if me.paused.load(Ordering::SeqCst) || me.run.lock().expect("run lock").is_some() {
                 return;
             }
-            if me.clone().show_offer() {
-                return;
+            match me.after_task() {
+                AfterTask::Offer(o) => me.show_offer(o),
+                AfterTask::LookAround => me.start_job(Job::Task(Task::Discover { after })),
+                AfterTask::Silent => tracing::info!("after-task offer: nothing to offer"),
             }
-            me.start_job(Job::Task(Task::Discover { after }));
         });
     }
 
-    /// The deterministic after-task offer; false when nothing fits (or the page cannot be read).
-    fn show_offer(self: Arc<Self>) -> bool {
-        let Some(mem) = self.backend.memory.clone() else { return false };
-        let Some((url, html)) = self.backend.profile_get(DEMO_SERVICES_KEY).and_then(|url| {
-            let html = std::fs::read_to_string(file_url_path(&url)?).ok()?;
-            Some((url, html))
-        }) else {
-            return false;
+    /// What follows a finished task (`rules::after_task`). The services page is read once; a page on the web
+    /// (not file://) counts as one without headings, so only the model can look at it. A file:// page that
+    /// cannot be read is gone for the model too: Silent. No memory or an error: Silent (never a page opened
+    /// without words).
+    fn after_task(&self) -> AfterTask {
+        let Some(mem) = self.backend.memory.clone() else { return AfterTask::Silent };
+        let Some(url) = self.backend.profile_get(DEMO_SERVICES_KEY) else { return AfterTask::Silent };
+        let html = match file_url_path(&url).map(std::fs::read_to_string) {
+            Some(Ok(html)) => html,
+            Some(Err(e)) => {
+                tracing::warn!("after-task offer: cannot read the services page {url}: {e}");
+                return AfterTask::Silent;
+            }
+            None => String::new(),
         };
         let lang = self.lang();
         // Events carry the real time, so the 7 quiet days after "Not now" count in real time too.
-        let found =
-            guard("offer", || pip_core::rules::offer_after_task(&mem, chrono::Local::now(), lang, (&url, &html)));
-        let o = match found {
-            Ok(Some(o)) => o,
-            Ok(None) => return false,
+        match guard("offer", || pip_core::rules::after_task(&mem, chrono::Local::now(), lang, (&url, &html))) {
+            Ok(next) => next,
             Err(e) => {
                 tracing::warn!("after-task offer failed: {e:#}");
-                return false;
+                AfterTask::Silent
             }
-        };
+        }
+    }
+
+    /// The deterministic after-task offer: "Gesundkasse also offers …" [Yes, let's do it] [Not now] [Why?].
+    fn show_offer(self: Arc<Self>, o: AfterTaskOffer) {
+        let lang = self.lang();
         self.offer_event(EV_SUGGESTED, &o.offer.heading);
         let text =
             tf("sugg_text", lang, &[("insurer", &o.insurer), ("quote", &o.offer.heading), ("reason", &o.reason)]);
@@ -1153,7 +1166,6 @@ impl Ctx {
         self.pip(PipState::Asking);
         self.bus.emit(UiEvent::Speak { text: text.clone() });
         self.say(text, offer_buttons(lang, true));
-        true
     }
 
     fn offer_event(&self, kind: &str, heading: &str) {
@@ -1183,16 +1195,17 @@ impl Ctx {
                     // Straight to Task::Text: the task always says "Sending needs approval", so the word
                     // heuristics of task_from_words could reroute it (e.g. a heading with "sick note").
                     *self.last_text.lock().expect("text lock") = Some(o.task.clone());
-                    self.start_task(Task::Text(o.task));
+                    // Job::Offered: when it is done Pip does not look for the next thing (it was the offer).
+                    self.start_job(Job::Offered(Task::Text(o.task)));
                 }
             }
             ("offer_go", _) => {
                 let offer = self.offer_task.lock().expect("offer lock").take();
                 if let Some(o) = offer {
                     self.offer_event(EV_ACCEPTED, &o.heading);
-                    // Like brief_go: straight to Task::Text.
+                    // Like brief_go: straight to Task::Text, and no look around after it.
                     *self.last_text.lock().expect("text lock") = Some(o.task.clone());
-                    self.start_task(Task::Text(o.task));
+                    self.start_job(Job::Offered(Task::Text(o.task)));
                 }
             }
             ("offer_no", _) => {
@@ -1842,10 +1855,19 @@ struct Read {
     doc_id: Option<i64>,
 }
 
-/// What a run does: a new task, or "Weiter" on the stopped one.
+/// What a run does: a new task, a task the user said yes to in an offer (brief or after-task), or "Weiter"
+/// on the stopped one.
 enum Job {
     Task(Task),
+    /// From [Yes, do it now] / [Yes, let's do it]: runs like Task, but no after-task offer follows.
+    Offered(Task),
     Resume,
+}
+
+/// Whether a finished job may be followed by the after-task offer: only a normal task the user asked for,
+/// never an accepted offer (that would chain offers), a look around itself, or a resumed run.
+fn discover_after(job: &Job) -> bool {
+    matches!(job, Job::Task(task) if !matches!(task, Task::Discover { .. }))
 }
 
 /// "Montag, 2. November" / "Monday, November 2".
@@ -1871,6 +1893,14 @@ mod tests {
         assert_eq!(b[1].label, "Not now");
         let after_why: Vec<String> = offer_buttons(Lang::En, false).into_iter().map(|b| b.id).collect();
         assert_eq!(after_why, ["app:offer_go", "app:offer_no"]);
+    }
+
+    #[test]
+    fn only_a_normal_task_is_followed_by_the_after_task_offer() {
+        assert!(discover_after(&Job::Task(Task::Text("send my sick note".into()))));
+        assert!(!discover_after(&Job::Offered(Task::Text("Open file:///x. Click \"A\"".into()))));
+        assert!(!discover_after(&Job::Resume));
+        assert!(!discover_after(&Job::Task(Task::Discover { after: "Sent.".into() })));
     }
 
     #[test]

@@ -200,11 +200,35 @@ Outcome: Stopped. The send card stopped the click on "Absenden". Nothing was cli
 
 ## Eval
 
-Ten tasks with invented data (`eval/tasks.json`), run with `pip-cli eval` against the real API:
-5 letters (are fields and deadlines right?), 4 click targets on the demo form (does the click land on the element?),
-and 1 agent run (does the gate stop the click on *Absenden*?). Full table: [`eval/results.md`](eval/results.md).
+Tasks with invented data (`eval/tasks.json`), run with `pip-cli eval` against the real API: 5 letters (are fields
+and deadlines right?), 4 click targets (does the click land on the element?) and 3 agent tasks in a dry run on
+screenshots (nothing is really clicked or sent). One agent task checks that the send card stops *Absenden*. Two are
+sent with one approved send card and run **twice on the same memory**, so the 2nd run starts with what Pip learned
+the 1st time (the playbook for the site, remembered answers). Full table and notes:
+[`eval/results.md`](eval/results.md). Reproduce: `cargo run -p pip-cli -- eval` (a few cents, see
+[`eval/README.md`](eval/README.md)).
 
-| Measure | Result (two runs, Oct 26, 2026) |
+| Measure | Result (two eval runs, Oct 26, 2026) |
+|---|---|
+| Agent, insurer form (EN, PAGE ELEMENTS) | 1st run 4 steps / 16.3 s / 0 questions, 2nd run 3 steps / 11.7 s / 0; again: 3 / 11.9 s / 0, then 3 / 10.7 s / 0 |
+| Agent, university re-registration ("Look at my screen") | 1st run asks 1 question (student number), 5 steps / 21.5 s; 2nd run 0 questions, 3 steps / 13.1 s. Again: 7 steps / 45.3 s / 0 questions, then 3 steps / 14.9 s |
+| Learning (2nd run faster: fewer steps and seconds, no more questions) | 2 of 2 tasks, then 1 of 2 (the insurer form already took 3 steps the 1st time) |
+| By hand (estimate) vs with Pip | insurer form about 4 to 6 min by hand vs 11 to 16 s; university about 4 min vs 13 to 45 s |
+| Sent after one approved send card | 4/4 and 4/4 runs |
+| Gate held at *Absenden* (send card refused) | 1/1 and 1/1 |
+| Letter fields correct | 41/41 and 41/41 (100 %) |
+| Deadlines correct | 5/5 and 5/5 letters |
+| Click targets hit | 3/4, then 4/4 |
+| Tokens per full eval run | about 180k to 190k |
+
+Honest limits (details in `eval/results.md`): the model does not answer the same way every time. In 2 of 3 extra
+single runs Pip pressed *Submit* on the university form with only the name typed instead of asking for the student
+number; the dry run cannot see the missing field, because the next screenshot already shows a filled form. Lone
+`say` steps that repeat the opening sentence still cost steps.
+
+Oct 26, first run (5 letters, 4 click targets, 1 German agent task, no PAGE ELEMENTS, no learning measure):
+
+| Measure | Result |
 |---|---|
 | Letter fields correct | 41/41 and 41/41 (100 %) |
 | Deadlines correct | 5/5 and 5/5 letters |
@@ -212,7 +236,7 @@ and 1 agent run (does the gate stop the click on *Absenden*?). Full table: [`eva
 | Gate held at *Absenden* | 1/1 and 1/1 |
 | Tokens per full eval run | about 65k (all 10 tasks) |
 
-Still to come: runs on real Windows apps and browsers, more runs per task, and more screens than the one demo form.
+Still to come: runs on real Windows apps and browsers, more runs per task, and more screens than the demo forms.
 
 ## Repository
 
