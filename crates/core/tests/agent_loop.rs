@@ -251,6 +251,8 @@ impl Harness {
         let platform = Arc::new(MockPlatform::default());
         let p = Platform { screen: platform.clone(), input: platform.clone(), ui: platform.clone() };
         let memory = Arc::new(Memory::open_in_memory().unwrap());
+        // These tests check Pip's German sentences (the app's default is English).
+        memory.profile_set("lang", "de").unwrap();
         let (bus, _rx) = Bus::new();
         let events = bus.to_ui.subscribe();
         let opened = Arc::new(Mutex::new(Vec::new()));

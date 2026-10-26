@@ -13,15 +13,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Lang {
-    #[default]
     De,
+    /// Default: the judges and the demo are English. German stays for later.
+    #[default]
     En,
 }
 
 impl Lang {
-    /// "de"/"en" (profile value); anything else -> De.
+    /// "de"/"en" (profile value); anything else -> En.
     pub fn from_code(s: &str) -> Self {
-        if s.trim().eq_ignore_ascii_case("en") { Lang::En } else { Lang::De }
+        if s.trim().eq_ignore_ascii_case("de") { Lang::De } else { Lang::En }
     }
     pub fn code(self) -> &'static str {
         match self {

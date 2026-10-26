@@ -195,7 +195,7 @@ impl Backend {
         }
     }
 
-    /// Profile language (key `lang`, the one the agent reads), overridable with PIP_LANG. Default German.
+    /// Profile language (key `lang`, the one the agent reads), overridable with PIP_LANG. Default English.
     pub fn lang(&self) -> Lang {
         std::env::var("PIP_LANG")
             .ok()
@@ -263,7 +263,7 @@ mod tests {
         let url = b.profile_get(DEMO_FORM_KEY).unwrap();
         assert!(Gate::new(true).with_fixtures(&[&fx]).url_allowed(&url), "{url}");
         let html = std::fs::read_to_string(fx.join("demo-kasse/index.html")).unwrap();
-        assert!(html.contains("Gesundkasse") && html.contains("Absenden"));
+        assert!(html.contains("Gesundkasse") && html.contains("Submit"));
     }
 
     #[test]

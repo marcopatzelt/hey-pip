@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Unterlagen einreichen – Gesundkasse</title>
+<title>Send documents – Gesundkasse</title>
 <!-- Demo form of an INVENTED health insurer. Nothing is sent anywhere: the form stays on this page.
      OWNER: agent "docs-cli". Opened via file:// in DEMO_MODE.
      ?mark colours the targets (eval: fixtures/screens/make_screens.py finds their boxes). -->
@@ -83,63 +83,63 @@
 </style>
 </head>
 <body>
-<div class="demo-bar">Demo-Seite einer erfundenen Krankenkasse. Es wird nichts verschickt.</div>
+<div class="demo-bar">Demo page of an invented health insurer. Nothing is sent.</div>
 <header>
   <div class="top">
-    <a class="logo" href="#"><div class="logo-mark">G</div><div class="logo-text"><b>Gesundkasse</b><span>Die Krankenkasse für Beispielstadt</span></div></a>
+    <a class="logo" href="#"><div class="logo-mark">G</div><div class="logo-text"><b>Gesundkasse</b><span>Your health insurer in Sampletown</span></div></a>
     <nav>
-      <a href="#">Leistungen</a><a href="#">Mitglied werden</a><a href="#">Service</a><a class="active" href="#">Kontakt</a>
+      <a href="#">Benefits</a><a href="#">Join</a><a href="#">Service</a><a class="active" href="#">Contact</a>
     </nav>
   </div>
 </header>
 
 <main>
-  <div class="crumbs">Startseite › Service › Unterlagen einreichen</div>
+  <div class="crumbs">Home › Service › Send documents</div>
 
   <section id="form-view">
-    <h1>Unterlagen einreichen</h1>
-    <p class="lead">Schicken Sie uns Ihre Krankschreibung oder andere Unterlagen. Wir melden uns, falls etwas fehlt.</p>
+    <h1>Send documents</h1>
+    <p class="lead">Send us your sick note or other documents. We will contact you if anything is missing.</p>
     <form class="card" id="form" novalidate>
       <div class="field">
-        <label class="lbl" for="f-topic">Worum geht es?</label>
+        <label class="lbl" for="f-topic">What is it about?</label>
         <select id="f-topic" name="topic">
-          <option selected>Krankschreibung einreichen</option>
-          <option>Fragebogen zurückschicken</option>
-          <option>Adresse oder Bankverbindung ändern</option>
-          <option>Sonstiges</option>
+          <option selected>Send a sick note</option>
+          <option>Return a questionnaire</option>
+          <option>Change address or bank details</option>
+          <option>Other</option>
         </select>
       </div>
       <div class="row">
         <div class="field" id="w-name">
-          <label class="lbl" for="f-name">Vor- und Nachname</label>
-          <input type="text" id="f-name" name="name" autocomplete="name" placeholder="z. B. Erika Beispiel">
-          <div class="error">Bitte geben Sie Ihren Namen ein.</div>
+          <label class="lbl" for="f-name">Full name</label>
+          <input type="text" id="f-name" name="name" autocomplete="name" placeholder="e.g. Erika Beispiel">
+          <div class="error">Please enter your name.</div>
         </div>
         <div class="field" id="w-nr">
-          <label class="lbl" for="f-nr">Versichertennummer</label>
-          <input type="text" id="f-nr" name="nr" placeholder="z. B. G123456789" maxlength="12">
-          <div class="hint">Steht auf Ihrer Gesundheitskarte.</div>
-          <div class="error">Bitte geben Sie Ihre Versichertennummer ein.</div>
+          <label class="lbl" for="f-nr">Insurance number</label>
+          <input type="text" id="f-nr" name="nr" placeholder="e.g. G123456789" maxlength="12">
+          <div class="hint">You find it on your health insurance card.</div>
+          <div class="error">Please enter your insurance number.</div>
         </div>
       </div>
       <div class="field">
-        <label class="lbl" for="f-msg">Ihre Nachricht <span style="font-weight:400;color:var(--muted)">(freiwillig)</span></label>
-        <textarea id="f-msg" name="msg" placeholder="Möchten Sie uns noch etwas sagen?"></textarea>
+        <label class="lbl" for="f-msg">Your message <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+        <textarea id="f-msg" name="msg" placeholder="Anything else you want to tell us?"></textarea>
       </div>
       <div class="field" id="w-file">
-        <span class="lbl">Krankschreibung anhängen</span>
+        <span class="lbl">Attach your sick note</span>
         <div class="drop" id="drop">
           <input class="file-input" type="file" id="f-file" name="file" accept=".pdf,.jpg,.jpeg,.png">
-          <label class="btn-file" for="f-file"><span aria-hidden="true">📎</span><span>Datei auswählen</span></label>
-          <span class="file-name" id="file-name">Noch keine Datei ausgewählt (PDF, JPG oder PNG)</span>
+          <label class="btn-file" for="f-file"><span aria-hidden="true">📎</span><span>Choose file</span></label>
+          <span class="file-name" id="file-name">No file chosen yet (PDF, JPG or PNG)</span>
         </div>
-        <div class="error">Bitte hängen Sie Ihre Krankschreibung an.</div>
+        <div class="error">Please attach your sick note.</div>
       </div>
       <div class="field">
-        <label class="check"><input type="checkbox" id="f-copy" checked> Ich möchte eine Eingangsbestätigung bekommen.</label>
+        <label class="check"><input type="checkbox" id="f-copy" checked> Send me a confirmation of receipt.</label>
       </div>
       <div class="actions">
-        <button type="submit" class="btn-submit" id="submit">Absenden</button>
+        <button type="submit" class="btn-submit" id="submit">Submit</button>
       </div>
     </form>
   </section>
@@ -147,31 +147,31 @@
   <section id="thanks" aria-live="polite">
     <div class="card">
       <div class="ok">✓</div>
-      <h1>Danke, eingegangen am <span id="t-when"></span></h1>
-      <p class="lead">Wir haben Ihre Unterlagen bekommen. Sie müssen nichts weiter tun.</p>
+      <h1>Thank you, received on <span id="t-when"></span></h1>
+      <p class="lead">We have received your documents. You do not need to do anything else.</p>
       <ul class="summary">
         <li><b>Name</b><span id="t-name"></span></li>
-        <li><b>Versichertennummer</b><span id="t-nr"></span></li>
-        <li><b>Anliegen</b><span id="t-topic"></span></li>
-        <li><b>Anhang</b><span id="t-file"></span></li>
-        <li><b>Vorgangsnummer</b><span id="t-id"></span></li>
+        <li><b>Insurance number</b><span id="t-nr"></span></li>
+        <li><b>Topic</b><span id="t-topic"></span></li>
+        <li><b>Attachment</b><span id="t-file"></span></li>
+        <li><b>Reference</b><span id="t-id"></span></li>
       </ul>
     </div>
   </section>
 
   <aside>
     <div class="card">
-      <h2>Fragen? Rufen Sie uns an</h2>
+      <h2>Questions? Call us</h2>
       <p class="phone">0999 888 77 66</p>
-      <p>Mo–Fr 8–18 Uhr, kostenlos</p>
+      <p>Mon–Fri 8 am–6 pm, free of charge</p>
     </div>
     <div class="card">
-      <h2>Wichtig bei Krankschreibungen</h2>
-      <p>Wenn Sie länger krank sind, muss die nächste Krankschreibung lückenlos anschließen.</p>
+      <h2>Important for sick notes</h2>
+      <p>If you are ill for longer, the next sick note must follow without a gap.</p>
     </div>
   </aside>
 </main>
-<footer>Gesundkasse ist erfunden. Diese Seite ist nur ein Beispiel, Daten verlassen den Computer nicht.</footer>
+<footer>Gesundkasse is invented. This page is only an example; no data leaves the computer.</footer>
 
 <script>
 (() => {
@@ -182,7 +182,7 @@
   const file = $("f-file"), fileName = $("file-name"), drop = $("drop");
   const showFile = () => {
     const f = file.files[0];
-    fileName.textContent = f ? f.name : "Noch keine Datei ausgewählt (PDF, JPG oder PNG)";
+    fileName.textContent = f ? f.name : "No file chosen yet (PDF, JPG or PNG)";
     fileName.classList.toggle("chosen", !!f);
     if (f) $("w-file").classList.remove("invalid");
   };
@@ -205,14 +205,14 @@
     if (!ok) return;
     const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
-    $("t-when").textContent = `${pad(now.getDate())}.${pad(now.getMonth() + 1)}.${now.getFullYear()} um ${pad(now.getHours())}:${pad(now.getMinutes())} Uhr`;
+    $("t-when").textContent = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} at ${pad(now.getHours())}:${pad(now.getMinutes())}`;
     $("t-name").textContent = $("f-name").value.trim();
     $("t-nr").textContent = $("f-nr").value.trim();
     $("t-topic").textContent = $("f-topic").value;
     $("t-file").textContent = file.files[0].name;
     $("t-id").textContent = "GK-" + now.getFullYear() + "-" + String(now.getTime()).slice(-6);
     document.body.classList.add("done");
-    document.title = "Danke – Gesundkasse";
+    document.title = "Thank you – Gesundkasse";
     location.hash = "danke";
     window.scrollTo(0, 0);
   });
@@ -225,7 +225,7 @@
     fileName.classList.add("chosen");
   }
   if (params.has("thanks")) {
-    $("t-when").textContent = "29.10.2026 um 18:04 Uhr";
+    $("t-when").textContent = "29/10/2026 at 18:04";
     $("t-name").textContent = "Erika Beispiel";
     $("t-nr").textContent = "G123456789";
     $("t-topic").textContent = $("f-topic").value;
