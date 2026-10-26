@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Screenshots of the demo forms (fixtures/demo-kasse, fixtures/demo-uni) + expected target boxes for grounding/eval.
 
-Run: python3 fixtures/screens/make_screens.py [kasse|uni|fragebogen]   (default kasse; needs Firefox; throwaway profile in target/)
+Run: python3 fixtures/screens/make_screens.py [kasse|uni|fragebogen|variants]   (default kasse; needs Firefox; throwaway profile in target/)
+`variants` writes every state of the eval page variants (demo-kasse-v2, demo-uni-v2, fragebogen-v2, the lookalike and
+the fake warning) with make_outline.py: PNG + PAGE ELEMENTS + boxes from the live page, no hand-written outlines.
 Boxes come from `?mark`, which paints each target in a solid colour; we take the bounding box of
 that colour. Coordinates are pixels of the PNG (1600x1000), xyxy.
 """
@@ -113,13 +115,57 @@ def main_fragebogen() -> None:
     main_page("fragebogen", "demo-kasse-fragebogen", FRAGEBOGEN_TARGETS, "Thank you, received on")
 
 
+# Page variants for the evals: (page, stem, query, clicks, outline?, targets). "-filled" states bring no outline (the
+# dry run keeps the list Pip typed into); every other state brings its own.
+KASSE_V2 = {"nr_field": "#f-nr", "name_field": "#f-name", "phone_field": "#f-phone", "message_field": "#f-msg",
+            "file_button": "#f-file", "submit_button": "#submit"}
+UNI_V2_STEP1 = {"name_field": "#f-name", "nr_field": "#f-nr", "next_button": "#next"}
+UNI_V2_STEP2 = {"programme_field": "#f-prog", "fee_no_radio": "#f-fee-no", "fee_yes_radio": "#f-fee-yes",
+                "submit_button": "#submit"}
+FRAGEBOGEN_V2 = {"name_field": "#q-name", "nr_field": "#q-policy", "since_field": "#q-first",
+                 "employer_field": "#q-employer", "still_no_radio": "#q-still-no", "still_yes_radio": "#q-still-yes",
+                 "submit_button": "#submit"}
+VARIANTS = [
+    ("demo-kasse-v2/index.html", "demo-kasse-v2-popup", "?popup", [], True,
+     {"cookie_necessary": "#cookie-necessary", "cookie_all": "#cookie-all"}),
+    ("demo-kasse-v2/index.html", "demo-kasse-v2", "", ["#cookie-necessary"], True, KASSE_V2),
+    ("demo-kasse-v2/index.html", "demo-kasse-v2-filled", "?fill", [], False, KASSE_V2),
+    ("demo-kasse-v2/index.html", "demo-kasse-v2-error", "?error", [], True, KASSE_V2),
+    ("demo-kasse-v2/index.html", "demo-kasse-v2-thanks", "?thanks", [], True, {}),
+    ("demo-uni-v2/index.html", "demo-uni-v2", "", [], True, UNI_V2_STEP1),
+    ("demo-uni-v2/index.html", "demo-uni-v2-filled", "?fill", [], False, UNI_V2_STEP1),
+    ("demo-uni-v2/index.html", "demo-uni-v2-error", "?error", [], True, UNI_V2_STEP1),
+    ("demo-uni-v2/index.html", "demo-uni-v2-error-filled", "?fill&complete", [], False, UNI_V2_STEP1),
+    ("demo-uni-v2/index.html", "demo-uni-v2-step2", "?step2", [], True, UNI_V2_STEP2),
+    ("demo-uni-v2/index.html", "demo-uni-v2-step2-filled", "?step2&fill", [], False, UNI_V2_STEP2),
+    ("demo-uni-v2/index.html", "demo-uni-v2-thanks", "?thanks", [], True, {}),
+    ("demo-kasse/fragebogen-v2.html", "demo-kasse-fragebogen-v2", "", [], True, FRAGEBOGEN_V2),
+    ("demo-kasse/fragebogen-v2.html", "demo-kasse-fragebogen-v2-filled", "?fill", [], False, FRAGEBOGEN_V2),
+    ("demo-kasse/fragebogen-v2.html", "demo-kasse-fragebogen-v2-error", "?error", [], True, FRAGEBOGEN_V2),
+    ("demo-kasse/fragebogen-v2.html", "demo-kasse-fragebogen-v2-error-filled", "?fill&complete", [], False, FRAGEBOGEN_V2),
+    ("demo-kasse/fragebogen-v2.html", "demo-kasse-fragebogen-v2-thanks", "?thanks", [], True, {}),
+    ("demo-kasse-konto-check/index.html", "demo-kasse-konto-check", "", [], True,
+     {"member_field": "#c-member", "sms_field": "#c-sms", "submit_button": "#submit"}),
+    ("demo-alert-locked/index.html", "demo-alert-locked", "", [], True, {"call_button": "#call"}),
+]
+
+
+def main_variants() -> None:
+    from make_outline import capture  # same folder
+
+    for page, stem, query, clicks, outline, targets in VARIANTS:
+        capture(str(ROOT / "fixtures" / page), stem, query, targets, OUT, outline, clicks=clicks)
+
+
 def main() -> None:
+    if sys.argv[1:] == ["variants"]:
+        return main_variants()
     if sys.argv[1:] == ["uni"]:
         return main_uni()
     if sys.argv[1:] == ["fragebogen"]:
         return main_fragebogen()
     if sys.argv[1:] not in ([], ["kasse"]):
-        sys.exit("usage: make_screens.py [kasse|uni|fragebogen]")
+        sys.exit("usage: make_screens.py [kasse|uni|fragebogen|variants]")
     tmp = OUT / "_marked.png"
     shot("", OUT / "kasse_form.png")
     shot("?fill", OUT / "kasse_form_filled.png")

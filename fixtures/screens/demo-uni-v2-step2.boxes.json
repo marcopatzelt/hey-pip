@@ -1,0 +1,48 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-uni-v2-step2.png",
+  "targets": {
+    "programme_field": {
+      "box": [
+        473,
+        301,
+        1126,
+        354
+      ],
+      "sam_query": "text input field",
+      "description": "programme field"
+    },
+    "fee_no_radio": {
+      "box": [
+        478,
+        412,
+        499,
+        433
+      ],
+      "sam_query": "text input field",
+      "description": "fee no radio"
+    },
+    "fee_yes_radio": {
+      "box": [
+        571,
+        412,
+        592,
+        433
+      ],
+      "sam_query": "text input field",
+      "description": "fee yes radio"
+    },
+    "submit_button": {
+      "box": [
+        817,
+        480,
+        1126,
+        537
+      ],
+      "sam_query": "button",
+      "description": "submit button"
+    }
+  }
+}

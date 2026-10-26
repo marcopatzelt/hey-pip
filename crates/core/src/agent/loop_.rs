@@ -38,6 +38,7 @@ use crate::meta::{
     ToolDef,
 };
 use crate::platform::{ApiImage, OutlineItem, PhysPoint, PhysRect, Platform, UiElement, WindowInfo};
+use crate::rules::guard::{self, GuardInput, Known, KnownOrg, Signal, Verdict};
 use crate::rules::text::fmt_date;
 
 /// Long side of the screenshot sent to the model.
@@ -67,6 +68,15 @@ const DECLINE_COOLDOWN_DAYS: i64 = 7;
 const EV_SUGGESTED: &str = "suggested";
 const EV_DECLINED: &str = "suggestion_declined";
 const EV_ACCEPTED: &str = "suggestion_accepted";
+/// Events of the page guard: warning signs shown (the text lists them), the user went on anyway (the site),
+/// Pip opened the real site instead ("org: site").
+const EV_GUARD_WARNED: &str = "guard_warned";
+const EV_GUARD_OVERRIDDEN: &str = "guard_overridden";
+const EV_GUARD_REDIRECTED: &str = "guard_redirected";
+/// Button ids of the guard's bubble.
+const GUARD_REAL: &str = "guard:real";
+const GUARD_STOP: &str = "guard:stop";
+const GUARD_CONTINUE: &str = "guard:continue";
 /// Event kind of a fact Pip saved (the text is "key: value").
 const EV_REMEMBERED: &str = "remembered";
 /// Profile key: sites (hosts, or the demo fixtures folder) where the user said "Don't ask again" on a send card.
@@ -260,6 +270,10 @@ pub struct RunState {
     repeats: HashMap<String, (u32, u64)>,
     /// Calls the loop guard refused in this run; the second one ends the run.
     guard_hits: u32,
+    /// Site key of the page the page guard (rules::guard) checked last; a new site is checked again.
+    guard_site: Option<String>,
+    /// The user pressed "I'm sure, continue" on the guard's warning: no more checks in this run.
+    guard_ok: bool,
 }
 
 /// A yes that could not be used because the page changed under the button.
@@ -351,6 +365,8 @@ impl RunState {
             active_before: Duration::ZERO,
             repeats: HashMap::new(),
             guard_hits: 0,
+            guard_site: None,
+            guard_ok: false,
         }
     }
 
@@ -827,7 +843,10 @@ impl Agent {
             }
             AgentOutcome::Stopped | AgentOutcome::StoppedAfterSend(_) => {
                 let text = self.stopped_text(outcome, lang).unwrap_or_default();
-                self.bubble(text.clone(), true);
+                // The guard already said why it stopped.
+                if !state.answered {
+                    self.bubble(text.clone(), true);
+                }
                 event("stopped", &text);
                 self.pip(PipState::Idle);
                 self.emit(UiEvent::FlyHome);
@@ -898,6 +917,13 @@ impl Agent {
         let api = api?;
         state.outline = outline;
         state.after_element_type = false;
+        // The page guard: warning signs from rules and memory, before the model sees the page (no tokens).
+        if state.phase != Phase::Discover
+            && !state.guard_ok
+            && let Some(outcome) = self.guard_page(state, cancel, lang).await?
+        {
+            return Ok(StepResult::Finished(outcome));
+        }
         let mut look =
             if state.step == 0 { "This is the screen." } else { "This is the screen now. Continue the task." }
                 .to_string();
@@ -2522,11 +2548,23 @@ without say.",
         buttons: Vec<Button>,
         cancel: &CancellationToken,
     ) -> Asked {
+        self.ask_buttons_saying(state, question, question, buttons, cancel).await
+    }
+
+    /// Like `ask_buttons`, but Pip says only `spoken` aloud (the bubble shows the whole `question`).
+    async fn ask_buttons_saying(
+        &self,
+        state: &RunState,
+        question: &str,
+        spoken: &str,
+        buttons: Vec<Button>,
+        cancel: &CancellationToken,
+    ) -> Asked {
         let _wait = WaitGuard::start(&state.user_wait);
         let qid = Uuid::new_v4();
         let rx = self.bus.pending.wait_answer(qid);
         self.pip(PipState::Asking);
-        self.emit(UiEvent::Speak { text: question.to_string() });
+        self.emit(UiEvent::Speak { text: spoken.to_string() });
         self.emit(UiEvent::Bubble { text: question.to_string(), buttons, question_id: Some(qid) });
         let nudge = self.nudge(question.to_string());
         tokio::pin!(nudge);
@@ -2699,6 +2737,93 @@ without say.",
     fn event(&self, kind: &str, text: &str) {
         if let Err(e) = self.memory.add_event(kind, text) {
             tracing::warn!(error = %e, "events write failed");
+        }
+    }
+
+    /// The page guard (rules::guard) on the page in front, once per site (and again at the start of a run or
+    /// resume). No warning signs = None, the step goes on. Warning signs = the amber bubble: the safe button first
+    /// ("Take me to the real …" when memory knows the real site, else "Stop here"), then "I'm sure, continue".
+    /// Some(outcome) ends the run; "continue" turns the guard off for this run (the send card still comes).
+    async fn guard_page(
+        &self,
+        state: &mut RunState,
+        cancel: &CancellationToken,
+        lang: Lang,
+    ) -> Result<Option<AgentOutcome>> {
+        let url = self.current_url(state).await;
+        let site = url.as_deref().and_then(|u| self.gate.site_key(u));
+        if state.step > 0 && site == state.guard_site {
+            return Ok(None);
+        }
+        state.guard_site = site.clone();
+        let html = url
+            .as_deref()
+            .and_then(file_url_path)
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")))
+            .and_then(|p| std::fs::read_to_string(p).ok());
+        let names = || state.outline.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(" ");
+        let (title, text, mut items) = match &html {
+            Some(h) => (page_title(h), page_text(h), page_fields(h)),
+            None => (self.foreground().await.map(|w| w.title).unwrap_or_default(), names(), Vec::new()),
+        };
+        items.extend(state.outline.iter().cloned());
+        let label = url.as_deref().and_then(|u| self.gate.site_label(u)).unwrap_or_default();
+        let known = guard_known(&self.memory, &self.gate, lang)?;
+        let input =
+            GuardInput { site: site.as_deref(), site_label: &label, title: &title, page_text: &text, items: &items };
+        let verdict = guard::check(&input, &known);
+        if !verdict.warn {
+            return Ok(None);
+        }
+        let lines = guard_lines(&verdict, lang);
+        let signs = lines.join("; ");
+        tracing::info!(site = %label, signs = %signs, "guard: warning signs, Pip does not act");
+        self.event(EV_GUARD_WARNED, &signs);
+        let title_line = t("guard_title", lang).to_string();
+        let mut text = vec![title_line.clone()];
+        text.extend(lines);
+        text.push(t("guard_source", lang).to_string());
+        let real = verdict
+            .claimed_org()
+            .and_then(|name| known.orgs.iter().find(|o| o.name.trim() == name))
+            .and_then(|o| o.url.clone().map(|u| (o.name.trim().to_string(), u)));
+        let mut buttons = vec![match &real {
+            Some((org, _)) => Button::new(GUARD_REAL, tf("btn_guard_real_site", lang, &[("org", org)]), true),
+            None => Button::new(GUARD_STOP, t("btn_guard_stop", lang), true),
+        }];
+        buttons.push(Button::new(GUARD_CONTINUE, t("btn_guard_continue", lang), false));
+        self.emit(UiEvent::PointClear);
+        let answer = self.ask_buttons_saying(state, &text.join("\n"), &title_line, buttons, cancel).await;
+        let said = match &answer {
+            Asked::Answer(a) => a.clone(),
+            Asked::Timeout => "no answer".into(),
+            Asked::Cancelled => "stopped".into(),
+        };
+        self.log("guard", format!("{{\"site\":{:?}}}", label), Risk::Free, None, &format!("warned: {said}"), 0);
+        match answer {
+            Asked::Answer(a) if a == GUARD_CONTINUE => {
+                state.guard_ok = true;
+                self.event(EV_GUARD_OVERRIDDEN, &label);
+                self.pip(PipState::Thinking);
+                Ok(None)
+            }
+            Asked::Answer(a) if a == GUARD_REAL && real.is_some() => {
+                let (org, url) = real.unwrap_or_default();
+                if let Err(e) = (self.opener)(&url) {
+                    tracing::warn!(error = %e, "opening the real site failed");
+                }
+                self.event(EV_GUARD_REDIRECTED, &format!("{org}: {}", self.gate.site_label(&url).unwrap_or_default()));
+                let line = tf("guard_redirected", lang, &[("org", &org)]);
+                self.bubble(line.clone(), true);
+                state.answered = true;
+                Ok(Some(AgentOutcome::Done(line)))
+            }
+            Asked::Cancelled => Ok(Some(AgentOutcome::Stopped)),
+            Asked::Answer(_) | Asked::Timeout => {
+                self.bubble(t("guard_stopped", lang), true);
+                state.answered = true;
+                Ok(Some(AgentOutcome::Stopped))
+            }
         }
     }
 
@@ -3222,6 +3347,51 @@ fn file_url_path(url: &str) -> Option<PathBuf> {
     Some(PathBuf::from(path))
 }
 
+/// Text of the <title> of an HTML page ("" without one).
+fn page_title(html: &str) -> String {
+    let low = html.to_ascii_lowercase();
+    let Some(open) = low.find("<title") else { return String::new() };
+    let Some(start) = low[open..].find('>').map(|i| open + i + 1) else { return String::new() };
+    let end = low[start..].find("</title").map_or(html.len(), |i| start + i);
+    page_text(&html[start..end])
+}
+
+/// Fields of a local HTML page for the guard (when no PAGE ELEMENTS tell): every <label> as a text field, every
+/// password input as a password field. Rects are empty: these are never click targets.
+fn page_fields(html: &str) -> Vec<OutlineItem> {
+    let low = html.to_ascii_lowercase();
+    let field = |name: String, is_password: bool| OutlineItem {
+        id: 0,
+        role: "edit".into(),
+        name,
+        value: None,
+        rect: PhysRect { x: 0, y: 0, w: 0, h: 0 },
+        offscreen: true,
+        enabled: true,
+        is_password,
+    };
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(at) = low[from..].find("<label").map(|i| from + i) {
+        let Some(end) = low[at..].find("</label").map(|i| at + i) else { break };
+        let name = page_text(&html[at..end]);
+        if !name.is_empty() {
+            out.push(field(name, false));
+        }
+        from = end;
+    }
+    from = 0;
+    while let Some(at) = low[from..].find("<input").map(|i| from + i) {
+        let end = low[at..].find('>').map_or(low.len(), |i| at + i);
+        let tag = low[at..end].replace([' ', '\''], "").replace('"', "");
+        if tag.contains("type=password") {
+            out.push(field(String::new(), true));
+        }
+        from = end;
+    }
+    out
+}
+
 /// Text of every <h1>..<h6> of an HTML page.
 fn page_headings(html: &str) -> Vec<String> {
     let low = html.to_ascii_lowercase();
@@ -3271,6 +3441,102 @@ fn page_text(html: &str) -> String {
         .replace("&#39;", "'")
         .replace("&rarr;", "→");
     squash(&out)
+}
+
+/// What the guard compares a page with: the user's organisations (a profile fact naming one, e.g. "krankenkasse",
+/// plus a profile URL fact whose key starts with that name, e.g. "krankenkasse_kontaktformular", gives its real
+/// site), and every site Pip knows as the user's (playbooks, "Don't ask again" sites, profile URLs). The source
+/// says where Pip knows the organisation from: the newest letter from or to it, else "you told me".
+pub fn guard_known(mem: &Memory, gate: &Gate, lang: Lang) -> Result<Known> {
+    let facts = mem.profile_meta_all()?;
+    let is_url = |v: &str| {
+        let low = v.trim().to_lowercase();
+        low.starts_with("http://") || low.starts_with("https://") || low.starts_with("file:")
+    };
+    let mut known = Known::default();
+    let add_site = |known: &mut Known, s: String| {
+        if !s.trim().is_empty() && !known.sites.contains(&s) {
+            known.sites.push(s);
+        }
+    };
+    for f in facts.iter().filter(|f| is_url(&f.value)) {
+        let Some(site) = gate.site_key(f.value.trim()) else { continue };
+        add_site(&mut known, site.clone());
+        let parts: Vec<&str> = f.key.split('_').collect();
+        let org = (1..parts.len()).rev().find_map(|n| {
+            let key = parts[..n].join("_");
+            facts.iter().find(|o| o.key == key && !is_url(&o.value) && !o.value.trim().is_empty())
+        });
+        let Some(org) = org else { continue };
+        let name = org.value.trim().to_string();
+        if known.orgs.iter().any(|o| o.name.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        known.orgs.push(KnownOrg {
+            name: name.clone(),
+            site: Some(site),
+            source: guard_source(mem, &name, &org.source, lang),
+            url: Some(f.value.trim().to_string()),
+        });
+    }
+    for p in mem.playbook_all()? {
+        add_site(&mut known, p.site);
+    }
+    for s in crate::memory::trusted_sites(mem) {
+        add_site(&mut known, s);
+    }
+    Ok(known)
+}
+
+/// "from your letter of Tuesday, October 20" (the letter the fact came from, else the newest letter from or to
+/// the organisation), or "you told me".
+fn guard_source(mem: &Memory, org: &str, fact_source: &str, lang: Lang) -> String {
+    let named = |d: &crate::memory::DocumentRow| {
+        let o = org.to_lowercase();
+        d.extract.sender.to_lowercase().contains(&o) || d.extract.recipient.to_lowercase().contains(&o)
+    };
+    let from_fact = fact_source
+        .strip_prefix("letter:")
+        .and_then(|id| id.trim().parse::<i64>().ok())
+        .and_then(|id| mem.document_by_id(id).ok().flatten());
+    let letter = from_fact.or_else(|| {
+        let mut docs = mem.search_documents(org, 20).ok()?;
+        docs.retain(named);
+        docs.sort_by_key(|d| std::cmp::Reverse(d.extract.date.unwrap_or_else(|| d.created_at.date_naive())));
+        docs.into_iter().next()
+    });
+    match letter {
+        Some(d) => {
+            let date = d.extract.date.unwrap_or_else(|| d.created_at.date_naive());
+            tf("guard_from_letter", lang, &[("date", &fmt_date(date, lang))])
+        }
+        None => t("guard_from_you", lang).to_string(),
+    }
+}
+
+/// One plain sentence per warning sign (the address line only when no organisation line names the same site).
+fn guard_lines(v: &Verdict, lang: Lang) -> Vec<String> {
+    let claimed: Vec<&str> = v
+        .signals
+        .iter()
+        .filter_map(|s| match s {
+            Signal::ClaimsKnownOrg { real_site, .. } => Some(real_site.as_str()),
+            _ => None,
+        })
+        .collect();
+    v.signals
+        .iter()
+        .filter_map(|s| match s {
+            Signal::ClaimsKnownOrg { org, real_site, source } => {
+                Some(tf("guard_claims", lang, &[("org", org), ("site", real_site), ("source", source)]))
+            }
+            Signal::Lookalike { of } if claimed.contains(&of.as_str()) => None,
+            Signal::Lookalike { of } => Some(tf("guard_lookalike", lang, &[("site", of)])),
+            Signal::AsksSensitive { field } => Some(tf("guard_sensitive", lang, &[("field", field)])),
+            Signal::Rushes { phrase } => Some(tf("guard_rushes", lang, &[("phrase", phrase)])),
+            Signal::FakeWarning { .. } => Some(t("guard_fake_warning", lang).to_string()),
+        })
+        .collect()
 }
 
 /// Button id that asks the page for a text field (open question); the answer is the typed text.
@@ -3738,6 +4004,52 @@ fn merge_outline(old: &mut [OutlineItem], fresh: Vec<OutlineItem>) {
 
 #[cfg(test)]
 mod tests {
+    /// The guard on the real demo pages (fixtures/demo-*/index.html), read like `guard_page` reads a local page:
+    /// the two fake pages warn (the alarm page even cold), the insurer, its sister site and the university stay
+    /// silent, with memory (the insurer's real site and a university playbook) and cold.
+    #[test]
+    fn the_guard_on_the_demo_fixture_pages() {
+        use crate::rules::guard::{self, GuardInput, Known, KnownOrg};
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures").canonicalize().unwrap();
+        let gate = crate::agent::gate::Gate::new(true).with_fixtures(&[root.as_path()]);
+        let url = |folder: &str| crate::config::file_url(&root.join(folder).join("index.html"));
+        let known = Known {
+            orgs: vec![KnownOrg {
+                name: "Gesundkasse".into(),
+                site: gate.site_key(&url("demo-kasse")),
+                source: "from your letter of Tuesday, October 20".into(),
+                url: Some(url("demo-kasse")),
+            }],
+            sites: gate.site_key(&url("demo-uni")).into_iter().collect(),
+        };
+        let pages = [
+            ("demo-kasse-konto-check", true, false),
+            ("demo-alert-locked", true, true),
+            ("demo-kasse", false, false),
+            ("demo-kasse-v2", false, false),
+            ("demo-uni", false, false),
+            ("demo-uni-v2", false, false),
+        ];
+        for (folder, warm, cold) in pages {
+            let u = url(folder);
+            let html = std::fs::read_to_string(super::file_url_path(&u).unwrap()).unwrap();
+            let site = gate.site_key(&u);
+            assert!(site.is_some(), "{folder}: a demo site");
+            let (title, text, items) = (super::page_title(&html), super::page_text(&html), super::page_fields(&html));
+            let input = GuardInput {
+                site: site.as_deref(),
+                site_label: folder,
+                title: &title,
+                page_text: &text,
+                items: &items,
+            };
+            let v = guard::check(&input, &known);
+            assert_eq!(v.warn, warm, "{folder} with memory: {v:?}");
+            let v = guard::check(&input, &Known::default());
+            assert_eq!(v.warn, cold, "{folder} cold: {v:?}");
+        }
+    }
+
     #[test]
     fn names_differ_ignores_unknown_and_nested() {
         assert!(!super::names_differ("Datei auswählen", ""));

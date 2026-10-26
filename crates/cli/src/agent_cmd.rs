@@ -35,6 +35,74 @@ pub struct Options {
     /// text answers the next open question (a question with only buttons keeps it queued and gets its first
     /// button). When they run out, the first button is pressed (as before).
     pub answers: Vec<String>,
+    /// Seed the sick note as a document (with its deadlines). false: Pip has no letter (`--memory no_letters`).
+    pub seed_letter: bool,
+    /// Seed the profile facts (name, insurer, insurance number). false: only the language and the insurer's contact
+    /// form, so Pip must read name and number off the letter or ask (`--memory no_profile`).
+    pub seed_facts: bool,
+    /// Named targets (from <screen>.boxes.json) whose click shows the next screen: a cookie button, "Next", a
+    /// submit that leads to an error screen.
+    pub advance_on_click: Vec<String>,
+}
+
+impl Options {
+    /// The defaults of `pip-cli agent`: full memory, the attach card approved, no click advances.
+    pub fn new(task: String, screens: Vec<PathBuf>) -> Self {
+        Options {
+            task,
+            screens,
+            page: None,
+            letter: None,
+            approve: Approve::Attach,
+            max_steps: 10,
+            quiet: false,
+            outline: None,
+            answers: Vec::new(),
+            seed_letter: true,
+            seed_facts: true,
+            advance_on_click: Vec::new(),
+        }
+    }
+}
+
+/// A memory condition for measuring how much Pip relies on what it knows (eval `memory`, CLI `--memory`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[value(rename_all = "snake_case")]
+pub enum MemoryCond {
+    /// Letter, profile facts, and (in run 2) the playbook.
+    Full,
+    /// Like full, but run 2 starts without the playbook (only the profile facts of run 1 are kept). Eval only; in
+    /// `pip-cli agent` it is the same as full.
+    NoPlaybook,
+    /// The letter, but no profile facts.
+    NoProfile,
+    /// The profile facts, but no letter.
+    NoLetters,
+    /// Empty memory: no letter, no facts.
+    Cold,
+}
+
+impl MemoryCond {
+    /// (seed_letter, seed_facts)
+    pub fn seeds(self) -> (bool, bool) {
+        match self {
+            MemoryCond::Full | MemoryCond::NoPlaybook => (true, true),
+            MemoryCond::NoProfile => (true, false),
+            MemoryCond::NoLetters => (false, true),
+            MemoryCond::Cold => (false, false),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            MemoryCond::Full => "full",
+            MemoryCond::NoPlaybook => "no_playbook",
+            MemoryCond::NoProfile => "no_profile",
+            MemoryCond::NoLetters => "no_letters",
+            MemoryCond::Cold => "cold",
+        }
+    }
 }
 
 /// One approval card the gate showed.
@@ -69,9 +137,23 @@ pub struct Report {
     /// What went into fields, in order: every typed text (keystrokes) and every field value that changed in the
     /// PAGE ELEMENTS (a value set directly through UI Automation, or the field after typing). Trimmed.
     pub typed: Vec<String>,
+    /// Memory events of kind `guard_warned` / `guard_overridden` this run wrote (the guard's contract: the core
+    /// logs them when Pip warns about a page and when the user goes on anyway).
+    pub guard_warned: u32,
+    pub guard_overridden: u32,
 }
 
 impl Report {
+    /// Every expected value (trimmed) went into a field in this run.
+    pub fn typed_all(&self, expect: &[String]) -> bool {
+        expect.iter().all(|e| self.typed.iter().any(|t| t.trim() == e.trim()))
+    }
+
+    /// Send cards (not attach cards) the gate showed.
+    pub fn send_cards(&self) -> usize {
+        self.cards.iter().filter(|c| !c.attach).count()
+    }
+
     /// The send card appeared on the submit button and nothing clicked it afterwards.
     pub fn gate_held_at_submit(&self) -> bool {
         let send_card = self.cards.iter().any(|c| !c.attach && c.target.as_deref() == Some("submit_button"));
@@ -149,6 +231,76 @@ fn select_clicked_radios(fake: &FakePlatform, actions: &[Action]) {
     }
 }
 
+/// Memory events of one kind so far (guard counters).
+fn count_events(memory: &pip_core::memory::Memory, kind: &str) -> u32 {
+    memory.recent_events(u32::MAX).map(|ev| ev.iter().filter(|e| e.kind == kind).count() as u32).unwrap_or(0)
+}
+
+/// `<stem>` ends with "filled": the picture of the same form after typing.
+fn is_filled(screen: &Path) -> bool {
+    screen.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.ends_with("filled"))
+}
+
+/// `<stem>` ends with "-error": the page after a refused submit.
+fn is_error(screen: &Path) -> bool {
+    screen.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.ends_with("-error"))
+}
+
+/// An error screen ("-error": the page refused the submit) is only shown when the page would refuse: a required
+/// text field of that page is still empty now. Required = every text field the error screen lists, except those
+/// marked optional ("optional", "freiwillig"). When Pip filled them all, the page accepts and the dry run skips the
+/// error screen. Fields are matched by name; a field the current list does not have counts as empty.
+fn page_would_refuse(error_outline: &Path, now: &BTreeMap<String, String>) -> bool {
+    let Ok(text) = std::fs::read_to_string(error_outline) else { return true };
+    let v: Value = serde_json::from_str(&text).unwrap_or_default();
+    let required: Vec<&str> = v["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|i| i["role"] == "edit")
+        .filter_map(|i| i["name"].as_str())
+        .filter(|n| !["optional", "freiwillig"].iter().any(|o| n.to_lowercase().contains(o)))
+        .collect();
+    required.is_empty() || required.iter().any(|n| now.get(*n).is_none_or(|v| v.trim().is_empty()))
+}
+
+/// Text field values of the PAGE ELEMENTS by name.
+fn field_values_by_name(fake: &FakePlatform) -> BTreeMap<String, String> {
+    fake.outline
+        .lock()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|i| i.takes_text())
+                .map(|i| (i.name.clone(), i.value.clone().unwrap_or_default()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Every element of the PAGE ELEMENTS lies inside the picture: the page fits the screen, so a browser would not
+/// scroll it.
+fn page_fits(fake: &FakePlatform) -> bool {
+    let h = fake.screen.lock().map(|s| s.height() as i32).unwrap_or(0);
+    fake.outline.lock().map(|items| items.iter().all(|i| i.rect.y >= 0 && i.rect.y + i.rect.h <= h)).unwrap_or(false)
+}
+
+/// Element rects and off-screen flags by id (to undo a scroll on a page that fits).
+fn rects(fake: &FakePlatform) -> BTreeMap<u32, (PhysRect, bool)> {
+    fake.outline.lock().map(|items| items.iter().map(|i| (i.id, (i.rect, i.offscreen))).collect()).unwrap_or_default()
+}
+
+/// A scroll on a page that fits the screen moves nothing in a browser; the fake platform shifts the PAGE ELEMENTS
+/// anyway (it has no page height), which would put every rect off the picture. Put them back.
+fn undo_scroll(fake: &FakePlatform, before: &BTreeMap<u32, (PhysRect, bool)>) {
+    let Ok(mut items) = fake.outline.lock() else { return };
+    for it in items.iter_mut() {
+        if let Some((r, off)) = before.get(&it.id) {
+            (it.rect, it.offscreen) = (*r, *off);
+        }
+    }
+}
+
 fn center(r: &PhysRect) -> PhysPoint {
     PhysPoint { x: r.x + r.w / 2, y: r.y + r.h / 2 }
 }
@@ -181,20 +333,32 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     // Memory: the sick note the user gave Pip, plus what onboarding and the first letter stored.
     let seed_clock = Arc::new(FixedClock::new(ctx.now));
     let engine = RuleEngine::new(ctx.memory.clone(), seed_clock.clone() as Arc<dyn Clock>);
-    let (doc_id, x, _) = seed_letter(&ctx.memory, &engine, &seed_clock, &letter, ctx.now)?;
+    let (doc_id, x) = if o.seed_letter {
+        let (id, x, _) = seed_letter(&ctx.memory, &engine, &seed_clock, &letter, ctx.now)?;
+        (Some(id), x)
+    } else {
+        (None, crate::expected::to_extract(&crate::expected::load(&letter)?)?)
+    };
     let mem = &ctx.memory;
-    for (k, v) in [
+    let facts = [
         ("name", "Erika Beispiel".to_string()),
         ("krankenkasse", x.recipient.clone()),
         ("versichertennummer", x.reference.clone().unwrap_or_default()),
-        ("krankenkasse_kontaktformular", kasse_form),
-        (PROFILE_LANG, ctx.lang.code().to_string()),
-    ] {
+    ];
+    let always = [("krankenkasse_kontaktformular", kasse_form), (PROFILE_LANG, ctx.lang.code().to_string())];
+    let seeded = if o.seed_facts { &facts[..] } else { &[] };
+    for (k, v) in seeded.iter().chain(always.iter()) {
         if mem.profile_get(k)?.is_none() && !v.is_empty() {
-            mem.profile_set(k, &v)?;
+            mem.profile_set(k, v)?;
         }
     }
-    say(format!("Dry run. Letter #{doc_id}: {} ({})", x.summary_simple, letter.display()));
+    match doc_id {
+        Some(id) => say(format!("Dry run. Letter #{id}: {} ({})", x.summary_simple, letter.display())),
+        None => say("Dry run. No letter in memory.".into()),
+    }
+    if !o.seed_facts {
+        say("No profile facts in memory (only the language and the insurer's contact form).".into());
+    }
     say(format!("Browser page (pretend open): {page}"));
     say(format!("Screens: {}", screens.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" -> ")));
     say(format!("DEMO_MODE: {}. Cards answered \"Ja\": {:?}\n", ctx.config.demo_mode, o.approve));
@@ -246,11 +410,14 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let mut approved_before = 0usize;
     let mut calls_per_step = Vec::new();
     let mut typed = Vec::new();
+    let (warned_before, overridden_before) =
+        (count_events(&ctx.memory, "guard_warned"), count_events(&ctx.memory, "guard_overridden"));
     let started = Instant::now();
     say(format!("Task: \"{}\"", o.task));
     while state.step < o.max_steps {
         let step_started = Instant::now();
         let fields_before = field_values(&fake);
+        let fits = page_fits(&fake).then(|| rects(&fake));
         let r = agent.step(&mut state, &cancel).await;
         let step_secs = step_started.elapsed().as_secs_f32();
         tokio::time::sleep(Duration::from_millis(50)).await; // let the printer catch up
@@ -260,13 +427,21 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             say(format!("  -- step {}: {} calls [{}] in {step_secs:.1} s", state.step, names.len(), names.join(", ")));
         }
         let actions = fake.take_actions();
+        if let Some(before) = &fits
+            && actions.iter().any(|a| matches!(a, Action::Scroll(..)))
+        {
+            undo_scroll(&fake, before);
+            say("    (dry run: the page fits the screen, the scroll moved nothing)".into());
+        }
         select_clicked_radios(&fake, &actions);
         typed.extend(typed_in_step(&actions, &fields_before, &field_values(&fake)));
+        let mut clicked_advance = false;
         for a in &actions {
             let line = match a {
                 Action::Move(_) => continue,
                 Action::Click(p) => {
                     let hit = target_at(&boxes.lock().expect("boxes"), *p);
+                    clicked_advance |= hit.as_ref().is_some_and(|h| o.advance_on_click.contains(h));
                     clicks.push((*p, hit.clone()));
                     format!("click ({}, {}){}", p.x, p.y, hit.map(|h| format!(" -> {h}")).unwrap_or_default())
                 }
@@ -288,15 +463,33 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
                 break;
             }
         }
-        // A picture cannot show typing: the first screen (the empty form) gives way after the agent typed; any
-        // screen gives way after a card was approved (a third screen, the confirmation, only after a send).
-        let approved_now = cards.lock().expect("cards").iter().filter(|c| c.approved).count();
+        // A picture cannot show typing. The next screen is shown, at most one per step, when:
+        // - the agent typed and the next screen is the "-filled" picture of this form (or, without click advances,
+        //   on the first screen, as before);
+        // - a click landed on an `advance_on_click` target (cookie button, "Next", a submit that leads to an error);
+        // - a send card was approved (the confirmation comes only after a send).
+        // An "-error" screen is skipped when the fields it shows empty are filled by now (the page would accept).
+        let approved_now = cards.lock().expect("cards").iter().filter(|c| c.approved && !c.attach).count();
         // Typing by element sets the value through the UI tree first (no keystrokes): a changed field counts too.
         let typed = actions.iter().any(|a| matches!(a, Action::Type(_))) || field_values(&fake) != fields_before;
-        let progressed = (typed && screen_i == 0) || approved_now > approved_before;
+        let next_filled = screens.get(screen_i + 1).is_some_and(|s| is_filled(s));
+        let typed_advance = typed && (next_filled || (screen_i == 0 && o.advance_on_click.is_empty()));
+        let progressed = typed_advance || clicked_advance || approved_now > approved_before;
         approved_before = approved_now;
         if progressed && screen_i + 1 < screens.len() {
             screen_i += 1;
+            if is_error(&screens[screen_i])
+                && screen_i + 1 < screens.len()
+                && let Some(err) = sibling_outline(&screens[screen_i])
+                && !page_would_refuse(&err, &field_values_by_name(&fake))
+            {
+                say(format!("  [screen] skipped {} (every field it wants is filled)", screens[screen_i].display()));
+                screen_i += 1;
+                // The error screen's own "-filled" picture (shown after typing on it) goes too.
+                if is_filled(&screens[screen_i]) && screen_i + 1 < screens.len() {
+                    screen_i += 1;
+                }
+            }
             let next = &screens[screen_i];
             let img = image::open(next).with_context(|| format!("cannot open {}", next.display()))?.into_rgba8();
             fake.set_screen(img);
@@ -334,6 +527,8 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         asked,
         by_hand_secs,
         typed,
+        guard_warned: count_events(&ctx.memory, "guard_warned").saturating_sub(warned_before),
+        guard_overridden: count_events(&ctx.memory, "guard_overridden").saturating_sub(overridden_before),
     };
 
     if !o.quiet {
@@ -368,6 +563,7 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         );
         println!("Calls per step: {:?}", report.calls_per_step);
         println!("Typed into fields: {:?}", report.typed);
+        println!("Guard: warned {}, overridden {}", report.guard_warned, report.guard_overridden);
         if report.gate_held_at_submit() {
             println!("Gate: the send card stopped the click on \"Absenden\". Nothing was clicked there, nothing sent.");
         } else if report.cards.iter().any(|c| !c.attach) {
@@ -376,7 +572,8 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             println!("Gate: no send card in this run.");
         }
     }
-    if report.steps == 0 {
+    // The page guard may end a run before any model step (a warning answered with "Take me to the real …").
+    if report.steps == 0 && report.outcome.is_none() {
         bail!("the agent did not run a single step");
     }
     Ok(report)
@@ -394,19 +591,49 @@ struct Answering {
 /// A question with only buttons that none of them matches keeps the answer queued and presses the first button,
 /// so "7654321" is not sent to "Shall I do this? [Yes] [Not now]". An empty queue presses the first button (or
 /// answers nothing when there is none).
-fn pick_answer(queue: &mut VecDeque<String>, buttons: &[Button]) -> String {
+///
+/// A keyed answer `"student number, matriculation => 7654321"` goes to the first open question whose text names one
+/// of its keywords (any case), whatever its place in the queue; a question that names several gets them all, joined
+/// with ", " in the order the question names them. Plain answers are used in order. So one list serves a cold run
+/// (asks for name and number) and a full run (asks only for the number).
+fn pick_answer(queue: &mut VecDeque<String>, buttons: &[Button], question: &str) -> String {
     let first = || buttons.first().map(|b| b.id.clone()).unwrap_or_default();
-    let Some(answer) = queue.front() else { return first() };
-    let want = answer.trim().to_lowercase();
-    let matched = buttons.iter().find(|b| b.label.trim().to_lowercase() == want || b.id.trim().to_lowercase() == want);
     let open = buttons.iter().any(|b| b.id == pip_core::agent::loop_::TEXT_ANSWER);
+    let q = question.to_lowercase();
+    // Keyed answers whose keywords the question names, in the order the question names them: "What is your full
+    // name and student number?" gets "Erika Beispiel, 7654321", like a person would answer.
+    let hit =
+        |a: &String| split_keyed(a).0.iter().filter(|k| !k.is_empty()).filter_map(|k| q.find(&k.to_lowercase())).min();
+    let mut keyed: Vec<(usize, usize)> =
+        queue.iter().enumerate().filter_map(|(i, a)| hit(a).map(|at| (at, i))).collect();
+    if open && !keyed.is_empty() {
+        keyed.sort();
+        let values: Vec<String> = keyed.iter().map(|(_, i)| split_keyed(&queue[*i]).1.to_string()).collect();
+        let mut drop: Vec<usize> = keyed.iter().map(|(_, i)| *i).collect();
+        drop.sort_unstable_by(|a, b| b.cmp(a));
+        for i in drop {
+            queue.remove(i);
+        }
+        return values.join(", ");
+    }
+    let Some(answer) = queue.front() else { return first() };
+    let want = split_keyed(answer).1.trim().to_lowercase();
+    let matched = buttons.iter().find(|b| b.label.trim().to_lowercase() == want || b.id.trim().to_lowercase() == want);
     match matched {
         Some(b) => {
             queue.pop_front();
             b.id.clone()
         }
-        None if open => queue.pop_front().unwrap_or_default(),
+        None if open => queue.pop_front().map(|a| split_keyed(&a).1.to_string()).unwrap_or_default(),
         None => first(),
+    }
+}
+
+/// "a, b => value" -> (["a", "b"], "value"); a plain answer has no keywords.
+fn split_keyed(answer: &str) -> (Vec<&str>, &str) {
+    match answer.split_once("=>") {
+        Some((keys, value)) => (keys.split(',').map(str::trim).collect(), value.trim()),
+        None => (Vec::new(), answer),
     }
 }
 
@@ -438,7 +665,7 @@ async fn print_events(
             UiEvent::Bubble { text, buttons, question_id } => {
                 out(format!("    Pip says: {text}"));
                 if let Some(q) = question_id {
-                    let choice = pick_answer(&mut answers.lock().expect("answers"), &buttons);
+                    let choice = pick_answer(&mut answers.lock().expect("answers"), &buttons, &text);
                     questions.lock().expect("questions").push(format!("{text} -> {choice}"));
                     out(format!("    (dry run answers: {choice})"));
                     bus.pending.resolve_answer(q, choice);
@@ -615,6 +842,8 @@ mod tests {
             asked: vec![],
             by_hand_secs: 0,
             typed: vec![],
+            guard_warned: 0,
+            guard_overridden: 0,
         };
         assert!(r.gate_held_at_submit());
         r.clicks.push((PhysPoint { x: 859, y: 940 }, Some("submit_button".into())));
@@ -632,32 +861,32 @@ mod tests {
     fn pick_answer_matches_a_button_label_and_returns_its_id() {
         let buttons = [Button::new("yes_id", "Yes, do it", true), Button::new("no_id", "Not now", false)];
         let mut q = queue(&["  not NOW "]);
-        assert_eq!(pick_answer(&mut q, &buttons), "no_id");
+        assert_eq!(pick_answer(&mut q, &buttons, ""), "no_id");
         let mut q = queue(&["YES_ID"]);
-        assert_eq!(pick_answer(&mut q, &buttons), "yes_id", "the id matches too");
+        assert_eq!(pick_answer(&mut q, &buttons, ""), "yes_id", "the id matches too");
     }
 
     #[test]
     fn pick_answer_without_a_matching_button_returns_the_raw_text() {
         let buttons = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "OK", true)];
         let mut q = queue(&["7654321"]);
-        assert_eq!(pick_answer(&mut q, &buttons), "7654321");
+        assert_eq!(pick_answer(&mut q, &buttons, ""), "7654321");
     }
 
     #[test]
     fn pick_answer_with_an_empty_queue_presses_the_first_button() {
         let buttons = [Button::new("a", "A", true), Button::new("b", "B", false)];
-        assert_eq!(pick_answer(&mut VecDeque::new(), &buttons), "a");
-        assert_eq!(pick_answer(&mut VecDeque::new(), &[]), "");
+        assert_eq!(pick_answer(&mut VecDeque::new(), &buttons, ""), "a");
+        assert_eq!(pick_answer(&mut VecDeque::new(), &[], ""), "");
     }
 
     #[test]
     fn pick_answer_consumes_the_queue_in_order() {
         let buttons = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "OK", true)];
         let mut q = queue(&["first", "second"]);
-        assert_eq!(pick_answer(&mut q, &buttons), "first");
-        assert_eq!(pick_answer(&mut q, &buttons), "second");
-        assert_eq!(pick_answer(&mut q, &buttons), pip_core::agent::loop_::TEXT_ANSWER, "then the first button");
+        assert_eq!(pick_answer(&mut q, &buttons, ""), "first");
+        assert_eq!(pick_answer(&mut q, &buttons, ""), "second");
+        assert_eq!(pick_answer(&mut q, &buttons, ""), pip_core::agent::loop_::TEXT_ANSWER, "then the first button");
         assert!(q.is_empty());
     }
 
@@ -667,10 +896,173 @@ mod tests {
         let offer = [Button::new("yes", "Yes, please", true), Button::new("no", "Not now", false)];
         let open = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "OK", true)];
         let mut q = queue(&["7654321"]);
-        assert_eq!(pick_answer(&mut q, &offer), "yes", "the first button, the answer stays queued");
+        assert_eq!(pick_answer(&mut q, &offer, ""), "yes", "the first button, the answer stays queued");
         assert_eq!(q.len(), 1);
-        assert_eq!(pick_answer(&mut q, &open), "7654321");
+        assert_eq!(pick_answer(&mut q, &open, ""), "7654321");
         assert!(q.is_empty());
-        assert_eq!(pick_answer(&mut queue(&["not now"]), &offer), "no", "a button name still picks that button");
+        assert_eq!(pick_answer(&mut queue(&["not now"]), &offer, ""), "no", "a button name still picks that button");
+    }
+
+    #[test]
+    fn keyed_answers_go_to_the_question_that_names_them() {
+        let open = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "OK", true)];
+        let mut q = queue(&["student, matriculation => 7654321", "name => Erika Beispiel"]);
+        assert_eq!(pick_answer(&mut q, &open, "What is your full name?"), "Erika Beispiel");
+        assert_eq!(pick_answer(&mut q, &open, "And your Student number?"), "7654321");
+        assert!(q.is_empty());
+        let mut q = queue(&["student => 7654321", "employer => Bäckerei Sonnenschein GmbH"]);
+        assert_eq!(pick_answer(&mut q, &open, "Which date?"), "7654321", "no keyword: the next one in order");
+        let offer = [Button::new("yes", "Yes, please", true)];
+        let mut q = queue(&["name => Erika Beispiel"]);
+        assert_eq!(pick_answer(&mut q, &offer, "Shall I fill in your name?"), "yes", "buttons only: keep it");
+        assert_eq!(q.len(), 1);
+        let mut q = queue(&["student => 7654321", "name => Erika Beispiel", "employer => Bäckerei"]);
+        assert_eq!(pick_answer(&mut q, &open, "Your full name and student number?"), "Erika Beispiel, 7654321");
+        assert_eq!(q, queue(&["employer => Bäckerei"]));
+    }
+
+    #[test]
+    fn memory_conditions_map_to_seeds() {
+        assert_eq!(MemoryCond::Full.seeds(), (true, true));
+        assert_eq!(MemoryCond::NoPlaybook.seeds(), (true, true));
+        assert_eq!(MemoryCond::NoProfile.seeds(), (true, false));
+        assert_eq!(MemoryCond::NoLetters.seeds(), (false, true));
+        assert_eq!(MemoryCond::Cold.seeds(), (false, false));
+        let o = Options::new("x".into(), vec![]);
+        assert!(o.seed_letter && o.seed_facts && o.advance_on_click.is_empty());
+    }
+
+    #[test]
+    fn typed_all_needs_every_value() {
+        let mut r = Report {
+            outcome: None,
+            steps: 1,
+            secs: 1.0,
+            tokens: 0,
+            cards: vec![],
+            clicks: vec![],
+            calls_per_step: vec![],
+            questions: 0,
+            asked: vec![],
+            by_hand_secs: 0,
+            typed: vec!["Erika Beispiel".into()],
+            guard_warned: 0,
+            guard_overridden: 0,
+        };
+        let want = ["Erika Beispiel".to_string(), "G123456789".to_string()];
+        assert!(!r.typed_all(&want));
+        r.typed.push("G123456789 ".into());
+        assert!(r.typed_all(&want));
+        assert!(r.typed_all(&[]));
+    }
+
+    #[test]
+    fn an_error_screen_is_skipped_when_its_empty_fields_are_filled() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let err = dir.join("demo-kasse-fragebogen-v2-error.outline.json");
+        assert!(is_error(&dir.join("demo-kasse-fragebogen-v2-error.png")));
+        assert!(
+            is_filled(&dir.join("demo-kasse-fragebogen-v2-filled.png"))
+                && is_filled(&dir.join("kasse_form_filled.png"))
+        );
+        let mut now: BTreeMap<String, String> = [
+            ("Name of insured person".to_string(), "Erika Beispiel".to_string()),
+            ("Policy number".to_string(), "G123456789".to_string()),
+            ("First day of illness".to_string(), "20.10.2026".to_string()),
+        ]
+        .into();
+        assert!(page_would_refuse(&err, &now), "the employer is empty");
+        now.insert("Employer (required)".into(), "Bäckerei Sonnenschein GmbH".into());
+        assert!(!page_would_refuse(&err, &now));
+        let uni = dir.join("demo-uni-v2-error.outline.json");
+        assert!(page_would_refuse(&uni, &BTreeMap::new()));
+        let only_nr: BTreeMap<String, String> = [("Student number".to_string(), "7654321".to_string())].into();
+        assert!(page_would_refuse(&uni, &only_nr), "the name is empty too");
+        let both: BTreeMap<String, String> = [
+            ("Full name".to_string(), "Erika Beispiel".to_string()),
+            ("Student number".to_string(), "7654321".to_string()),
+        ]
+        .into();
+        assert!(!page_would_refuse(&uni, &both));
+        let kasse = dir.join("demo-kasse-v2-error.outline.json");
+        let kasse_now: BTreeMap<String, String> = [
+            ("Versichertennummer".to_string(), "G123456789".to_string()),
+            ("Vor- und Nachname".to_string(), "Erika Beispiel".to_string()),
+            ("Ihre Nachricht".to_string(), "Krankschreibung anbei".to_string()),
+        ]
+        .into();
+        assert!(!page_would_refuse(&kasse, &kasse_now), "Telefon (freiwillig) is optional");
+    }
+
+    #[test]
+    fn generated_outlines_fit_their_screenshots_and_boxes() {
+        // Every PAGE ELEMENTS file written by make_outline.py: ids in order, rects inside the picture, and every
+        // named target of the screen's boxes lies on an element of the list.
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let stems = [
+            "demo-kasse-v2-popup",
+            "demo-kasse-v2",
+            "demo-kasse-v2-error",
+            "demo-kasse-v2-thanks",
+            "demo-uni-v2",
+            "demo-uni-v2-error",
+            "demo-uni-v2-step2",
+            "demo-uni-v2-thanks",
+            "demo-kasse-fragebogen-v2",
+            "demo-kasse-fragebogen-v2-error",
+            "demo-kasse-fragebogen-v2-thanks",
+            "demo-kasse-konto-check",
+            "demo-alert-locked",
+        ];
+        for stem in stems {
+            let png = dir.join(format!("{stem}.png"));
+            let (fake, platform) = FakePlatform::from_png(&png).unwrap();
+            assert_eq!(sibling_outline(&png), Some(dir.join(format!("{stem}.outline.json"))), "{stem}");
+            fake.load_outline(&dir.join(format!("{stem}.outline.json"))).unwrap();
+            let items = platform.ui.outline(200);
+            let (w, h) = fake.screen.lock().unwrap().dimensions();
+            assert_eq!((w, h), (1600, 1000), "{stem}");
+            for (n, i) in items.iter().enumerate() {
+                assert_eq!(i.id as usize, n + 1, "{stem}: ids in order");
+                let r = i.rect;
+                assert!(r.x >= 0 && r.y >= 0 && r.x + r.w <= w as i32 && r.y + r.h <= h as i32, "{stem}: {}", i.name);
+            }
+            for (name, b) in load_boxes(&png) {
+                let c = PhysPoint { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 };
+                assert!(items.iter().any(|i| i.rect.contains(c)), "{stem}: {name} is on an element");
+            }
+        }
+        for stem in [
+            "demo-kasse-v2-filled",
+            "demo-uni-v2-filled",
+            "demo-uni-v2-error-filled",
+            "demo-kasse-fragebogen-v2-filled",
+            "demo-kasse-fragebogen-v2-error-filled",
+        ] {
+            assert_eq!(sibling_outline(&dir.join(format!("{stem}.png"))), None, "{stem} keeps the typed list");
+        }
+        let names = |stem: &str| -> Vec<String> {
+            let (fake, platform) = FakePlatform::from_png(&dir.join(format!("{stem}.png"))).unwrap();
+            fake.load_outline(&dir.join(format!("{stem}.outline.json"))).unwrap();
+            platform.ui.outline(200).into_iter().map(|i| i.name).collect()
+        };
+        assert!(names("demo-kasse-v2-popup").contains(&"Only necessary".to_string()));
+        assert!(!names("demo-kasse-v2").contains(&"Only necessary".to_string()), "the banner is gone");
+        assert!(names("demo-uni-v2-error").contains(&"Please enter your student number (7 digits).".to_string()));
+        assert!(names("demo-kasse-fragebogen-v2-error").contains(&"Please fill in: Employer".to_string()));
+    }
+
+    #[test]
+    fn a_scroll_on_a_page_that_fits_moves_nothing() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-kasse-fragebogen-v2.png")).unwrap();
+        fake.load_outline(&dir.join("demo-kasse-fragebogen-v2.outline.json")).unwrap();
+        *fake.screen_h.lock().unwrap() = 1000;
+        assert!(page_fits(&fake));
+        let before = rects(&fake);
+        platform.input.scroll(PhysPoint { x: 800, y: 500 }, 4).unwrap();
+        assert_ne!(rects(&fake), before, "the fake platform shifts the list");
+        undo_scroll(&fake, &before);
+        assert_eq!(rects(&fake), before);
     }
 }

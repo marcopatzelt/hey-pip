@@ -5,7 +5,7 @@
   <title>Pip preview</title>
   <!-- Dev tool: runs ui/main.js in a normal browser with a fake Tauri bridge and an invented form
        behind it. Scenes: #onboarding #story #card #reminder #error #deadlines #ask #sleep #drag #celebrate #listen
-       #stats #stats_de #hold #celebrate_race (all invented data). ?shot=1 = for tools/shot.sh (headless screenshot when the
+       #stats #stats_de #hold #celebrate_race #guard (all invented data). ?shot=1 = for tools/shot.sh (headless screenshot when the
        scene is ready); &reduce=1 = pretend the user asked for reduced motion. -->
   <base href="../ui/">
   <link rel="stylesheet" href="style.css">
@@ -47,7 +47,7 @@
     const slow = (ms) => { const i = new Image(); i.alt = ""; i.hidden = true; i.src = `/slow?ms=${ms}&t=${Math.random()}`; document.documentElement.append(i); };
     if (SHOT) slow(1500);
     // How long each scene runs before the screenshot (ms after the scene starts).
-    const SHOT_AT = { celebrate: 450, celebrate_race: 450, story: 5200, card: 900, listen: 900, stats: 700, stats_de: 700, hold: 900, ask: 700, onboarding: 700 };
+    const SHOT_AT = { celebrate: 450, celebrate_race: 450, story: 5200, card: 900, listen: 900, stats: 700, stats_de: 700, hold: 900, ask: 700, onboarding: 700, guard: 1100 };
     if (params.has("reduce")) {
       const real = window.matchMedia.bind(window);
       window.matchMedia = (q) => q.includes("reduce") ? { matches: true, media: q, addEventListener() {}, removeEventListener() {} } : real(q);
@@ -88,9 +88,11 @@
     const ui = (ev) => {
       emit("ui", ev);
       if (ev.type === "bubble") setTimeout(() => {
+        // a guard bubble shows only its first line as the text (the rest become chips)
+        const want = ev.buttons.some((b) => b.id.startsWith("guard:")) ? ev.text.split("\n")[0] : ev.text;
         const got = document.getElementById("bubble-text").textContent;
         const chips = document.querySelectorAll("#bubble-text .stat").length;
-        if (got !== ev.text) { console.error("bubble text changed", got); log("ERROR bubble text changed by decorateStats"); } else log(`bubble ok, ${chips} stat chip(s)`);
+        if (got !== want) { console.error("bubble text changed", got); log("ERROR bubble text changed by decorateStats"); } else log(`bubble ok, ${chips} stat chip(s)`);
       }, 60);
     };
     const press = (type) => document.getElementById("pip").dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 7, button: 0, isPrimary: true, clientX: 0, clientY: 0 }));
@@ -147,6 +149,21 @@
       if (name === "stats_de") ui({ type: "bubble", text: "Erledigt. Fertig in 14 s. Von Hand dauert das etwa 6 Minuten. Seit wir uns kennen, habe ich dir etwa 25 Minuten gespart. Zum 2. Mal auf dieser Seite: 14 s statt 41 s beim letzten Mal.", buttons: [], question_id: null });
       if (name === "sleep") { ui({ type: "pip", state: "sleeping" }); emit("app", { type: "paused", on: true }); ui({ type: "bubble", text: "Ich mache Pause. Klick mich an, dann bin ich wieder da.", buttons: [], question_id: null }); }
       if (name === "drag") emit("app", { type: "drag", state: "enter" });
+      if (name === "guard") {
+        // a lookalike page (invented): the core stops before typing and asks with an amber bubble
+        emit("app", { type: "acting", on: true }); ui({ type: "pip", state: "asking" });
+        ui({ type: "bubble", question_id: crypto.randomUUID(), buttons: [
+          { id: "guard:real", label: "Take me to the real Gesundkasse", primary: true },
+          { id: "guard:continue", label: "I'm sure, continue", primary: false },
+        ], text: [
+          "Careful: this page only looks like Gesundkasse.",
+          "The web address is not the one from your letters",
+          "It asks for your SMS code",
+          "It says you must hurry",
+          "I can be wrong. You decide, and I typed nothing here.",
+        ].join("\n") });
+        setTimeout(() => log(`guard chips: ${document.querySelectorAll("#bubble .sign").length}, pose: ${document.getElementById("pip-img").getAttribute("src")}`), 300);
+      }
     }
   })();
   </script>
@@ -162,8 +179,21 @@
       const html = await (await fetch("index.html")).text().catch(() => "");
       const doc = new DOMParser().parseFromString(html, "text/html");
       for (const n of [...doc.body.children]) if (n.tagName !== "SCRIPT") document.body.append(n);
-      // fake form fields at the same screen fractions as the mock story
       const desk = document.getElementById("desk");
+      if (location.hash === "#guard") {
+        // an invented lookalike page: urgent red banner, member number + SMS code, red "Confirm now"
+        desk.querySelector(".bar").textContent = "gesundkasse-konto-check.example/confirm   |   Gesundkasse – Confirm your account";
+        const add = (cls, x, y, w, h, text, css) => { const d = document.createElement("div"); d.className = cls; Object.assign(d.style, { left: x * 100 + "%", top: y * 100 + "%", width: w * 100 + "%", height: h * 100 + "%" }, css || {}); if (text) d.textContent = text; desk.append(d); };
+        add("send", .14, .21, .42, .055, "Your account will be locked in 24 hours!", { background: "#fdecea", color: "#b3261e", fontWeight: "700", fontSize: "16px" });
+        add("send", .14, .29, .2, .05, "Gesundkasse", { background: "none", color: "#0b6e4f", fontWeight: "800", fontSize: "24px", placeItems: "center start" });
+        add("f", .18, .40, .30, .05); add("f", .18, .50, .30, .05);
+        add("send", .18, .60, .16, .065, "Confirm now", { background: "#d32f2f", fontWeight: "700" });
+        const lab = (t, y) => { const l = document.createElement("label"); l.textContent = t; Object.assign(l.style, { left: "18%", top: (y - .03) * 100 + "%" }); desk.append(l); };
+        lab("Member number", .40); lab("SMS code", .50);
+        const sc = document.createElement("script"); sc.src = "main.js"; document.body.append(sc);
+        return;
+      }
+      // fake form fields at the same screen fractions as the mock story
       const add = (cls, x, y, w, h, text) => { const d = document.createElement("div"); d.className = cls; Object.assign(d.style, { left: x * 100 + "%", top: y * 100 + "%", width: w * 100 + "%", height: h * 100 + "%" }); if (text) d.textContent = text; desk.append(d); };
       add("f", .18, .30, .30, .05); add("f", .18, .40, .30, .05); add("file", .18, .50, .14, .05, "Datei auswählen"); add("send", .36, .62, .12, .06, "Absenden");
       const lab = (t, y) => { const l = document.createElement("label"); l.textContent = t; Object.assign(l.style, { left: "18%", top: (y - .03) * 100 + "%" }); desk.append(l); };

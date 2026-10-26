@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gesundkasse – Upload centre</title>
+<!-- Variant of the INVENTED insurer's upload form for evals: a cookie banner covers the form until one of its buttons
+     is clicked, the fields come in another order and with German labels, "Abschicken" sits top right.
+     Nothing is sent anywhere: the form stays on this page. Opened via file:// in DEMO_MODE.
+     Switches (fixture screenshots only, fixtures/screens/make_outline.py): ?popup (the banner; also the default),
+     ?fill (filled, no banner), ?error (submitted without a file: error text), ?thanks (confirmation). -->
+<style>
+  :root {
+    --green: #0f7a5a; --green-dark: #0a5c44; --green-light: #e8f4ef;
+    --ink: #1d2a26; --muted: #5b6b66; --line: #cfdcd7; --bg: #f4f7f6; --error: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 18px/1.5 "Segoe UI", system-ui, -apple-system, Arial, sans-serif; color: var(--ink); background: var(--bg); }
+  .demo-bar { background: #fff4d6; color: #6b4e00; text-align: center; font-size: 15px; padding: 6px 16px; border-bottom: 1px solid #f0dca0; }
+  header { background: #fff; border-bottom: 1px solid var(--line); }
+  .top { max-width: 1080px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 32px; }
+  .logo { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--green); }
+  .logo-mark { width: 44px; height: 44px; border-radius: 50%; background: var(--green); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 24px; }
+  .logo-text b { display: block; font-size: 24px; line-height: 1.1; }
+  .logo-text span { font-size: 13px; color: var(--muted); }
+  nav { display: flex; gap: 24px; margin-left: auto; }
+  nav a { color: var(--ink); text-decoration: none; font-size: 16px; }
+  nav a.active { color: var(--green); font-weight: 600; border-bottom: 3px solid var(--green); padding-bottom: 4px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 18px 24px 40px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 22px 28px; }
+  .card-head { display: flex; align-items: center; gap: 24px; margin-bottom: 16px; }
+  .card-head h1 { font-size: 30px; margin: 0; }
+  .card-head p { margin: 2px 0 0; color: var(--muted); font-size: 16px; }
+  .card-head .grow { flex: 1; }
+  .btn-submit {
+    font: inherit; font-size: 20px; font-weight: 700; padding: 12px 36px; border-radius: 10px; border: 0; cursor: pointer;
+    background: var(--green); color: #fff; box-shadow: 0 3px 0 var(--green-dark);
+  }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px; }
+  .field { margin-bottom: 16px; }
+  .lbl { display: block; font-weight: 600; margin-bottom: 6px; }
+  .opt { font-weight: 400; color: var(--muted); }
+  input[type=text], input[type=tel], textarea {
+    width: 100%; font: inherit; padding: 11px 14px; border: 2px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink);
+  }
+  textarea { min-height: 76px; resize: vertical; }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 14px 18px; display: flex; align-items: center; gap: 18px; background: #fafcfb; }
+  .file-input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .btn-file {
+    display: inline-flex; align-items: center; gap: 10px; padding: 11px 22px; border-radius: 8px; cursor: pointer;
+    border: 2px solid var(--green); color: var(--green); background: #fff; font-weight: 600; white-space: nowrap;
+  }
+  .file-name { color: var(--muted); font-size: 16px; }
+  .file-name.chosen { color: var(--ink); font-weight: 600; }
+  .error { color: var(--error); font-size: 15px; margin-top: 6px; display: none; }
+  .invalid .error { display: block; }
+  .invalid input, .invalid .drop { border-color: var(--error); }
+  #thanks { display: none; }
+  .done #form-view { display: none; }
+  .done #thanks { display: block; }
+  .ok { width: 64px; height: 64px; border-radius: 50%; background: var(--green); color: #fff; display: grid; place-items: center; font-size: 36px; margin-bottom: 12px; }
+  .summary { margin: 18px 0 0; padding: 0; list-style: none; }
+  .summary li { padding: 8px 0; border-top: 1px solid var(--line); }
+  .summary b { display: inline-block; min-width: 230px; }
+  footer { text-align: center; font-size: 14px; color: var(--muted); padding: 0 24px 32px; }
+  /* The cookie banner covers the whole page until one button is clicked. */
+  #cookies { position: fixed; inset: 0; background: rgba(20, 30, 28, 0.55); display: grid; place-items: center; z-index: 10; }
+  #cookies .box { background: #fff; border-radius: 14px; padding: 28px 32px; width: 640px; box-shadow: 0 10px 40px rgba(0,0,0,.3); }
+  #cookies h2 { margin: 0 0 8px; font-size: 24px; }
+  #cookies p { margin: 0 0 20px; color: var(--muted); font-size: 16px; }
+  #cookies .btns { display: flex; gap: 14px; justify-content: flex-end; }
+  #cookies button { font: inherit; font-weight: 600; padding: 12px 24px; border-radius: 8px; cursor: pointer; }
+  #cookie-necessary { background: #fff; border: 2px solid var(--green); color: var(--green); }
+  #cookie-all { background: var(--green); border: 2px solid var(--green); color: #fff; }
+  .consent #cookies { display: none; }
+</style>
+</head>
+<body>
+<div class="demo-bar">Demo page of an invented health insurer. Nothing is sent.</div>
+<header>
+  <div class="top">
+    <a class="logo" href="#"><div class="logo-mark">G</div><div class="logo-text"><b>Gesundkasse</b><span>Ihre Krankenkasse in Beispielstadt</span></div></a>
+    <nav>
+      <a href="#">Leistungen</a><a href="#">Mitglied werden</a><a class="active" href="#">Upload-Center</a><a href="#">Kontakt</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section id="form-view">
+    <form class="card" id="form" novalidate>
+      <div class="card-head">
+        <div class="grow">
+          <h1>Upload centre</h1>
+          <p>Dokumente sicher an die Gesundkasse schicken. Pflichtfelder: Versichertennummer, Name, Datei.</p>
+        </div>
+        <button type="submit" class="btn-submit" id="submit">Abschicken</button>
+      </div>
+      <div class="grid">
+        <div class="field" id="w-nr">
+          <label class="lbl" for="f-nr">Versichertennummer</label>
+          <input type="text" id="f-nr" name="nr" placeholder="z. B. G123456789" maxlength="12">
+          <div class="error">Bitte Versichertennummer eingeben.</div>
+        </div>
+        <div class="field" id="w-name">
+          <label class="lbl" for="f-name">Vor- und Nachname</label>
+          <input type="text" id="f-name" name="name" autocomplete="name">
+          <div class="error">Bitte Vor- und Nachname eingeben.</div>
+        </div>
+        <div class="field">
+          <label class="lbl" for="f-phone">Telefon <span class="opt">(freiwillig)</span></label>
+          <input type="tel" id="f-phone" name="phone">
+        </div>
+      </div>
+      <div class="field">
+        <label class="lbl" for="f-msg">Ihre Nachricht</label>
+        <textarea id="f-msg" name="msg"></textarea>
+      </div>
+      <div class="field" id="w-file">
+        <span class="lbl">Krankschreibung (PDF, JPG oder PNG)</span>
+        <div class="drop">
+          <input class="file-input" type="file" id="f-file" name="file" accept=".pdf,.jpg,.jpeg,.png">
+          <label class="btn-file" for="f-file"><span aria-hidden="true">📎</span><span>Krankschreibung hochladen</span></label>
+          <span class="file-name" id="file-name">Noch keine Datei gewählt</span>
+        </div>
+        <div class="error">Bitte laden Sie Ihre Krankschreibung hoch.</div>
+      </div>
+    </form>
+  </section>
+
+  <section id="thanks" aria-live="polite">
+    <div class="card">
+      <div class="ok">✓</div>
+      <h1>Vielen Dank, eingegangen am <span id="t-when"></span></h1>
+      <p>Ihre Unterlagen sind bei uns. Sie müssen nichts weiter tun.</p>
+      <ul class="summary">
+        <li><b>Name</b><span id="t-name"></span></li>
+        <li><b>Versichertennummer</b><span id="t-nr"></span></li>
+        <li><b>Datei</b><span id="t-file"></span></li>
+        <li><b>Vorgangsnummer</b><span id="t-id"></span></li>
+      </ul>
+    </div>
+  </section>
+</main>
+<footer>Gesundkasse is invented. Invented example for tests; no data leaves the computer.</footer>
+
+<div id="cookies" role="dialog" aria-label="Cookies">
+  <div class="box">
+    <h2>We use cookies</h2>
+    <p>Some cookies are necessary for this site to work. With your consent we also use cookies for statistics.</p>
+    <div class="btns">
+      <button type="button" id="cookie-necessary">Only necessary</button>
+      <button type="button" id="cookie-all">Accept all</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  const consent = () => document.body.classList.add("consent");
+  $("cookie-necessary").addEventListener("click", consent);
+  $("cookie-all").addEventListener("click", consent);
+  const file = $("f-file"), fileName = $("file-name");
+  file.addEventListener("change", () => {
+    const f = file.files[0];
+    fileName.textContent = f ? f.name : "Noch keine Datei gewählt";
+    fileName.classList.toggle("chosen", !!f);
+  });
+  const hasFile = () => file.files.length > 0 || fileName.classList.contains("chosen");
+
+  $("form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const checks = [["w-nr", $("f-nr").value.trim()], ["w-name", $("f-name").value.trim()], ["w-file", hasFile()]];
+    let ok = true;
+    for (const [id, value] of checks) {
+      $(id).classList.toggle("invalid", !value);
+      if (!value) ok = false;
+    }
+    if (!ok) return;
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    $("t-when").textContent = `${pad(now.getDate())}.${pad(now.getMonth() + 1)}.${now.getFullYear()} um ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    $("t-name").textContent = $("f-name").value.trim();
+    $("t-nr").textContent = $("f-nr").value.trim();
+    $("t-file").textContent = fileName.textContent;
+    $("t-id").textContent = "GK-" + String(now.getTime()).slice(-7);
+    document.body.classList.add("done");
+  });
+
+  // Fixture screenshots only (fake file name, no real file).
+  if (params.has("fill") || params.has("thanks") || params.has("error")) {
+    consent();
+    $("f-nr").value = "G123456789";
+    $("f-name").value = "Erika Beispiel";
+  }
+  if (params.has("fill") || params.has("thanks")) {
+    fileName.textContent = "au_erika_erst.pdf";
+    fileName.classList.add("chosen");
+  }
+  if (params.has("error")) $("submit").click();
+  if (params.has("thanks")) {
+    $("t-when").textContent = "29.10.2026 um 18:06";
+    $("t-name").textContent = "Erika Beispiel";
+    $("t-nr").textContent = "G123456789";
+    $("t-file").textContent = "au_erika_erst.pdf";
+    $("t-id").textContent = "GK-2104712";
+    document.body.classList.add("done");
+  }
+})();
+</script>
+</body>
+</html>

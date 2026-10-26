@@ -34,6 +34,8 @@ const st = {
   dragging: false,
   onboarding: null,
   bubbleKind: null,
+  bubbleQid: null,       // question id of the bubble on screen (a guard bubble asked by a run)
+  guardPose: false,      // the guard bubble put Pip in the "ask" pose; cleared when it closes
   bubbleSticky: false,   // the bubble waits for an answer (buttons, question, reminder, onboarding)
   bubbleTimer: 0,
   queue: [],             // sticky bubbles waiting for the one on screen: { text, opts }
@@ -352,6 +354,11 @@ function hideBubble() {
   clearTimeout(st.bubbleTimer);
   el.bubble.hidden = true;
   const wasSticky = st.bubbleSticky;
+  if (st.guardPose) {
+    st.guardPose = false;
+    if (st.pose === "ask") st.pose = null;
+    showPose();
+  }
   st.bubbleKind = null;
   st.bubbleSticky = false;
   if (wasSticky && st.queue.length) {
@@ -363,9 +370,9 @@ function hideBubble() {
   layout();
 }
 
-function makeButton(label, primary, onClick) {
+function makeButton(label, primary, onClick, cls) {
   const b = document.createElement("button");
-  b.className = primary ? "btn primary" : "btn";
+  b.className = (primary ? "btn primary" : "btn") + (cls ? ` ${cls}` : "");
   b.textContent = label;
   b.addEventListener("click", onClick);
   return b;
@@ -409,6 +416,9 @@ function showBubble(text, opts = {}) {
   const same = !el.bubble.hidden && el.bText.textContent === text && st.bubbleKind === (opts.kind || "say");
   el.bubble.className = "bubble" + (opts.kind ? ` ${opts.kind}` : "");
   st.bubbleKind = opts.kind || "say";
+  st.bubbleQid = opts.qid || null;
+  // the guard bubble (also one shown later from the queue) puts Pip in the ask pose until it closes
+  if (st.bubbleKind === "guard") { st.guardPose = true; st.pose = "ask"; showPose(); }
   const sticky = isSticky(opts);
   if (sticky && !st.bubbleSticky) st.shownOf += 1;
   if (!sticky) st.shownOf = 0;
@@ -416,7 +426,7 @@ function showBubble(text, opts = {}) {
   el.bText.textContent = text;
   decorateStats(text);
   el.bExtra.replaceChildren(...(opts.extra || []));
-  el.bButtons.replaceChildren(...(opts.buttons || []).map((b) => makeButton(b.label, b.primary, b.onClick)));
+  el.bButtons.replaceChildren(...(opts.buttons || []).map((b) => makeButton(b.label, b.primary, b.onClick, b.cls)));
   el.bAfter.replaceChildren(...(opts.after || []));
   el.bClose.hidden = !opts.closeX;
   el.bubble.classList.toggle("has-x", !!opts.closeX);
@@ -504,6 +514,40 @@ function openQuestion(ev, qid) {
   });
   invoke("focus_window").catch(() => {});
   setTimeout(() => input.focus(), 120);
+}
+
+// The guard bubble (a page that only looks like the real one). The core sends an ordinary bubble whose button
+// ids start with "guard:"; its text is several lines: the title sentence, one line per warning sign, and the
+// honest closing sentence. The title is the bubble text (the core speaks it), the signs become amber chips.
+// Sticky like a question: it never closes by itself and a later plain sentence goes to the note line.
+const isGuard = (buttons) => (buttons || []).some((b) => String(b.id).startsWith("guard:"));
+
+function guardBubble(ev, qid) {
+  const lines = String(ev.text).split("\n").map((l) => l.trim()).filter(Boolean);
+  const title = lines[0] || String(ev.text);
+  const signs = lines.length > 2 ? lines.slice(1, -1) : [];
+  const closing = lines.length > 1 ? lines[lines.length - 1] : "";
+  const extra = [];
+  if (signs.length) {
+    const ul = document.createElement("ul");
+    ul.className = "signs";
+    for (const sign of signs) {
+      const li = document.createElement("li");
+      li.className = "sign";
+      li.textContent = sign;
+      ul.append(li);
+    }
+    extra.push(ul);
+  }
+  if (closing) extra.push(para(closing, "guard-close"));
+  // The safe way out first and big; "continue anyway" last, small and quiet.
+  const go = ev.buttons.filter((b) => b.id !== "guard:continue");
+  const cont = ev.buttons.filter((b) => b.id === "guard:continue");
+  const buttons = [
+    ...go.map((b, i) => ({ label: b.label, primary: i === 0, cls: i === 0 ? "big safe" : "", id: b.id })),
+    ...cont.map((b) => ({ label: b.label, primary: false, cls: "minor", id: b.id })),
+  ].map((b) => ({ ...b, onClick: () => { hideBubble(); runButton(b.id, qid); } }));
+  say(title, { kind: "guard", sticky: true, qid, buttons, extra });
 }
 
 function runButton(id, qid) {
@@ -845,6 +889,7 @@ function onUi(ev) {
     case "bubble": {
       const qid = ev.question_id;
       if (qid && ev.buttons.some((b) => b.id === "__text__")) { openQuestion(ev, qid); break; }
+      if (isGuard(ev.buttons)) { guardBubble(ev, qid); break; }
       say(ev.text, {
         buttons: ev.buttons.map((b) => ({
           label: b.label, primary: b.primary,
@@ -881,7 +926,11 @@ function onApp(ev) {
       st.acting = ev.on;
       if (!ev.on) st.actingEndedAt = performance.now();
       el.stop.hidden = !ev.on;
-      if (ev.on) { closeAsk(); el.panel.hidden = true; st.marks = []; }
+      if (ev.on) {
+        closeAsk(); el.panel.hidden = true; st.marks = [];
+        // a warning left over from an ended run must not hold the new run's questions in the queue
+        if (st.bubbleKind === "guard" && !st.bubbleQid) hideBubble();
+      }
       else {
         setProgress(""); hideCard(); st.marks = [];
         // Questions of the ended run wait for nobody: drop them from the queue, keep the shown one readable.
@@ -890,6 +939,13 @@ function onApp(ev) {
           st.bubbleSticky = false;
           const next = st.queue.shift();
           if (next) showBubble(next.text, next.opts); else showBubble(el.bText.textContent);
+        } else if (st.bubbleKind === "guard" && st.bubbleQid) {
+          // The run that asked has ended: the warning stays readable, its buttons answer nobody any more.
+          st.bubbleQid = null;
+          el.bButtons.replaceChildren();
+          el.bClose.hidden = false;
+          el.bubble.classList.add("has-x");
+          layout();
         }
       }
       layout();

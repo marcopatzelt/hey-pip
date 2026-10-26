@@ -53,8 +53,23 @@ impl DateField {
     }
 }
 
-/// Words in a field name that make an empty text field a date field (then dd.mm.yyyy is assumed).
-const DATE_WORDS: &[&str] = &["date", "datum", "since", "birth", "born", "geboren", "seit"];
+/// Words in a field name that make an empty text field a date field (then dd.mm.yyyy is assumed). A label
+/// names the field ("First day of illness"); its TT.MM.JJJJ placeholder is not in the UI tree. "tag" only in
+/// these forms: "Vertrag", "Betrag" and "Antrag" are no dates.
+const DATE_WORDS: &[&str] = &[
+    "date",
+    "datum",
+    "since",
+    "birth",
+    "born",
+    "geboren",
+    "seit",
+    "day",
+    "beginn",
+    "krankheitstag",
+    "erster tag",
+    "letzter tag",
+];
 
 /// The date field behind an outline item: its value shows a placeholder mask or a date already (a date input),
 /// its name carries a mask, or its name says "date" and it is empty (a text field). None for every other field.
@@ -284,6 +299,34 @@ mod tests {
         assert_eq!((f.value(x), f.keys(x)), ("18.10.2026".into(), "18.10.2026".into()));
         let f = date_field(&field("Start (YYYY-MM-DD)", "")).unwrap();
         assert_eq!(f.text(x), "2026-10-18");
+    }
+
+    #[test]
+    fn text_field_with_a_date_placeholder_gets_the_written_date() {
+        // Chromium names an unlabelled text field by its placeholder; a label may carry the pattern too. A
+        // labelled field ("First day of illness", demo-kasse fragebogen-v2) hides its placeholder: the label's
+        // words have to do.
+        for name in [
+            "TT.MM.JJJJ",
+            "dd.mm.yyyy",
+            "Krank seit (TT.MM.JJJJ)",
+            "Start date TT.MM.JJJJ",
+            "First day of illness",
+            "Krankheitsbeginn",
+            "Erster Tag der Arbeitsunfähigkeit",
+        ] {
+            let f = date_field(&field(name, "")).unwrap();
+            assert_eq!(f, DateField { mask: Mask::Dmy, input: false, sep: '.' }, "{name}");
+            // The model writes ISO or the written date; the field gets 20.10.2026 both ways, never digits only.
+            for text in ["2026-10-20", "20.10.2026"] {
+                let day = parse_date_in(text, f.mask).unwrap();
+                assert_eq!((f.value(day), f.keys(day)), ("20.10.2026".into(), "20.10.2026".into()), "{name} {text}");
+            }
+        }
+        // Number fields with "tag" inside stay plain: eight digits there are a number, never a date.
+        for name in ["Vertragsnummer", "Betrag", "Antragsnummer", "Employer"] {
+            assert_eq!(date_field(&field(name, "")), None, "{name}");
+        }
     }
 
     #[test]

@@ -11,7 +11,8 @@
 //!       --outline fixtures/screens/demo-kasse.outline.json
 //!   pip-cli --lang en agent "…" --page file://…/fixtures/demo-uni/index.html --answer 7654321
 //!   pip-cli transcribe sample.wav
-//!   pip-cli eval
+//!   pip-cli --lang en agent "@task_look_screen" --memory cold --answer "name => Erika Beispiel"
+//!   pip-cli eval [--real] [--only demo-uni-v2]
 //!   pip-cli card --demo --out target/pip-did-this.html
 
 mod agent_cmd;
@@ -112,6 +113,14 @@ enum Cmd {
         /// answer). Without (or after the last one) the first button is pressed.
         #[arg(long = "answer")]
         answers: Vec<String>,
+        /// What Pip starts with: full (letter + profile facts), no_letters, no_profile, or cold (neither).
+        /// no_playbook is the same as full here (a fresh --db has no playbook).
+        #[arg(long, value_enum, default_value = "full")]
+        memory: agent_cmd::MemoryCond,
+        /// Named target (from <screen>.boxes.json) whose click shows the next screen, repeatable
+        /// (a cookie button, "Next", a submit that leads to an error screen).
+        #[arg(long = "advance-on-click")]
+        advance_on_click: Vec<String>,
     },
     /// "Pip did this for me": print the numbers and the post text, write the shareable card (no API call).
     Card {
@@ -130,6 +139,13 @@ enum Cmd {
         tasks: PathBuf,
         #[arg(long, default_value = "eval/results.md")]
         out: PathBuf,
+        /// Also run the real read-only websites of eval/real-sites.json (dry run up to the send card, DEMO_MODE off
+        /// for those tasks only, every card refused: nothing is ever sent).
+        #[arg(long)]
+        real: bool,
+        /// Only the agent tasks whose page or task text contains this (skips letters and click targets).
+        #[arg(long)]
+        only: Option<String>,
     },
 }
 
@@ -205,14 +221,27 @@ async fn main() -> Result<()> {
             screen::ground(&ctx, &image, &description, &query, &out).await
         }
         Cmd::Rules { letters } => letters::rules(&ctx, &letters),
-        Cmd::Agent { task, screens, page, letter, approve, max_steps, outline, answers } => {
+        Cmd::Agent { task, screens, page, letter, approve, max_steps, outline, answers, memory, advance_on_click } => {
             // "@task_look_screen" = the app's own button text for that i18n key (same rule as eval/tasks.json).
             let task = match task.strip_prefix('@') {
                 Some(key) => pip_core::i18n::t(key, ctx.lang).to_string(),
                 None => task,
             };
-            let opts =
-                agent_cmd::Options { task, screens, page, letter, approve, max_steps, quiet: false, outline, answers };
+            let (seed_letter, seed_facts) = memory.seeds();
+            let opts = agent_cmd::Options {
+                task,
+                screens,
+                page,
+                letter,
+                approve,
+                max_steps,
+                quiet: false,
+                outline,
+                answers,
+                seed_letter,
+                seed_facts,
+                advance_on_click,
+            };
             agent_cmd::run(&ctx, opts).await.map(|_| ())
         }
         Cmd::Transcribe { wav } => {
@@ -223,7 +252,7 @@ async fn main() -> Result<()> {
             eprintln!("({:.1} s)", started.elapsed().as_secs_f32());
             Ok(())
         }
-        Cmd::Eval { tasks, out } => eval::run(&ctx, &tasks, &out).await,
+        Cmd::Eval { tasks, out, real, only } => eval::run(&ctx, &tasks, &out, real, only.as_deref()).await,
         Cmd::Card { out, demo } => card::run(&ctx, &out, demo),
     }
 }

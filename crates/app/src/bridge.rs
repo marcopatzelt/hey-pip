@@ -44,6 +44,69 @@ const MOCK_TALLY: pip_core::memory::Tally = pip_core::memory::Tally {
     since: None,
 };
 
+/// The card in mock mode: fake pages stopped (invented, like the tally).
+const MOCK_SCAMS_STOPPED: u64 = 2;
+/// Memory event kind written by the guard each time it warned about a lookalike page.
+const EV_GUARD_WARNED: &str = "guard_warned";
+/// How many recent memory events are looked at for the card's "fake pages stopped" line.
+const GUARD_EVENTS_LOOKED_AT: u32 = 500;
+
+/// "2 fake pages stopped" (i18n keys share_scam_one / share_scam_many; a built-in copy while the table lacks them).
+fn scam_line(n: u64, lang: Lang) -> String {
+    let key = if n == 1 { "share_scam_one" } else { "share_scam_many" };
+    let n_s = n.to_string();
+    let text = tf(key, lang, &[("n", &n_s)]);
+    if text != key {
+        return text;
+    }
+    match (lang, n) {
+        (Lang::En, 1) => "1 fake page stopped".into(),
+        (Lang::En, _) => format!("{n} fake pages stopped"),
+        (Lang::De, 1) => "1 gefälschte Seite gestoppt".into(),
+        (Lang::De, _) => format!("{n} gefälschte Seiten gestoppt"),
+    }
+}
+
+/// How many times the guard warned about a fake page (memory events of kind "guard_warned").
+fn scams_stopped(mem: &pip_core::memory::Memory) -> Result<u64> {
+    Ok(mem.recent_events(GUARD_EVENTS_LOOKED_AT)?.iter().filter(|e| e.kind == EV_GUARD_WARNED).count() as u64)
+}
+
+/// HTML escape for the line added to the card.
+fn esc_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+}
+
+/// Adds the amber "N fake pages stopped" line to the card page (below the tiles, above the promise) and to
+/// the post text (after the counted parts). The card itself is built in core; this only inserts.
+fn add_scam_line(html: String, tally: &pip_core::memory::Tally, n: u64, lang: Lang) -> String {
+    if n == 0 {
+        return html;
+    }
+    let line = scam_line(n, lang);
+    let style = ".scam { margin: 0 40px 4px; align-self: flex-start; padding: 6px 16px 6px 12px; border-radius: 999px; \
+        background: #fff7e6; border: 2px solid #b45309; color: #4a2205; font-size: 19px; font-weight: 700; }\n\
+        .scam::before { content: \"!\"; display: inline-flex; align-items: flex-end; justify-content: center; width: 20px; \
+        height: 18px; margin-right: 8px; padding-bottom: 2px; vertical-align: -2px; background: #b45309; color: #fff; \
+        font-size: 12px; font-weight: 800; line-height: 1; clip-path: polygon(50% 0, 100% 100%, 0 100%); }\n</style>";
+    let mut out = html.replacen("</style>", style, 1).replacen(
+        "\n<footer>",
+        &format!("\n<p class=\"scam\">{}</p>\n<footer>", esc_html(&line)),
+        1,
+    );
+    // The post: "Pip did this for me: 3 letters read, …." -> "…, 2 fake pages stopped."
+    let share = pip_core::memory::share_text(tally, lang);
+    if let Some(end) = share.find(". ") {
+        let (first, rest) = share.split_at(end);
+        let joined =
+            if first.contains(':') { format!("{first}, {line}{rest}") } else { format!("{first}: {line}{rest}") };
+        if joined.chars().count() <= 280 {
+            out = out.replacen(&esc_html(&share), &esc_html(&joined), 1);
+        }
+    }
+    out
+}
+
 /// What Pip says when the card opens, or (`empty`) when there is nothing on it yet.
 fn card_sentence(empty: bool, lang: Lang) -> &'static str {
     match (empty, lang) {
@@ -1602,7 +1665,12 @@ impl Ctx {
             self.backend.memory.clone().and_then(|m| guard("card", || pip_core::memory::tally(&m)).ok())
         };
         let tally = tally.unwrap_or_default();
-        if tally.is_empty() {
+        let scams = if self.backend.mock {
+            MOCK_SCAMS_STOPPED
+        } else {
+            self.backend.memory.clone().and_then(|m| guard("card scams", || scams_stopped(&m)).ok()).unwrap_or(0)
+        };
+        if tally.is_empty() && scams == 0 {
             self.pip(PipState::Idle);
             let text = card_sentence(true, lang).to_string();
             self.bus.emit(UiEvent::Speak { text: text.clone() });
@@ -1610,7 +1678,7 @@ impl Ctx {
             return;
         }
         let name = if self.backend.mock { Some("Erika".to_string()) } else { self.backend.profile_get("name") };
-        let html = pip_core::memory::card_html(&tally, name.as_deref(), lang);
+        let html = add_scam_line(pip_core::memory::card_html(&tally, name.as_deref(), lang), &tally, scams, lang);
         let path = pip_core::config::log_file().with_file_name(CARD_FILE);
         let opened = path
             .parent()
@@ -1981,6 +2049,25 @@ mod tests {
         assert!(card_sentence(true, Lang::De).starts_with("Wir haben noch nichts"));
         let only_since = pip_core::memory::Tally { since: chrono::NaiveDate::from_ymd_opt(2026, 10, 14), ..empty };
         assert!(only_since.is_empty(), "a day alone is nothing done");
+    }
+
+    #[test]
+    fn card_counts_fake_pages_stopped() {
+        let mem = pip_core::memory::Memory::open_in_memory().unwrap();
+        assert_eq!(scams_stopped(&mem).unwrap(), 0);
+        mem.add_event(EV_GUARD_WARNED, "lookalike page warned").unwrap();
+        mem.add_event("task_done", "other").unwrap();
+        mem.add_event(EV_GUARD_WARNED, "lookalike page warned").unwrap();
+        let n = scams_stopped(&mem).unwrap();
+        assert_eq!(n, 2);
+        let html = pip_core::memory::card_html(&MOCK_TALLY, Some("Erika"), Lang::En);
+        let with = add_scam_line(html.clone(), &MOCK_TALLY, n, Lang::En);
+        assert!(with.contains("<p class=\"scam\">2 fake pages stopped</p>"), "card line");
+        assert!(with.contains(", 2 fake pages stopped."), "post text");
+        assert!(with.contains(".scam {"));
+        assert_eq!(add_scam_line(html.clone(), &MOCK_TALLY, 0, Lang::En), html, "no line without a warning");
+        assert_eq!(scam_line(1, Lang::En), "1 fake page stopped");
+        assert!(scam_line(3, Lang::De).starts_with('3'));
     }
 
     #[test]

@@ -102,6 +102,31 @@ Pip uses Meta's colour world (blue to violet) but no Meta logo and no Meta chara
   something, the gate still asks before anything is sent.
 - **No passwords.** Password fields (UI Automation `IsPassword`) are never typed into. Pip asks you to type them yourself.
 
+## The guard
+
+Before the model sees a page, Pip checks it with plain Rust rules (`crates/core/src/rules/guard.rs`). The check
+costs no tokens and needs no network. It runs at the first look and again whenever the page in front belongs to
+another site.
+
+- **What it compares with:** memory. The user's organisations come from profile facts: a name (`krankenkasse =
+  Gesundkasse`) plus a page address whose key starts with that name (`krankenkasse_kontaktformular`). The source is
+  the newest letter from or to that organisation ("from your letter of Tuesday, October 20"). Known sites are also
+  the sites of playbooks and of "Don't ask again".
+- **Signals:** the page names a known organisation but is not its site and not a known site; the address looks like
+  a known one (the known name plus extra words, or at most two letters different); a field asks for a password,
+  PIN, TAN, SMS code, IBAN or card number; pressure words ("within 24 hours", "will be locked", "sofort");
+  a phone number next to "locked", "virus" or "security alert".
+- **Verdict:** warn = (claims a known organisation OR lookalike address) AND (asks for a secret OR rushes), OR a
+  fake warning with a phone number. A new site that asks for nothing secret, and a sister page of the insurer that
+  asks for nothing secret, stay silent.
+- **The amber bubble:** "Wait. This page doesn't look right to me.", one plain sentence per sign, then "I am not sure
+  it is a scam, but I would not type anything here." The safe button comes first: "Take me to the real Gesundkasse"
+  (opens the page memory knows and ends the task) or "Stop here". Then "I'm sure, continue": the guard is off for
+  this task, and the send card still asks before anything leaves the computer.
+- **Events:** `guard_warned` (the signs), `guard_overridden` (the user went on), `guard_redirected` (Pip opened
+  the real site). The action log has one `guard` row with the answer.
+- **Pip never says "scam".** It names the warning signs and lets the person decide.
+
 ## Build and run
 
 Needs Rust 1.85+ (edition 2024). The Windows build also needs the WebView2 runtime (Windows 10/11 have it).

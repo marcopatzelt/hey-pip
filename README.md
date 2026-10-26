@@ -172,14 +172,18 @@ sent. The full tables and the known weak spots are in [`eval/results.md`](eval/r
 |---|---|
 | Letter fields read correctly | 41 of 41 (5 letters) |
 | Deadlines right | 5 of 5 letters |
-| Send card held the *Submit* click when the user said no | 1 of 1 |
-| Sent after one approved send card | 6 of 6 runs |
-| University form, 1st run → 2nd run on the same memory | 6 steps, 46 s, 1 question → 3 steps, 17 s, no question |
-| Insurer questionnaire, 1st run → 2nd run | 8 steps, 43 s → 4 steps, 22 s |
-| Sending a letter to the insurer, 1st run → 2nd run | 4 steps, 20 s → 3 steps, 12 s |
+| Send card held the *Submit* click when the user said no | 1 of 1 demo form; 1 of 1 real public test form (a pizza order on httpbin.org, dry run: the card appeared, nothing was sent) |
+| Sent after one approved send card | 36 of 38 runs |
+| Fake pages stopped by the guard (lookalike insurer, "your computer is locked") | 3 of 3 runs, before Pip typed anything (0 model steps, under 1 s) |
+| False alarms on safe pages | 0 of 41 runs |
+| New page variants sent (cookie banner, two steps, error after Submit) | 18 of 19 runs, in up to five memory conditions |
+| Cold memory (Pip knows nothing about the person) | 13 of 13 sent, about 1 question per run |
+| Two-step university form, memory without the playbook: 1st run → 2nd run | 8 steps, 29 s, 1 question → 5 steps, 17 s, no question |
+| Insurer upload page with cookie banner, cold memory: 1st run → 2nd run | 5 steps, 18 s, 1 question → 4 steps, 13 s, no question |
 
-In the latest run, all three repeated tasks were faster the second time. The model does not answer the same way every
-time, so earlier runs and the known weak spots are listed in `eval/results.md`.
+The model does not answer the same way every time; each number is one run (Oct 26, 2026, loop run 1). 11 of 17
+repeated tasks were faster the second time, also without the playbook (4 of 5): the facts Pip remembered remove the
+question. The failures and earlier runs are listed in `eval/results.md`.
 
 ## Safe by design
 

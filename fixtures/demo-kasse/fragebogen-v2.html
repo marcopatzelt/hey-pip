@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Questionnaire: your sick leave – Gesundkasse</title>
+<!-- Variant of the INVENTED insurer's questionnaire for evals: reworded labels, the first day of illness as a TEXT
+     field (TT.MM.JJJJ, no date picker), the employer is required, the radios come No first.
+     Submit refuses an empty field with an error text ("Please fill in: Employer"). Nothing leaves the page.
+     Switches (fixture screenshots only, fixtures/screens/make_outline.py): ?fill (all but the employer), ?fill&complete
+     (everything), ?error (all but the employer, submitted), ?thanks. -->
+<style>
+  :root {
+    --green: #0f7a5a; --green-dark: #0a5c44;
+    --ink: #1d2a26; --muted: #5b6b66; --line: #cfdcd7; --bg: #f4f7f6; --error: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 18px/1.5 "Segoe UI", system-ui, -apple-system, Arial, sans-serif; color: var(--ink); background: var(--bg); }
+  .demo-bar { background: #fff4d6; color: #6b4e00; text-align: center; font-size: 15px; padding: 6px 16px; border-bottom: 1px solid #f0dca0; }
+  header { background: #fff; border-bottom: 1px solid var(--line); }
+  .top { max-width: 1080px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 32px; }
+  .logo { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--green); }
+  .logo-mark { width: 44px; height: 44px; border-radius: 50%; background: var(--green); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 24px; }
+  .logo-text b { display: block; font-size: 24px; line-height: 1.1; }
+  .logo-text span { font-size: 13px; color: var(--muted); }
+  nav { display: flex; gap: 24px; margin-left: auto; }
+  nav a { color: var(--ink); text-decoration: none; font-size: 16px; }
+  main { max-width: 900px; margin: 0 auto; padding: 18px 24px 40px; }
+  h1 { font-size: 30px; margin: 0 0 14px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 22px 28px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .field { margin-bottom: 16px; }
+  .lbl { display: block; font-weight: 600; margin-bottom: 6px; }
+  input[type=text] { width: 100%; font: inherit; padding: 11px 14px; border: 2px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); }
+  .radios { display: flex; gap: 28px; }
+  .radios label { display: flex; gap: 10px; align-items: center; }
+  .radios input { width: 22px; height: 22px; accent-color: var(--green); }
+  .actions { display: flex; justify-content: flex-end; align-items: center; gap: 20px; }
+  .btn-submit { font: inherit; font-size: 20px; font-weight: 700; padding: 12px 44px; border-radius: 10px; border: 0; cursor: pointer; background: var(--green); color: #fff; box-shadow: 0 3px 0 var(--green-dark); }
+  .error { color: var(--error); font-size: 16px; font-weight: 600; display: none; }
+  .show { display: block; }
+  #thanks { display: none; }
+  .done #form-view { display: none; }
+  .done #thanks { display: block; }
+  .ok { width: 64px; height: 64px; border-radius: 50%; background: var(--green); color: #fff; display: grid; place-items: center; font-size: 36px; margin-bottom: 12px; }
+  footer { text-align: center; font-size: 14px; color: var(--muted); padding: 0 24px 32px; }
+</style>
+</head>
+<body>
+<div class="demo-bar">Demo page of an invented health insurer. Nothing is sent.</div>
+<header>
+  <div class="top">
+    <a class="logo" href="#"><div class="logo-mark">G</div><div class="logo-text"><b>Gesundkasse</b><span>Your health insurer in Sampletown</span></div></a>
+    <nav><a href="#">Benefits</a><a href="services.html">Service</a><a href="index.html">Contact</a></nav>
+  </div>
+</header>
+
+<main>
+  <section id="form-view">
+    <h1>Questionnaire: your sick leave</h1>
+    <form class="card" id="form" novalidate>
+      <div class="row">
+        <div class="field">
+          <label class="lbl" for="q-name">Name of insured person</label>
+          <input type="text" id="q-name" name="name">
+        </div>
+        <div class="field">
+          <label class="lbl" for="q-policy">Policy number</label>
+          <input type="text" id="q-policy" name="policy" maxlength="12">
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label class="lbl" for="q-first">First day of illness</label>
+          <input type="text" id="q-first" name="first_day" placeholder="TT.MM.JJJJ" maxlength="10">
+        </div>
+        <div class="field">
+          <label class="lbl" for="q-employer">Employer (required)</label>
+          <input type="text" id="q-employer" name="employer">
+        </div>
+      </div>
+      <div class="field">
+        <span class="lbl">Are you still unable to work?</span>
+        <div class="radios">
+          <label><input type="radio" name="still" value="no" id="q-still-no"> No</label>
+          <label><input type="radio" name="still" value="yes" id="q-still-yes"> Yes</label>
+        </div>
+      </div>
+      <div class="actions">
+        <div class="error" id="err" role="alert"></div>
+        <button type="submit" class="btn-submit" id="submit">Submit</button>
+      </div>
+    </form>
+  </section>
+
+  <section id="thanks" aria-live="polite">
+    <div class="card">
+      <div class="ok">✓</div>
+      <h1>Thank you, your questionnaire was received</h1>
+      <p>Reference <b>GK-Q-2026-8812</b>. You do not need to do anything else.</p>
+    </div>
+  </section>
+</main>
+<footer>Gesundkasse is invented. Invented example for tests; no data leaves the computer.</footer>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  const fields = [["q-name", "Name of insured person"], ["q-policy", "Policy number"],
+                  ["q-first", "First day of illness"], ["q-employer", "Employer"]];
+  $("form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const missing = fields.filter(([id]) => !$(id).value.trim()).map(([, label]) => label);
+    if (!document.querySelector('input[name="still"]:checked')) missing.push("Are you still unable to work?");
+    $("err").textContent = missing.length ? "Please fill in: " + missing.join(", ") : "";
+    $("err").classList.toggle("show", missing.length > 0);
+    if (missing.length) return;
+    document.body.classList.add("done");
+    document.title = "Thank you – Gesundkasse";
+  });
+
+  // Fixture screenshots only.
+  if (params.has("fill") || params.has("error") || params.has("thanks")) {
+    $("q-name").value = "Erika Beispiel";
+    $("q-policy").value = "G123456789";
+    $("q-first").value = "20.10.2026";
+    $("q-still-yes").checked = true;
+  }
+  // ?fill leaves the employer empty (Pip must not read it off the picture); ?complete adds it.
+  if (params.has("complete") || params.has("thanks")) $("q-employer").value = "Bäckerei Sonnenschein GmbH";
+  if (params.has("error")) $("submit").click();
+  if (params.has("thanks")) document.body.classList.add("done");
+})();
+</script>
+</body>
+</html>

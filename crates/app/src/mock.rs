@@ -74,8 +74,100 @@ pub fn reminder_answer(choice: &str, lang: Lang) -> String {
 }
 
 /// The demo story: fill the invented health-insurance form, two approval cards, done.
+/// `PIP_MOCK_SCENE=guard`: the lookalike-page scene instead (the amber guard bubble, for filming).
 pub async fn run_task(bus: &Bus, screen: OverlayInfo, lang: Lang, token: CancellationToken) -> AgentOutcome {
+    if std::env::var("PIP_MOCK_SCENE").is_ok_and(|v| v.trim() == "guard") {
+        return run_guard_paced(bus, screen, lang, token, 1.0).await;
+    }
     run_task_paced(bus, screen, lang, token, 1.0).await
+}
+
+/// The guard bubble as the core sends it: an ordinary bubble with "guard:" buttons; line 1 = title, one line per
+/// warning sign, last line = the honest closing sentence. All texts invented.
+pub fn guard_bubble(lang: Lang, question_id: Option<Uuid>) -> UiEvent {
+    let lines = [
+        pick(
+            lang,
+            "Vorsicht: Diese Seite sieht nur aus wie die Gesundkasse.",
+            "Careful: this page only looks like Gesundkasse.",
+        ),
+        pick(lang, "Die Adresse ist nicht die aus deinen Briefen", "The web address is not the one from your letters"),
+        pick(lang, "Sie will deinen SMS-Code", "It asks for your SMS code"),
+        pick(lang, "Sie sagt, du musst dich beeilen", "It says you must hurry"),
+        pick(
+            lang,
+            "Ich kann mich irren. Du entscheidest, und ich habe hier nichts eingetippt.",
+            "I can be wrong. You decide, and I typed nothing here.",
+        ),
+    ];
+    UiEvent::Bubble {
+        text: lines.join("\n"),
+        buttons: vec![
+            Button::new(
+                "guard:real",
+                pick(lang, "Bring mich zur echten Gesundkasse", "Take me to the real Gesundkasse"),
+                true,
+            ),
+            Button::new("guard:continue", pick(lang, "Ich bin sicher, weiter", "I'm sure, continue"), false),
+        ],
+        question_id,
+    }
+}
+
+/// The lookalike-page scene: Pip looks at the page, stops before typing anything, asks with the amber bubble.
+async fn run_guard_paced(
+    bus: &Bus,
+    screen: OverlayInfo,
+    lang: Lang,
+    token: CancellationToken,
+    pace: f32,
+) -> AgentOutcome {
+    bus.emit(UiEvent::Pip { state: PipState::Thinking });
+    bus.emit(UiEvent::Progress { text: t("thinking", lang).into() });
+    if !pause(&token, 2500, pace).await {
+        return AgentOutcome::Stopped;
+    }
+    bus.emit(UiEvent::PointAt {
+        rect: frac(&screen, 0.18, 0.50, 0.30, 0.05),
+        label: pick(lang, "SMS-Code", "SMS code").into(),
+    });
+    bus.emit(UiEvent::Progress { text: String::new() });
+    bus.emit(UiEvent::Pip { state: PipState::Asking });
+    let qid = Uuid::new_v4();
+    let rx = bus.pending.wait_answer(qid);
+    let ev = guard_bubble(lang, Some(qid));
+    if let UiEvent::Bubble { text, .. } = &ev {
+        bus.emit(UiEvent::Speak { text: text.lines().next().unwrap_or_default().to_string() });
+    }
+    bus.emit(ev);
+    let answer = tokio::select! {
+        biased;
+        _ = token.cancelled() => None,
+        a = tokio::time::timeout(APPROVAL_TIMEOUT, rx) => a.ok().and_then(Result::ok),
+    };
+    bus.emit(UiEvent::PointClear);
+    bus.emit(UiEvent::FlyHome);
+    let Some(choice) = answer else {
+        bus.emit(UiEvent::Pip { state: PipState::Idle });
+        return AgentOutcome::Stopped;
+    };
+    let text = if choice == "guard:continue" {
+        pick(
+            lang,
+            "Gut, du entscheidest. Ich tippe trotzdem nichts Geheimes ein.",
+            "OK, you decide. I still won't type anything secret.",
+        )
+    } else {
+        pick(
+            lang,
+            "Gut. Wir nehmen die echte Seite. Diese hier fasse ich nicht an.",
+            "Good. We'll use the real page. I won't touch this one.",
+        )
+    };
+    bus.emit(UiEvent::Pip { state: PipState::Happy });
+    bus.emit(UiEvent::Bubble { text: text.into(), buttons: vec![], question_id: None });
+    bus.emit(UiEvent::Speak { text: text.into() });
+    AgentOutcome::Done(text.into())
 }
 
 /// `pace` scales every wait (tests use 0).
@@ -241,6 +333,34 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
         assert_eq!(run_task_paced(&bus, screen(), Lang::En, token, 0.0).await, AgentOutcome::Stopped);
+    }
+
+    #[tokio::test]
+    async fn guard_scene_asks_with_guard_buttons_and_never_types() {
+        let (bus, _rx) = pip_core::events::Bus::new();
+        let mut ui = bus.to_ui.subscribe();
+        let b2 = bus.clone();
+        let seen = tokio::spawn(async move {
+            while let Ok(ev) = ui.recv().await {
+                // Pip only looks and asks here: never the acting state, never a typing step
+                assert!(!matches!(ev, UiEvent::Pip { state: PipState::Acting }), "the guard scene never acts");
+                if let UiEvent::Progress { text } = &ev {
+                    assert!(!text.contains(t("progress_type_name", Lang::En)), "typed: {text}");
+                }
+                if let UiEvent::Bubble { text, buttons, question_id: Some(q) } = ev {
+                    assert!(buttons.iter().all(|b| b.id.starts_with("guard:")));
+                    assert_eq!(buttons[0].id, "guard:real");
+                    assert!(buttons[0].primary);
+                    assert_eq!(text.lines().count(), 5, "title, three signs, closing");
+                    assert!(b2.pending.resolve_answer(q, "guard:real".into()));
+                    return true;
+                }
+            }
+            false
+        });
+        let out = run_guard_paced(&bus, screen(), Lang::En, CancellationToken::new(), 0.0).await;
+        assert!(seen.await.unwrap());
+        assert!(matches!(out, AgentOutcome::Done(ref s) if s.starts_with("Good.")), "{out:?}");
     }
 
     #[test]

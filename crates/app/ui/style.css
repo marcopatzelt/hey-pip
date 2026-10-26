@@ -162,6 +162,40 @@ input[type=password] {
 .column.right .bubble::after { left: -7px; box-shadow: -3px 3px 6px rgba(17, 24, 39, .06); }
 .column.vert .bubble::after { display: none; }
 
+/* ---------- guard: a page that only looks like the real one ----------
+   Amber, not red: "careful, look here", not "error". Dark text on light amber (contrast > 12:1), big safe button,
+   "continue anyway" small and quiet. The warning glyph is drawn in CSS (no emoji: same on every Windows). */
+.bubble.guard {
+  --amber: #b45309; --amber-bg: #fff7e6; --amber-chip: #fde9c4; --amber-line: #ecc58a;
+  background: var(--amber-bg); color: var(--ink); border: 3px solid var(--amber); border-top-width: 12px;
+  padding: 16px 22px 18px; width: 440px;
+  animation: pop .28s cubic-bezier(.2, .9, .3, 1.2), guard-nudge .5s ease-in-out .3s;
+}
+.bubble.guard #bubble-text { font-size: 22px; font-weight: 750; line-height: 1.3; color: #2b1404; }
+.bubble.guard::after { background: var(--amber-bg); border: 0 solid var(--amber); }
+.column.left .bubble.guard::after { right: -10px; border-width: 3px 3px 0 0; box-shadow: none; }
+.column.right .bubble.guard::after { left: -10px; border-width: 0 0 3px 3px; box-shadow: none; }
+.bubble.guard .signs { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.bubble.guard .sign {
+  display: flex; align-items: flex-start; gap: 10px; padding: 7px 14px 7px 12px; border-radius: 12px;
+  background: var(--amber-chip); border: 1px solid var(--amber-line); color: #4a2205; font-size: 18px; font-weight: 600; line-height: 1.3;
+}
+/* warning triangle with "!" */
+.bubble.guard .sign::before {
+  content: "!"; flex: none; width: 20px; height: 18px; margin-top: 2px; background: var(--amber); color: #fff;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%); font-size: 12px; font-weight: 800; line-height: 1;
+  display: flex; align-items: flex-end; justify-content: center; padding-bottom: 2px;
+}
+.bubble.guard .guard-close { font-size: 17px; color: #5c4630; margin-top: 12px; }
+.bubble.guard .buttons { flex-direction: column; align-items: stretch; gap: 8px; }
+.bubble.guard .btn.safe { justify-content: center; }
+.bubble.guard .btn.minor {
+  align-self: center; min-height: 44px; padding: 4px 14px; font-size: 16px; font-weight: 600;
+  background: transparent; border-color: transparent; color: #5c4630; text-decoration: underline; text-underline-offset: 3px;
+}
+.bubble.guard .btn.minor:hover { background: var(--amber-chip); border-color: var(--amber-line); }
+@keyframes guard-nudge { 0%, 100% { translate: 0 0; } 20% { translate: -6px 0; } 40% { translate: 5px 0; } 60% { translate: -3px 0; } 80% { translate: 2px 0; } }
+
 .buttons { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
 .buttons:empty { display: none; }
 .btn {

@@ -591,6 +591,51 @@ static TABLE: &[(&str, &str, &str)] = &[
         "Ich komme hier nicht weiter. Kannst du mal draufschauen?",
         "I keep getting stuck here. Could you have a look?",
     ),
+    // --- the guard (warning signs on a page, checked by rules before Pip acts) ---
+    ("guard_title", "Moment. Diese Seite kommt mir nicht richtig vor.", "Wait. This page doesn't look right to me."),
+    (
+        "guard_claims",
+        "Hier steht {org}, aber deine {org} ist {site} ({source}).",
+        "It says {org}, but your {org} is {site} ({source}).",
+    ),
+    (
+        "guard_lookalike",
+        "Die Adresse sieht aus wie {site}, ist es aber nicht.",
+        "Its address looks like {site}, but it is not that site.",
+    ),
+    (
+        "guard_sensitive",
+        "Sie fragt nach: {field}. Deine Briefe fragen hier nie danach.",
+        "It asks for a {field}. Your letters never ask for that here.",
+    ),
+    ("guard_rushes", "Sie macht Druck: „{phrase}“.", "It tries to rush you: \"{phrase}\"."),
+    (
+        "guard_fake_warning",
+        "Echte Warnungen zeigen nie eine Nummer zum Anrufen. Das ist eine Webseite, nicht dein Computer.",
+        "Real warnings never show a phone number to call. This is a web page, not your computer.",
+    ),
+    (
+        "guard_source",
+        "Ich weiß nicht sicher, ob das Betrug ist, aber ich würde hier nichts eintippen.",
+        "I am not sure it is a scam, but I would not type anything here.",
+    ),
+    ("guard_from_letter", "aus deinem Brief vom {date}", "from your letter of {date}"),
+    ("guard_from_you", "das hast du mir gesagt", "you told me"),
+    ("btn_guard_real_site", "Zur echten {org}", "Take me to the real {org}"),
+    ("btn_guard_stop", "Hier aufhören", "Stop here"),
+    ("btn_guard_continue", "Ich bin sicher, weiter", "I'm sure, continue"),
+    (
+        "guard_redirected",
+        "Ich habe die echte Seite von {org} für dich geöffnet. Drück dort auf „Schau auf meinen Bildschirm“.",
+        "I opened the real {org} page for you. Press Look at my screen there.",
+    ),
+    (
+        "guard_stopped",
+        "Ich habe aufgehört. Nichts wurde eingetippt oder abgeschickt.",
+        "I stopped. Nothing was typed or sent.",
+    ),
+    ("share_scam_one", "1 falsche Seite gestoppt", "1 fake page stopped"),
+    ("share_scam_many", "{n} falsche Seiten gestoppt", "{n} fake pages stopped"),
 ];
 
 /// Lookup. Unknown key -> the key itself (visible in tests, never panics).

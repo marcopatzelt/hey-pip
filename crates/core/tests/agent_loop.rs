@@ -2873,3 +2873,185 @@ async fn a_third_type_into_a_field_that_is_already_right_is_no_failure() {
     assert!(outputs(&reqs[3])[0].starts_with(r#"already done: #1 already shows "Erika Beispiel""#));
     assert_eq!(h.platform.set_values.lock().unwrap().len(), 2, "typed twice, then left alone");
 }
+
+// ---------- the page guard (rules::guard) ----------
+
+/// The real demo insurer page and the fake "account check" page in a temp fixtures folder, the Gesundkasse in
+/// memory (name, contact form on the real site, a letter of 20 October). English. `open` is the page in front.
+struct GuardSite {
+    h: Harness,
+    kasse: String,
+    fake: String,
+    uni: String,
+    _dir: tempfile::TempDir,
+}
+
+const GUARD_KASSE_HTML: &str = "<html><head><title>Send documents – Gesundkasse</title></head><body>\
+    <h1>Gesundkasse</h1><p>Send documents. Upload your sick note.</p><label>Full name</label>\
+    <label>Insurance number</label><p>Questions? Call us 0999 888 77 66</p><button>Submit</button></body></html>";
+const GUARD_FAKE_HTML: &str = "<html><head><title>Gesundkasse – Confirm your account</title></head><body>\
+    <h1>Gesundkasse</h1><p>Dear member, we have noticed unusual activity. Please confirm your account within \
+    24 hours, or your cover will be closed.</p><button>Confirm</button></body></html>";
+const GUARD_UNI_HTML: &str = "<html><head><title>Re-registration – Beispiel University</title></head><body>\
+    <h1>Re-registration for the summer term</h1><label>Student ID</label><label>Postal code</label>\
+    <button>Continue</button></body></html>";
+
+async fn guard_setup(open: &str) -> GuardSite {
+    use pip_core::docs::{DocType, DocumentExtract};
+    let dir = tempfile::tempdir().unwrap();
+    let page = |folder: &str, html: &str| {
+        let d = dir.path().join(folder);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("index.html"), html).unwrap();
+        pip_core::config::file_url(&d.join("index.html").canonicalize().unwrap())
+    };
+    let kasse = page("demo-kasse", GUARD_KASSE_HTML);
+    let fake = page("demo-kasse-konto-check", GUARD_FAKE_HTML);
+    let uni = page("demo-uni", GUARD_UNI_HTML);
+    let mut h = Harness::with_fixtures(true, dir.path()).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    h.memory.profile_set("krankenkasse", "Gesundkasse").unwrap();
+    h.memory.profile_set("krankenkasse_kontaktformular", &kasse).unwrap();
+    let letter = DocumentExtract {
+        doc_type: DocType::Brief,
+        sender: "Gesundkasse".into(),
+        recipient: "Erika Beispiel".into(),
+        date: chrono::NaiveDate::from_ymd_opt(2026, 10, 20),
+        reference: Some("G123456789".into()),
+        person: Some("Erika Beispiel".into()),
+        summary_simple: "The insurer confirms your sick note.".into(),
+        requests: vec![],
+        deadlines: vec![],
+        au: None,
+        consequences_if_ignored: None,
+        confidence: 0.9,
+    };
+    h.memory.insert_document(std::path::Path::new("kasse_brief.pdf"), "sha-guard", &letter, "Brief").unwrap();
+    let url = match open {
+        "fake" => fake.clone(),
+        "uni" => uni.clone(),
+        _ => kasse.clone(),
+    };
+    h.agent = h.agent.with_current_page(&url);
+    GuardSite { h, kasse, fake, uni, _dir: dir }
+}
+
+/// PAGE ELEMENTS of the fake page: member number, SMS code, Confirm.
+fn fake_outline() -> Vec<OutlineItem> {
+    vec![
+        el(1, "edit", "Member number", (100, 200, 400, 40)),
+        el(2, "edit", "SMS code", (100, 260, 400, 40)),
+        el(3, "button", "Confirm", (100, 330, 160, 44)),
+    ]
+}
+
+fn guard_events(m: &Memory) -> Vec<String> {
+    event_kinds(m).into_iter().filter(|e| e.starts_with("guard_")).collect()
+}
+
+#[tokio::test]
+async fn guard_stops_the_lookalike_page_before_the_model_and_opens_the_real_site() {
+    let mut x = guard_setup("fake").await;
+    assert!(x.fake.contains("demo-kasse-konto-check"));
+    x.h.platform.set_outline(fake_outline());
+    x.h.agent_turns(vec![calls("r1", &[("type_text", json!({"text": "123456", "what": "the code", "element": 2}))])]);
+    x.h.answer_in_order(ApprovalAnswer::No, vec!["guard:real"]);
+    let out = x.h.run("Look at my screen").await;
+    let redirected = "I opened the real Gesundkasse page for you. Press Look at my screen there.";
+    assert_eq!(out, AgentOutcome::Done(redirected.into()));
+    // Rules decided: no model request at all, nothing clicked or typed, the real page opened.
+    assert!(x.h.requests().is_empty());
+    assert!(x.h.platform.actions().is_empty(), "{:?}", x.h.platform.actions());
+    assert_eq!(x.h.opened.lock().unwrap().as_slice(), [x.kasse.clone()]);
+    let ev = x.h.drain();
+    let q = questions(&ev);
+    assert_eq!(q.len(), 1, "{q:?}");
+    let (text, buttons) = &q[0];
+    assert!(text.starts_with("Wait. This page doesn't look right to me."), "{text}");
+    assert!(
+        text.contains(
+            "It says Gesundkasse, but your Gesundkasse is demo-kasse (from your letter of Tuesday, October 20)."
+        ),
+        "{text}"
+    );
+    assert!(text.contains("It asks for a SMS code."), "{text}");
+    assert!(text.contains("It tries to rush you: \"within 24 hours\"."), "{text}");
+    assert!(text.ends_with("I am not sure it is a scam, but I would not type anything here."), "{text}");
+    let ids: Vec<&str> = buttons.iter().map(|b| b.id.as_str()).collect();
+    assert_eq!(ids, ["guard:real", "guard:continue"], "the safe button first");
+    assert_eq!(buttons[0].label, "Take me to the real Gesundkasse");
+    assert_eq!(buttons[1].label, "I'm sure, continue");
+    assert!(buttons[0].primary && !buttons[1].primary);
+    // Only the title line is spoken; the redirect sentence once.
+    assert!(
+        ev.iter().any(|e| matches!(e, UiEvent::Speak { text } if text == "Wait. This page doesn't look right to me."))
+    );
+    assert_eq!(bubbles(&ev).iter().filter(|b| b.as_str() == redirected).count(), 1, "{:?}", bubbles(&ev));
+    assert!(cards(&ev).is_empty());
+    let g = guard_events(&x.h.memory);
+    assert!(g.iter().any(|e| e.starts_with("guard_warned: It says Gesundkasse")), "{g:?}");
+    assert!(g.iter().any(|e| e == "guard_redirected: Gesundkasse: demo-kasse"), "{g:?}");
+}
+
+#[tokio::test]
+async fn guard_stop_here_without_a_known_site_stops_without_typing() {
+    let mut x = guard_setup("fake").await;
+    // Memory knows the insurer only by name: no real site to offer, so "Stop here" comes first.
+    x.h.memory.profile_delete("krankenkasse_kontaktformular").unwrap();
+    x.h.platform.set_outline(fake_outline());
+    // The page itself screams: a fake alarm with a phone number warns even without memory.
+    let popup = "<html><head><title>Security alert</title></head><body>Your computer is infected with a virus \
+        and has been locked. Call now: 0800 123 45 67</body></html>";
+    std::fs::write(x._dir.path().join("demo-kasse-konto-check/index.html"), popup).unwrap();
+    x.h.auto_answer(ApprovalAnswer::No, "guard:stop");
+    let out = x.h.run("Look at my screen").await;
+    assert_eq!(out, AgentOutcome::Stopped);
+    assert!(x.h.requests().is_empty());
+    assert!(x.h.platform.actions().is_empty());
+    let ev = x.h.drain();
+    let q = questions(&ev);
+    let ids: Vec<&str> = q[0].1.iter().map(|b| b.id.as_str()).collect();
+    assert_eq!(ids, ["guard:stop", "guard:continue"]);
+    assert!(q[0].0.contains("Real warnings never show a phone number to call."), "{}", q[0].0);
+    let b = bubbles(&ev);
+    assert!(b.contains(&"I stopped. Nothing was typed or sent.".to_string()), "{b:?}");
+    assert!(!b.iter().any(|t| t.starts_with("Stopped")), "one stop sentence, not two: {b:?}");
+}
+
+#[tokio::test]
+async fn guard_continue_lets_the_agent_work_and_the_send_card_still_comes() {
+    let mut x = guard_setup("fake").await;
+    x.h.platform.set_outline(fake_outline());
+    x.h.agent_turns(vec![calls("r1", &[click("den Knopf „Confirm“", true)]), calls("r2", &[done("ok")])]);
+    x.h.sam(&[sam_box(100, 330, 260, 374)]);
+    x.h.answer_in_order(ApprovalAnswer::No, vec!["guard:continue"]);
+    let out = x.h.run("Look at my screen").await;
+    assert_eq!(out, AgentOutcome::Stopped, "the user said no on the send card");
+    assert_eq!(x.h.requests().len(), 1, "the model ran after the user's choice");
+    let ev = x.h.drain();
+    assert_eq!(questions(&ev).len(), 1, "warned once, not again on the same page");
+    assert_eq!(cards(&ev).len(), 1, "the send card still asks");
+    assert!(x.h.platform.clicks().is_empty());
+    assert!(x.h.opened.lock().unwrap().is_empty());
+    let g = guard_events(&x.h.memory);
+    assert!(g.iter().any(|e| e.starts_with("guard_overridden: demo-kasse-konto-check")), "{g:?}");
+}
+
+#[tokio::test]
+async fn guard_is_silent_on_the_real_insurer_and_on_a_new_harmless_site() {
+    for open in ["kasse", "uni"] {
+        let mut x = guard_setup(open).await;
+        assert!(x.uni.contains("demo-uni"));
+        x.h.platform.set_outline(vec![
+            el(1, "edit", "Full name", (100, 200, 400, 40)),
+            el(2, "edit", if open == "uni" { "Postal code" } else { "Insurance number" }, (100, 260, 400, 40)),
+        ]);
+        x.h.agent_turns(vec![calls("r1", &[done("ok")])]);
+        x.h.auto_answer(ApprovalAnswer::No, "no");
+        let out = x.h.run("Look at my screen").await;
+        assert_eq!(out, AgentOutcome::Done("ok".into()), "{open}");
+        assert_eq!(x.h.requests().len(), 1, "{open}");
+        assert!(questions(&x.h.drain()).is_empty(), "{open}");
+        assert!(guard_events(&x.h.memory).is_empty(), "{open}");
+    }
+}

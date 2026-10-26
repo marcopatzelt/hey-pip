@@ -315,6 +315,16 @@ impl Gate {
         url_host(url)
     }
 
+    /// What the user would call the site of a page, for sentences: the host of an http(s) page
+    /// ("www.gesundkasse.example"), or the demo folder of a local page ("demo-kasse"). None like `site_key`.
+    pub fn site_label(&self, url: &str) -> Option<String> {
+        let key = self.site_key(url)?;
+        if url.trim().to_lowercase().starts_with("file:") {
+            return key.rsplit('/').next().filter(|s| !s.is_empty()).map(str::to_string);
+        }
+        Some(key)
+    }
+
     /// Commit if is_commit || COMMIT_WORDS hit (case-insensitive, word-ish) in description/sam_query,
     /// or the UI name / quoted label looks final (`label_hit`). Keys: see `key_commits`; Space when the
     /// focused element looks like a send button or is unknown (ui_name None).
@@ -682,6 +692,16 @@ mod tests {
         assert_eq!(demo.site_key("file:///C:/Pip/fixtures-evil/demo-uni/index.html"), None);
         assert_eq!(demo.site_key("file:///C:/Pip/fixtures/../demo-uni/index.html"), None);
         assert_eq!(demo.site_key("http://localhost:8000/"), Some("localhost".into()));
+    }
+
+    #[test]
+    fn site_labels_for_sentences() {
+        let live = Gate::new(false);
+        assert_eq!(live.site_label("https://WWW.Kasse.example/form?x").as_deref(), Some("www.kasse.example"));
+        let demo = Gate::new(true).with_fixtures(&["C:/Pip/fixtures"]);
+        assert_eq!(demo.site_label("file:///C:/Pip/fixtures/demo-kasse/index.html").as_deref(), Some("demo-kasse"));
+        assert_eq!(demo.site_label("file:///C:/Pip/fixtures/page.html").as_deref(), Some("fixtures"));
+        assert_eq!(demo.site_label("file:///C:/Users/x/evil.html"), None);
     }
 }
 

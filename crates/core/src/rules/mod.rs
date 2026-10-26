@@ -1,5 +1,5 @@
 //! Deadline rules (Rust code with source + tests, never invented by the model),
-//! NRW holidays 2026/27, reminder engine.
+//! NRW holidays 2026/27, reminder engine, and the page guard (`guard`: warning signs, no model call).
 //!
 //! OWNER: agent "memory-rules".
 
@@ -8,6 +8,7 @@ pub mod brief;
 pub mod calendar;
 pub mod daily;
 pub mod engine;
+pub mod guard;
 pub mod text;
 pub mod widerspruch;
 

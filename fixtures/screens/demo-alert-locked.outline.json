@@ -1,0 +1,51 @@
+{
+ "note": "UI Automation outline of demo-alert-locked.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-alert-locked/index.html, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-alert-locked.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "text",
+   "name": "SYSTEM SECURITY ALERT",
+   "value": null,
+   "rect": {
+    "x": 510,
+    "y": 344,
+    "w": 579,
+    "h": 69
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "text",
+   "name": "Your computer is locked. Call 0800 555 0199 now. Do not close this window.",
+   "value": null,
+   "rect": {
+    "x": 510,
+    "y": 429,
+    "w": 579,
+    "h": 188
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "button",
+   "name": "Call support",
+   "value": null,
+   "rect": {
+    "x": 663,
+    "y": 629,
+    "w": 275,
+    "h": 77
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

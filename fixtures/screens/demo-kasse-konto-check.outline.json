@@ -1,0 +1,81 @@
+{
+ "note": "UI Automation outline of demo-kasse-konto-check.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-kasse-konto-check/index.html, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-kasse-konto-check.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "text",
+   "name": "Confirm your account",
+   "value": null,
+   "rect": {
+    "x": 547,
+    "y": 142,
+    "w": 506,
+    "h": 45
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "text",
+   "name": "Your cover ends within 24 hours unless you confirm now.",
+   "value": null,
+   "rect": {
+    "x": 547,
+    "y": 195,
+    "w": 506,
+    "h": 78
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "edit",
+   "name": "Member number",
+   "value": "",
+   "rect": {
+    "x": 547,
+    "y": 326,
+    "w": 506,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "edit",
+   "name": "SMS code",
+   "value": "",
+   "rect": {
+    "x": 547,
+    "y": 432,
+    "w": 506,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "button",
+   "name": "Confirm now",
+   "value": null,
+   "rect": {
+    "x": 547,
+    "y": 505,
+    "w": 506,
+    "h": 58
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}
