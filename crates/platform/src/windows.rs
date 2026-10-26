@@ -4,15 +4,20 @@
 //! OWNER: agent "platform".
 
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use copilot_core::platform::{Frame, Input, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo};
+use copilot_core::platform::{
+    Frame, Input, OutlineItem, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo, outline_role,
+};
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
-use uiautomation::patterns::UIValuePattern;
-use uiautomation::types::{ControlType, Handle, Point};
+use uiautomation::core::{UICacheRequest, UICondition};
+use uiautomation::patterns::{UIScrollItemPattern, UIValuePattern};
+use uiautomation::types::{ControlType, Handle, Point, TreeScope, UIProperty};
+use uiautomation::variants::Variant;
 use uiautomation::{UIAutomation, UIElement};
 use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
@@ -469,4 +474,265 @@ impl UiTree for WinPlatform {
         let address = with_uia(|uia| Ok(address_bar(uia, hwnd))).flatten();
         Some(WindowInfo { title, class, address })
     }
+
+    /// One UI Automation FindAll (with a cache request, so it is one cross-process round trip) on the web page
+    /// of the window in front, on a helper thread. Slower than OUTLINE_TIMEOUT: empty (the agent then finds
+    /// things in the picture, as before).
+    fn outline(&self, max: usize) -> Vec<OutlineItem> {
+        if OUTLINE_BUSY.swap(true, Ordering::SeqCst) {
+            tracing::debug!("outline: the last one is still running");
+            return Vec::new();
+        }
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new().name("pip-outline".into()).spawn(move || {
+            let started = Instant::now();
+            let items = with_uia(|uia| read_outline(uia, max)).unwrap_or_default();
+            OUTLINE_BUSY.store(false, Ordering::SeqCst);
+            tracing::debug!(n = items.len(), ms = started.elapsed().as_millis() as u64, "outline read");
+            let _ = tx.send(items);
+        });
+        if spawned.is_err() {
+            OUTLINE_BUSY.store(false, Ordering::SeqCst);
+            return Vec::new();
+        }
+        // The first read may make the browser build its accessibility tree: give it longer once.
+        let wait = if OUTLINE_WARM.swap(true, Ordering::SeqCst) { OUTLINE_TIMEOUT } else { OUTLINE_FIRST_TIMEOUT };
+        rx.recv_timeout(wait).unwrap_or_else(|_| {
+            tracing::warn!(ms = wait.as_millis() as u64, "outline took too long; using the picture only");
+            Vec::new()
+        })
+    }
+
+    fn scroll_into_view(&self, item: &OutlineItem) -> bool {
+        with_uia(|uia| {
+            let Some(hwnd) = page_window() else { return Ok(false) };
+            let Some(ct) = control_type_of(&item.role) else { return Ok(false) };
+            let win = uia.element_from_handle(Handle::from(hwnd))?;
+            let by_type = uia.create_property_condition(UIProperty::ControlType, Variant::from(ct as i32), None)?;
+            let by_name = uia.create_property_condition(UIProperty::Name, Variant::from(item.name.as_str()), None)?;
+            let cond = uia.create_and_condition(by_type, by_name)?;
+            let found = win.find_all(TreeScope::Descendants, &cond)?;
+            // Same name twice ("Service" in the menu and the breadcrumbs): the one nearest to where it was.
+            let dist = |e: &UIElement| {
+                e.get_bounding_rectangle()
+                    .map(|r| {
+                        (i64::from(r.get_left() - item.rect.x)).abs() + (i64::from(r.get_top() - item.rect.y)).abs()
+                    })
+                    .unwrap_or(i64::MAX)
+            };
+            let Some(el) = found.iter().min_by_key(|e| dist(e)) else { return Ok(false) };
+            el.get_pattern::<UIScrollItemPattern>()?.scroll_into_view()?;
+            Ok(true)
+        })
+        .unwrap_or(false)
+    }
+
+    fn value_at(&self, p: PhysPoint) -> Option<String> {
+        with_uia(|uia| {
+            if overlay_at(p) {
+                return Ok(None);
+            }
+            let el = uia.element_from_point(Point::new(p.x, p.y))?;
+            if el.get_process_id().ok() == Some(std::process::id()) {
+                return Ok(None);
+            }
+            // The point may hit the text inside the field: try the element, then its parent.
+            let parent = uia.get_control_view_walker().and_then(|w| w.get_parent(&el)).ok();
+            for e in std::iter::once(&el).chain(parent.as_ref()) {
+                if e.is_password().unwrap_or(false) {
+                    return Ok(None);
+                }
+                if let Ok(v) = e.get_pattern::<UIValuePattern>().and_then(|v| v.get_value()) {
+                    return Ok(Some(v));
+                }
+            }
+            Ok(None)
+        })
+        .flatten()
+    }
+}
+
+/// Normal wait for the outline, and the longer one for the very first read.
+const OUTLINE_TIMEOUT: Duration = Duration::from_millis(400);
+const OUTLINE_FIRST_TIMEOUT: Duration = Duration::from_millis(1200);
+/// One outline read at a time (a slow one keeps running on its thread; the next step just gets none).
+static OUTLINE_BUSY: AtomicBool = AtomicBool::new(false);
+static OUTLINE_WARM: AtomicBool = AtomicBool::new(false);
+
+/// Controls an outline lists.
+const OUTLINE_TYPES: &[ControlType] = &[
+    ControlType::Edit,
+    ControlType::Button,
+    ControlType::SplitButton,
+    ControlType::CheckBox,
+    ControlType::RadioButton,
+    ControlType::ComboBox,
+    ControlType::Hyperlink,
+    ControlType::ListItem,
+    ControlType::MenuItem,
+    ControlType::TabItem,
+];
+
+fn control_type_of(role: &str) -> Option<ControlType> {
+    Some(match role {
+        "edit" => ControlType::Edit,
+        "button" => ControlType::Button,
+        "checkbox" => ControlType::CheckBox,
+        "radio" => ControlType::RadioButton,
+        "combo" => ControlType::ComboBox,
+        "link" => ControlType::Hyperlink,
+        "item" => ControlType::ListItem,
+        "menuitem" => ControlType::MenuItem,
+        "tab" => ControlType::TabItem,
+        _ => return None,
+    })
+}
+
+/// The window the user works in: the foreground window, or, when Pip's own window has the keyboard (the user
+/// just typed the task into Pip), the next visible titled window below it.
+fn page_window() -> Option<isize> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GW_HWNDNEXT, GWL_EXSTYLE, GetWindow, GetWindowLongPtrW, GetWindowTextLengthW, IsIconic, IsWindowVisible,
+        WS_EX_TOOLWINDOW,
+    };
+    let me = std::process::id();
+    let overlay = OVERLAY_HWND.load(Ordering::SeqCst);
+    let mut h = unsafe { GetForegroundWindow() };
+    for i in 0..256 {
+        if h.is_null() {
+            return None;
+        }
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(h, &mut pid) };
+        let ours = pid == me || h as isize == overlay;
+        if !ours && i == 0 {
+            return Some(h as isize);
+        }
+        if !ours
+            && unsafe { IsWindowVisible(h) } != 0
+            && unsafe { IsIconic(h) } == 0
+            && unsafe { GetWindowTextLengthW(h) } > 0
+            && unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) } as u32 & WS_EX_TOOLWINDOW == 0
+        {
+            return Some(h as isize);
+        }
+        h = unsafe { GetWindow(h, GW_HWNDNEXT) };
+    }
+    None
+}
+
+fn outline_cache(uia: &UIAutomation) -> uiautomation::Result<UICacheRequest> {
+    let cache = uia.create_cache_request()?;
+    for p in [
+        UIProperty::Name,
+        UIProperty::ControlType,
+        UIProperty::BoundingRectangle,
+        UIProperty::IsOffscreen,
+        UIProperty::IsEnabled,
+        UIProperty::IsPassword,
+        UIProperty::ValueValue,
+        UIProperty::ToggleToggleState,
+        UIProperty::SelectionItemIsSelected,
+        UIProperty::ProcessId,
+    ] {
+        cache.add_property(p)?;
+    }
+    Ok(cache)
+}
+
+/// Control elements of one of OUTLINE_TYPES.
+fn outline_condition(uia: &UIAutomation) -> uiautomation::Result<UICondition> {
+    let mut any: Option<UICondition> = None;
+    for ct in OUTLINE_TYPES {
+        let c = uia.create_property_condition(UIProperty::ControlType, Variant::from(*ct as i32), None)?;
+        any = Some(match any {
+            Some(a) => uia.create_or_condition(a, c)?,
+            None => c,
+        });
+    }
+    let control = uia.create_property_condition(UIProperty::IsControlElement, Variant::from(true), None)?;
+    match any {
+        Some(a) => uia.create_and_condition(control, a),
+        None => Ok(control),
+    }
+}
+
+fn cached_bool(e: &UIElement, p: UIProperty) -> Option<bool> {
+    let v = e.get_cached_property_value(p).ok()?;
+    TryInto::<bool>::try_into(&v).ok()
+}
+
+fn phys(r: &uiautomation::types::Rect) -> PhysRect {
+    PhysRect { x: r.get_left(), y: r.get_top(), w: r.get_width(), h: r.get_height() }
+}
+
+fn short(s: &str, max: usize) -> String {
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.chars().count() <= max { s } else { format!("{}…", s.chars().take(max).collect::<String>()) }
+}
+
+/// The outline of the page in front: the web page (the biggest Document) of a browser, else the whole window.
+fn read_outline(uia: &UIAutomation, max: usize) -> uiautomation::Result<Vec<OutlineItem>> {
+    let Some(hwnd) = page_window() else { return Ok(Vec::new()) };
+    let win = uia.element_from_handle(Handle::from(hwnd))?;
+    let doc_cond =
+        uia.create_property_condition(UIProperty::ControlType, Variant::from(ControlType::Document as i32), None)?;
+    let root = win.find_first(TreeScope::Descendants, &doc_cond).unwrap_or(win);
+    let viewport = phys(&root.get_bounding_rectangle()?);
+    let found = root.find_all_build_cache(TreeScope::Descendants, &outline_condition(uia)?, &outline_cache(uia)?)?;
+    let me = std::process::id();
+    let mut out = Vec::new();
+    for e in &found {
+        if out.len() >= max {
+            break;
+        }
+        if e.get_cached_process_id().ok().map(|p| p as u32) == Some(me) {
+            continue;
+        }
+        let Ok(ct) = e.get_cached_control_type() else { continue };
+        let Some(role) = outline_role(&format!("{ct:?}")) else { continue };
+        let Ok(r) = e.get_cached_bounding_rectangle() else { continue };
+        let rect = phys(&r);
+        if rect.w <= 1 || rect.h <= 1 {
+            continue; // hidden (a file input behind its label, a collapsed menu)
+        }
+        let name = short(&e.get_cached_name().unwrap_or_default(), 100);
+        if name.is_empty() && !matches!(role, "edit" | "combo" | "checkbox" | "radio") {
+            continue; // decorative
+        }
+        let is_password = cached_bool(e, UIProperty::IsPassword).unwrap_or(false);
+        let center = PhysPoint { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
+        let offscreen = cached_bool(e, UIProperty::IsOffscreen).unwrap_or(false) || !viewport.contains(center);
+        let value = if is_password {
+            None
+        } else {
+            match role {
+                "checkbox" => e
+                    .get_cached_property_value(UIProperty::ToggleToggleState)
+                    .ok()
+                    .and_then(|v| TryInto::<i32>::try_into(&v).ok())
+                    .map(|t| if t == 1 { "checked" } else { "unchecked" }.to_string()),
+                "radio" => cached_bool(e, UIProperty::SelectionItemIsSelected)
+                    .map(|on| if on { "selected" } else { "not selected" }.to_string()),
+                "edit" | "combo" => e
+                    .get_cached_property_value(UIProperty::ValueValue)
+                    .ok()
+                    .filter(Variant::is_string)
+                    .and_then(|v| v.get_string().ok())
+                    .map(|v| short(&v, 60)),
+                _ => None,
+            }
+        };
+        out.push(OutlineItem {
+            id: out.len() as u32 + 1,
+            role: role.to_string(),
+            name,
+            value,
+            rect,
+            offscreen,
+            enabled: cached_bool(e, UIProperty::IsEnabled).unwrap_or(true),
+            is_password,
+        });
+    }
+    Ok(out)
 }

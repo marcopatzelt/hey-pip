@@ -871,6 +871,7 @@ dependencies = [
  "copilot-core",
  "enigo",
  "image",
+ "serde_json",
  "tempfile",
  "tracing",
  "uiautomation",

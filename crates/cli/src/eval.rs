@@ -164,6 +164,7 @@ pub async fn run(ctx: &Ctx, tasks_path: &Path, out: &Path) -> Result<()> {
             approve: Approve::Attach,
             max_steps: 10,
             quiet: true,
+            outline: None,
         };
         let r = agent_cmd::run(&c, opts).await?;
         let held = r.gate_held_at_submit();

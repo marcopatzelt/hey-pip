@@ -9,7 +9,9 @@ use copilot_core::clock::SystemClock;
 use copilot_core::events::{Bus, UiEvent};
 use copilot_core::memory::Memory;
 use copilot_core::meta::MetaClient;
-use copilot_core::platform::{Frame, Input, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo};
+use copilot_core::platform::{
+    Frame, Input, OutlineItem, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo,
+};
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -26,6 +28,17 @@ struct MockPlatform {
     focus: Mutex<Option<UiElement>>,
     /// Real screenshot for live tests; None = plain grey 1000x800.
     screen: Option<image::RgbaImage>,
+    /// PAGE ELEMENTS (empty = none, like Linux). Typing goes into the field clicked last (Ctrl+A replaces);
+    /// the wheel moves every element 100 px per notch.
+    outline: Mutex<Vec<OutlineItem>>,
+    /// (last click, Ctrl+A pressed since)
+    caret: Mutex<(Option<PhysPoint>, bool)>,
+    /// After the next click the window in front becomes this (a link that loads another page).
+    on_click_window: Mutex<Option<WindowInfo>>,
+    /// Calls of `outline` so far.
+    outline_reads: Mutex<u32>,
+    /// Typing does not change what the fields show (a page that rejects or cuts the text).
+    frozen_fields: Mutex<bool>,
 }
 
 impl MockPlatform {
@@ -41,6 +54,22 @@ impl MockPlatform {
     fn set_ui(&self, rect: PhysRect, name: &str, is_password: bool) {
         let el = UiElement { name: name.into(), control: "Button".into(), is_password };
         self.ui.lock().unwrap().push((rect, el));
+    }
+    fn set_outline(&self, items: Vec<OutlineItem>) {
+        *self.outline.lock().unwrap() = items;
+    }
+}
+
+fn el(id: u32, role: &str, name: &str, rect: (i32, i32, i32, i32)) -> OutlineItem {
+    OutlineItem {
+        id,
+        role: role.into(),
+        name: name.into(),
+        value: if role == "edit" { Some(String::new()) } else { None },
+        rect: PhysRect { x: rect.0, y: rect.1, w: rect.2, h: rect.3 },
+        offscreen: false,
+        enabled: true,
+        is_password: false,
     }
 }
 
@@ -62,18 +91,39 @@ impl Input for MockPlatform {
     }
     fn click(&self, p: PhysPoint) -> anyhow::Result<()> {
         self.actions.lock().unwrap().push(format!("click {},{}", p.x, p.y));
+        *self.caret.lock().unwrap() = (Some(p), false);
+        if let Some(w) = self.on_click_window.lock().unwrap().take() {
+            *self.foreground.lock().unwrap() = Some(w);
+        }
         Ok(())
     }
     fn type_text(&self, s: &str) -> anyhow::Result<()> {
         self.actions.lock().unwrap().push(format!("type {s}"));
+        let mut caret = self.caret.lock().unwrap();
+        if !*self.frozen_fields.lock().unwrap()
+            && let Some(p) = caret.0
+            && let Some(it) = self.outline.lock().unwrap().iter_mut().find(|i| i.rect.contains(p) && i.role == "edit")
+        {
+            let old = if caret.1 { String::new() } else { it.value.clone().unwrap_or_default() };
+            it.value = Some(format!("{old}{s}"));
+            caret.1 = false;
+        }
         Ok(())
     }
     fn key(&self, combo: &str) -> anyhow::Result<()> {
         self.actions.lock().unwrap().push(format!("key {combo}"));
+        if combo == "ctrl+a" {
+            self.caret.lock().unwrap().1 = true;
+        }
         Ok(())
     }
     fn scroll(&self, p: PhysPoint, dy: i32) -> anyhow::Result<()> {
         self.actions.lock().unwrap().push(format!("scroll {},{} {dy}", p.x, p.y));
+        for it in self.outline.lock().unwrap().iter_mut() {
+            it.rect.y -= dy * 100;
+            let cy = it.rect.y + it.rect.h / 2;
+            it.offscreen = !(0..800).contains(&cy);
+        }
         Ok(())
     }
 }
@@ -98,6 +148,14 @@ impl UiTree for MockPlatform {
             .map(|(r, e)| (e.clone(), *r))
             .collect()
     }
+    fn outline(&self, max: usize) -> Vec<OutlineItem> {
+        *self.outline_reads.lock().unwrap() += 1;
+        self.outline.lock().unwrap().iter().take(max).cloned().collect()
+    }
+    fn value_at(&self, p: PhysPoint) -> Option<String> {
+        let items = self.outline.lock().unwrap();
+        items.iter().find(|i| i.rect.contains(p) && !i.is_password).and_then(|i| i.value.clone())
+    }
 }
 
 // ---------- scripted Meta API ----------
@@ -120,6 +178,8 @@ struct Script {
     fail_ground: Mutex<u32>,
     /// While > 0, agent calls with a previous_response_id answer 400 "referenced response not found".
     lose_conversation: Mutex<u32>,
+    /// SAM and locate requests so far (grounding in the picture).
+    grounds: Mutex<u32>,
 }
 
 #[derive(Clone)]
@@ -131,6 +191,7 @@ impl Respond for Responder {
         let s = &self.0;
         let grounding = body["model"] == "sam-3.1" || body["tools"].to_string().contains("\"locate\"");
         if grounding {
+            *s.grounds.lock().unwrap() += 1;
             let mut f = s.fail_ground.lock().unwrap();
             if *f > 0 {
                 *f -= 1;
@@ -1929,4 +1990,229 @@ async fn passwords_and_health_details_are_never_remembered_and_the_user_wins() {
     // The answer to ask_user is the user's own word: saved at once, as "user".
     let f = h.memory.profile_meta("arbeitgeber").unwrap().expect("saved");
     assert_eq!((f.value.as_str(), f.source.as_str()), ("Bäckerei Sonnenschein", "user"));
+}
+
+// ---------- PAGE ELEMENTS (outline from the UI tree) ----------
+
+fn type_el(text: &str, what: &str, element: u32) -> (&'static str, Value) {
+    ("type_text", json!({"text": text, "what": what, "into_sam_query": null, "field_label": null, "element": element}))
+}
+
+fn click_el(desc: &str, element: u32, is_commit: bool) -> (&'static str, Value) {
+    (
+        "click",
+        json!({"sam_query": "button", "description": desc, "is_commit": is_commit,
+               "commit_what": null, "commit_to": null, "element": element}),
+    )
+}
+
+fn form_outline() -> Vec<OutlineItem> {
+    vec![
+        el(1, "edit", "Full name", (100, 100, 300, 40)),
+        el(2, "edit", "Insurance number", (100, 200, 300, 40)),
+        el(3, "edit", "Your message", (100, 300, 300, 80)),
+        el(4, "button", "Submit", (700, 600, 200, 50)),
+    ]
+}
+
+#[tokio::test]
+async fn a_planned_turn_fills_three_fields_by_number_without_grounding() {
+    let mut h = Harness::new(false).await;
+    h.platform.set_outline(form_outline());
+    h.agent_turns(vec![
+        calls(
+            "r1",
+            &[
+                type_el("Erika Beispiel", "your name", 1),
+                type_el("G123456789", "your insurance number", 2),
+                type_el("Sick note attached.", "a short message", 3),
+            ],
+        ),
+        calls("r2", &[done("Form filled.")]),
+    ]);
+    let out = h.run("Fill in the form").await;
+    assert_eq!(out, AgentOutcome::Done("Form filled.".into()));
+    assert_eq!(*h.script.grounds.lock().unwrap(), 0, "no SAM / locate when the element number is known");
+    let acts: Vec<String> = h.platform.actions().into_iter().filter(|a| !a.starts_with("move")).collect();
+    assert_eq!(
+        acts,
+        [
+            "click 250,120",
+            "key ctrl+a",
+            "type Erika Beispiel",
+            "click 250,220",
+            "key ctrl+a",
+            "type G123456789",
+            "click 250,340",
+            "key ctrl+a",
+            "type Sick note attach", // typed in chunks (Stop is checked between them)
+            "type ed.",
+        ]
+    );
+    let reqs = h.requests();
+    // The model saw the numbered list next to the screenshot.
+    let first = reqs[0]["input"].to_string();
+    assert!(first.contains("PAGE ELEMENTS (from Windows"), "{first}");
+    assert!(first.contains(r#"#1 edit \"Full name\" = \"\""#), "{first}");
+    assert!(first.contains(r#"#4 button \"Submit\""#), "{first}");
+    let outs = outputs(&reqs[1]);
+    assert_eq!(outs.len(), 3);
+    assert_eq!(outs[0], r#"typed your name into #1; the field now shows "Erika Beispiel""#);
+    assert!(outs[1].contains("now shows \"G123456789\""), "{outs:?}");
+    // The progress line ticks the fields; the playbook gets the UI labels.
+    let ev = h.drain();
+    assert!(progress(&ev).iter().any(|p| p.contains("Insurance number ✓") || p.contains("insurance number ✓")));
+}
+
+#[tokio::test]
+async fn a_field_that_shows_something_else_is_reported() {
+    let h = Harness::new(false).await;
+    let mut items = form_outline();
+    items[1].value = Some("G12".into());
+    h.platform.set_outline(items);
+    *h.platform.frozen_fields.lock().unwrap() = true;
+    h.agent_turns(vec![calls("r1", &[type_el("G123456789", "your insurance number", 2)]), calls("r2", &[done("ok")])]);
+    h.run("Fill in the number").await;
+    let outs = outputs(&h.requests()[1]);
+    assert_eq!(
+        outs[0],
+        r#"typed your insurance number into #2, but the field now shows "G12" instead of "G123456789". Check it and fix it if needed."#
+    );
+}
+
+#[tokio::test]
+async fn a_send_button_by_number_still_gets_the_card() {
+    let mut h = Harness::new(false).await;
+    h.platform.set_outline(form_outline());
+    h.agent_turns(vec![calls("r1", &[click_el("the button at the bottom", 4, false)])]);
+    h.auto_answer(ApprovalAnswer::No, "");
+    let out = h.run("Send it").await;
+    assert_eq!(out, AgentOutcome::Stopped);
+    assert_eq!(cards(&h.drain()).len(), 1, "Submit by number shows the send card");
+    assert!(h.platform.clicks().is_empty(), "no click after Not yet");
+    assert_eq!(*h.script.grounds.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn ticking_a_box_by_number_is_no_send() {
+    let mut h = Harness::new(false).await;
+    let mut items = form_outline();
+    let mut tick = el(5, "checkbox", "Send me a confirmation of receipt.", (100, 500, 20, 20));
+    tick.value = Some("unchecked".into());
+    items.push(tick);
+    h.platform.set_outline(items);
+    h.platform.ui.lock().unwrap().push((
+        PhysRect { x: 100, y: 500, w: 20, h: 20 },
+        UiElement { name: "Send me a confirmation of receipt.".into(), control: "CheckBox".into(), is_password: false },
+    ));
+    h.agent_turns(vec![
+        calls("r1", &[click_el("the box „Send me a confirmation of receipt.“", 5, false)]),
+        calls("r2", &[done("ok")]),
+    ]);
+    h.auto_answer(ApprovalAnswer::No, "");
+    assert_eq!(h.run("Tick the box").await, AgentOutcome::Done("ok".into()));
+    assert!(cards(&h.drain()).is_empty(), "a tick box sends nothing");
+    assert_eq!(h.platform.clicks(), ["click 110,510"]);
+}
+
+#[tokio::test]
+async fn a_password_element_is_refused() {
+    let h = Harness::new(false).await;
+    let mut items = form_outline();
+    items[1].name = "Password".into();
+    items[1].is_password = true;
+    h.platform.set_outline(items);
+    h.agent_turns(vec![calls("r1", &[type_el("hunter22", "the code", 2)]), calls("r2", &[done("ok")])]);
+    h.auto_answer(ApprovalAnswer::No, "Weiter");
+    h.run("Log in").await;
+    assert_eq!(h.platform.typed(), "", "never typed");
+    assert!(h.platform.clicks().is_empty());
+    let outs = outputs(&h.requests()[1]);
+    assert!(outs[0].starts_with("refused: this is a password field"), "{outs:?}");
+    // The block never shows a password field's value.
+    let first = h.requests()[0]["input"].to_string();
+    assert!(first.contains(r#"#2 edit \"Password\" (password: never type)"#), "{first}");
+}
+
+#[tokio::test]
+async fn an_off_screen_element_is_scrolled_into_view_first() {
+    let h = Harness::new(false).await;
+    let mut items = form_outline();
+    items[3].rect = PhysRect { x: 700, y: 1250, w: 200, h: 50 };
+    items[3].offscreen = true;
+    h.platform.set_outline(items);
+    h.agent_turns(vec![calls("r1", &[click_el("Submit", 4, true)]), calls("r2", &[done("Sent.")])]);
+    h.auto_answer(ApprovalAnswer::Yes, "");
+    assert_eq!(h.run("Send it").await, AgentOutcome::Done("Sent.".into()));
+    let acts: Vec<String> = h.platform.actions().into_iter().filter(|a| !a.starts_with("move")).collect();
+    // 1275 is 875 px below the middle of the 800 px screen: 9 notches down, then it sits at y 350..400.
+    assert_eq!(acts, ["scroll 500,400 9", "click 800,375"]);
+    assert_eq!(*h.script.grounds.lock().unwrap(), 0);
+    let outs = outputs(&h.requests()[1]);
+    assert!(outs[0].starts_with("clicked Submit"), "{outs:?}");
+}
+
+#[tokio::test]
+async fn a_page_change_mid_turn_stops_the_rest() {
+    let h = Harness::new(false).await;
+    let mut items = form_outline();
+    items.push(el(5, "link", "Next page", (500, 50, 100, 20)));
+    h.platform.set_outline(items);
+    let page = |t: &str| WindowInfo { title: t.into(), class: "Chrome_WidgetWin_1".into(), address: None };
+    *h.platform.foreground.lock().unwrap() = Some(page("Form - Edge"));
+    *h.platform.on_click_window.lock().unwrap() = Some(page("Next page - Edge"));
+    h.agent_turns(vec![
+        calls(
+            "r1",
+            &[click_el("the link „Next page“", 5, false), type_el("Erika", "your name", 1), type_el("G1", "number", 2)],
+        ),
+        calls("r2", &[done("ok")]),
+    ]);
+    h.run("Go on").await;
+    assert_eq!(h.platform.typed(), "", "the rest of the turn was planned for the old page");
+    let outs = outputs(&h.requests()[1]);
+    assert_eq!(outs.len(), 3);
+    assert!(outs[0].starts_with("clicked"), "{outs:?}");
+    assert_eq!(outs[1], "not done: the page changed, look again");
+    assert_eq!(outs[2], "not done: the page changed, look again");
+}
+
+#[tokio::test]
+async fn an_unknown_number_falls_back_to_the_picture() {
+    let h = Harness::new(false).await;
+    h.platform.set_outline(form_outline());
+    h.agent_turns(vec![calls("r1", &[click_el("the „Weiter“ link", 42, false)]), calls("r2", &[done("ok")])]);
+    h.sam(&[sam_box(100, 700, 200, 740)]);
+    h.run("Go on").await;
+    assert!(*h.script.grounds.lock().unwrap() > 0);
+    assert_eq!(h.platform.clicks(), ["click 150,720"]);
+    let outs = outputs(&h.requests()[1]);
+    assert!(outs[0].contains("#42 is not in PAGE ELEMENTS"), "{outs:?}");
+}
+
+#[tokio::test]
+async fn the_page_elements_block_is_capped() {
+    let h = Harness::new(false).await;
+    let many: Vec<OutlineItem> = (1..=80)
+        .map(|i| el(i, "link", &format!("A rather long link name number {i} on this page"), (0, 0, 10, 10)))
+        .collect();
+    h.platform.set_outline(many);
+    h.agent_turns(vec![calls("r1", &[done("ok")])]);
+    h.run("Look").await;
+    let req = &h.requests()[0];
+    let look = req["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|i| i["content"].as_array().cloned().unwrap_or_default())
+        .filter_map(|c| c["text"].as_str().map(String::from))
+        .find(|t| t.contains("PAGE ELEMENTS"))
+        .expect("block in the screen message");
+    assert!(look.len() < 2700, "{}", look.len());
+    assert!(look.contains("#1 link") && look.contains("more elements not listed"), "{look}");
+    // No outline (Linux): no block at all.
+    let h2 = Harness::new(false).await;
+    h2.agent_turns(vec![calls("r1", &[done("ok")])]);
+    h2.run("Look").await;
+    assert!(!h2.requests()[0]["input"].to_string().contains("PAGE ELEMENTS"));
 }

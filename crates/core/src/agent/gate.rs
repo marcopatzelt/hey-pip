@@ -443,7 +443,14 @@ mod tests {
     use super::*;
 
     fn click(desc: &str, query: &str, is_commit: bool) -> Tool {
-        Tool::Click { sam_query: query.into(), description: desc.into(), is_commit, commit_what: None, commit_to: None }
+        Tool::Click {
+            sam_query: query.into(),
+            description: desc.into(),
+            is_commit,
+            commit_what: None,
+            commit_to: None,
+            element: None,
+        }
     }
 
     #[test]
@@ -567,7 +574,13 @@ mod tests {
             g.classify(&Tool::Point { sam_query: "submit button".into(), description: "Absenden".into() }, None),
             Risk::Free
         );
-        let t = Tool::TypeText { text: "x".into(), what: "w".into(), into_sam_query: None, field_label: None };
+        let t = Tool::TypeText {
+            text: "x".into(),
+            what: "w".into(),
+            into_sam_query: None,
+            field_label: None,
+            element: None,
+        };
         assert_eq!(g.classify(&t, None), Risk::Act);
         assert_eq!(g.classify(&Tool::OpenUrl { url: "https://x".into() }, None), Risk::Act);
     }

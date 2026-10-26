@@ -10,7 +10,9 @@ use copilot_core::clock::SystemClock;
 use copilot_core::events::{Bus, UiEvent};
 use copilot_core::memory::Memory;
 use copilot_core::meta::MetaClient;
-use copilot_core::platform::{Frame, Input, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo};
+use copilot_core::platform::{
+    Frame, Input, OutlineItem, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo,
+};
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -25,6 +27,8 @@ struct MockPlatform {
     foreground: Mutex<Option<WindowInfo>>,
     /// Real screenshot for live tests; None = plain grey 1000x800.
     screen: Option<image::RgbaImage>,
+    /// PAGE ELEMENTS (empty = none, like Linux).
+    outline: Mutex<Vec<OutlineItem>>,
 }
 
 impl MockPlatform {
@@ -83,6 +87,9 @@ impl UiTree for MockPlatform {
     }
     fn foreground(&self) -> Option<WindowInfo> {
         self.foreground.lock().unwrap().clone()
+    }
+    fn outline(&self, max: usize) -> Vec<OutlineItem> {
+        self.outline.lock().unwrap().iter().take(max).cloned().collect()
     }
 }
 
@@ -303,6 +310,7 @@ fn click_tool(desc: &str) -> Tool {
         is_commit: false,
         commit_what: None,
         commit_to: None,
+        element: None,
     }
 }
 
@@ -689,4 +697,46 @@ async fn hole_remember_site_ticked_on_a_delete_card_trusts_the_site() {
     });
     h.run("Lösch das Konto").await;
     assert_eq!(h.memory.profile_get("trusted_send_hosts").unwrap(), None);
+}
+
+#[tokio::test]
+async fn hole_send_button_by_element_number_without_is_commit() {
+    // The model clicks PAGE ELEMENTS #2 ("Submit") with harmless words and is_commit=false. No SAM, no UI name at
+    // the point (the tree there is unknown): the element's own name must still bring the send card.
+    let mut h = Harness::new(false).await;
+    *h.platform.outline.lock().unwrap() = vec![
+        OutlineItem {
+            id: 1,
+            role: "edit".into(),
+            name: "Full name".into(),
+            value: Some(String::new()),
+            rect: PhysRect { x: 100, y: 100, w: 300, h: 40 },
+            offscreen: false,
+            enabled: true,
+            is_password: false,
+        },
+        OutlineItem {
+            id: 2,
+            role: "button".into(),
+            name: "Submit".into(),
+            value: None,
+            rect: PhysRect { x: 700, y: 600, w: 200, h: 50 },
+            offscreen: false,
+            enabled: true,
+            is_password: false,
+        },
+    ];
+    h.agent_turns(vec![calls(
+        "r1",
+        &[(
+            "click",
+            json!({"sam_query": "green shape", "description": "the green thing", "is_commit": false,
+                   "commit_what": null, "commit_to": null, "element": 2}),
+        )],
+    )]);
+    h.auto_answer(ApprovalAnswer::No, "");
+    let out = h.run("Fill in the form").await;
+    assert_eq!(out, AgentOutcome::Stopped);
+    assert_eq!(cards(&h.drain()).len(), 1, "the send card shows");
+    assert!(h.platform.clicks().is_empty(), "nothing clicked after Not yet");
 }

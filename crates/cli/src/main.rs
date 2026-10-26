@@ -7,6 +7,8 @@
 //!   copilot-cli ground fixtures/screens/kasse_form.png "Knopf Absenden" --query button
 //!   copilot-cli rules --now 2026-10-29T18:00
 //!   copilot-cli agent "Schick die Krankschreibung an die Gesundkasse"
+//!   copilot-cli agent "Send my sick note" --screen fixtures/screens/demo-kasse.png \
+//!       --outline fixtures/screens/demo-kasse.outline.json
 //!   copilot-cli transcribe sample.wav
 //!   copilot-cli eval
 
@@ -96,6 +98,10 @@ enum Cmd {
         approve: Approve,
         #[arg(long, default_value_t = 10)]
         max_steps: u32,
+        /// PAGE ELEMENTS as Windows would read them (*.outline.json); the agent then acts by number. Typing and
+        /// ticking change it like a real form. Without it: the picture only (like Linux).
+        #[arg(long)]
+        outline: Option<PathBuf>,
     },
     /// Speech to text for a WAV file (Muse Voice Transcribe).
     Transcribe { wav: PathBuf },
@@ -179,8 +185,8 @@ async fn main() -> Result<()> {
             screen::ground(&ctx, &image, &description, &query, &out).await
         }
         Cmd::Rules { letters } => letters::rules(&ctx, &letters),
-        Cmd::Agent { task, screens, page, letter, approve, max_steps } => {
-            let opts = agent_cmd::Options { task, screens, page, letter, approve, max_steps, quiet: false };
+        Cmd::Agent { task, screens, page, letter, approve, max_steps, outline } => {
+            let opts = agent_cmd::Options { task, screens, page, letter, approve, max_steps, quiet: false, outline };
             agent_cmd::run(&ctx, opts).await.map(|_| ())
         }
         Cmd::Transcribe { wav } => {

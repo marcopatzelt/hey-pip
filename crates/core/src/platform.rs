@@ -325,6 +325,79 @@ impl UiElement {
     }
 }
 
+/// One named element of the page in front, as the OS reports it (Windows UI Automation). The agent lists
+/// these to the model ("#3 edit \"Full name\" = \"\"") and acts by number, without finding things in the picture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutlineItem {
+    /// 1.. in document order, unique within one outline.
+    pub id: u32,
+    /// edit, button, checkbox, radio, combo, link, item, menuitem, tab, text
+    pub role: String,
+    pub name: String,
+    /// What a field shows (max 60 chars); "checked"/"unchecked" for boxes. Never set for password fields.
+    #[serde(default)]
+    pub value: Option<String>,
+    pub rect: PhysRect,
+    /// Scrolled out of view (or outside the window).
+    #[serde(default)]
+    pub offscreen: bool,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub is_password: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl OutlineItem {
+    /// The UI Automation control name for this role (what `UiElement::control` holds).
+    pub fn control(&self) -> &'static str {
+        match self.role.as_str() {
+            "edit" => "Edit",
+            "button" => "Button",
+            "checkbox" => "CheckBox",
+            "radio" => "RadioButton",
+            "combo" => "ComboBox",
+            "link" => "Hyperlink",
+            "item" => "ListItem",
+            "menuitem" => "MenuItem",
+            "tab" => "TabItem",
+            _ => "Text",
+        }
+    }
+
+    pub fn as_element(&self) -> UiElement {
+        UiElement { name: self.name.clone(), control: self.control().to_string(), is_password: self.is_password }
+    }
+
+    pub fn center(&self) -> PhysPoint {
+        PhysPoint { x: self.rect.x + self.rect.w / 2, y: self.rect.y + self.rect.h / 2 }
+    }
+
+    /// Text goes in here (edit fields and editable combo boxes).
+    pub fn takes_text(&self) -> bool {
+        matches!(self.role.as_str(), "edit" | "combo")
+    }
+}
+
+/// Role name of a UI Automation control type name ("Edit" -> "edit"); None = not listed in an outline.
+pub fn outline_role(control: &str) -> Option<&'static str> {
+    Some(match control {
+        "Edit" => "edit",
+        "Button" | "SplitButton" => "button",
+        "CheckBox" => "checkbox",
+        "RadioButton" => "radio",
+        "ComboBox" => "combo",
+        "Hyperlink" => "link",
+        "ListItem" => "item",
+        "MenuItem" => "menuitem",
+        "TabItem" => "tab",
+        _ => return None,
+    })
+}
+
 /// The window in front (the one that gets keys).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct WindowInfo {
@@ -363,6 +436,19 @@ pub trait UiTree: Send + Sync {
     }
     /// The foreground window. None = unknown.
     fn foreground(&self) -> Option<WindowInfo> {
+        None
+    }
+    /// Named interactive elements of the page in front (never Pip's own windows), at most `max`, ids 1.. in
+    /// document order. Empty = none or unknown (Linux); the agent then finds things in the picture.
+    fn outline(&self, _max: usize) -> Vec<OutlineItem> {
+        Vec::new()
+    }
+    /// Scroll this element of the last outline into view. False = could not (the agent turns the wheel).
+    fn scroll_into_view(&self, _item: &OutlineItem) -> bool {
+        false
+    }
+    /// The text the field at this point shows (read back after typing). None = unknown or a password field.
+    fn value_at(&self, _p: PhysPoint) -> Option<String> {
         None
     }
 }
@@ -482,6 +568,25 @@ mod tests {
         let e = |c: &str| UiElement { name: "x".into(), control: c.into(), is_password: false };
         assert!(e("Button").is_pressable() && !e("Edit").is_pressable());
         assert!(e("Edit").is_text_input() && !e("Button").is_text_input());
+    }
+
+    #[test]
+    fn outline_items_map_roles_and_parse_with_defaults() {
+        let item: OutlineItem = serde_json::from_str(
+            r#"{"id": 3, "role": "edit", "name": "Full name", "rect": {"x": 10, "y": 20, "w": 100, "h": 30}}"#,
+        )
+        .unwrap();
+        assert!(item.enabled && !item.offscreen && !item.is_password && item.value.is_none());
+        assert_eq!(item.center(), PhysPoint { x: 60, y: 35 });
+        assert_eq!(item.as_element().control, "Edit");
+        assert!(item.as_element().is_text_input() && item.takes_text());
+        assert_eq!(outline_role("SplitButton"), Some("button"));
+        assert_eq!(outline_role("Pane"), None);
+        for c in ["Edit", "Button", "CheckBox", "RadioButton", "ComboBox", "Hyperlink", "ListItem", "MenuItem"] {
+            let role = outline_role(c).unwrap();
+            let it = OutlineItem { role: role.into(), ..item.clone() };
+            assert_eq!(it.control(), c);
+        }
     }
 
     #[test]

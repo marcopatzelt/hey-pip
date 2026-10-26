@@ -29,6 +29,8 @@ pub struct Options {
     pub max_steps: u32,
     /// Eval: no step-by-step printing.
     pub quiet: bool,
+    /// PAGE ELEMENTS file (*.outline.json): the fake platform reports it like Windows UI Automation would.
+    pub outline: Option<PathBuf>,
 }
 
 /// One approval card the gate showed.
@@ -52,6 +54,8 @@ pub struct Report {
     pub cards: Vec<CardSeen>,
     /// Every click with the named target it hit.
     pub clicks: Vec<(PhysPoint, Option<String>)>,
+    /// Tool calls the model made in each step.
+    pub calls_per_step: Vec<usize>,
 }
 
 impl Report {
@@ -82,6 +86,13 @@ fn load_boxes(screen: &Path) -> Boxes {
             Some((k.clone(), [*b.first()?, *b.get(1)?, *b.get(2)?, *b.get(3)?]))
         })
         .collect()
+}
+
+/// `<screen>.outline.json` next to a screenshot, if there is one.
+fn sibling_outline(screen: &Path) -> Option<PathBuf> {
+    let stem = screen.file_stem()?.to_str()?;
+    let path = screen.with_file_name(format!("{stem}.outline.json"));
+    path.is_file().then_some(path)
 }
 
 fn target_at(boxes: &Boxes, p: PhysPoint) -> Option<String> {
@@ -135,6 +146,11 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     say(format!("DEMO_MODE: {}. Cards answered \"Ja\": {:?}\n", ctx.config.demo_mode, o.approve));
 
     let (fake, platform) = FakePlatform::from_png(&screens[0])?;
+    if let Some(path) = &o.outline {
+        let n = fake.load_outline(path)?;
+        *fake.screen_h.lock().expect("screen height") = fake.screen.lock().expect("screen").height() as i32;
+        say(format!("PAGE ELEMENTS: {n} from {}", path.display()));
+    }
     let (bus, _commands) = Bus::new();
     let opener_quiet = o.quiet;
     let agent = Agent::new(
@@ -165,11 +181,19 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let mut clicks = Vec::new();
     let mut outcome = None;
     let mut approved_before = 0usize;
+    let mut calls_per_step = Vec::new();
     let started = Instant::now();
     say(format!("Task: \"{}\"", o.task));
     while state.step < o.max_steps {
+        let step_started = Instant::now();
         let r = agent.step(&mut state, &cancel).await;
+        let step_secs = step_started.elapsed().as_secs_f32();
         tokio::time::sleep(Duration::from_millis(50)).await; // let the printer catch up
+        if r.is_ok() {
+            let names: Vec<&str> = state.last_calls().iter().map(|c| c.name.as_str()).collect();
+            calls_per_step.push(names.len());
+            say(format!("  -- step {}: {} calls [{}] in {step_secs:.1} s", state.step, names.len(), names.join(", ")));
+        }
         let actions = fake.take_actions();
         for a in &actions {
             let line = match a {
@@ -197,9 +221,11 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
                 break;
             }
         }
-        // A picture cannot show typing: the next screen comes after the agent typed or a card was approved.
+        // A picture cannot show typing: the first screen (the empty form) gives way after the agent typed; any
+        // screen gives way after a card was approved (a third screen, the confirmation, only after a send).
         let approved_now = cards.lock().expect("cards").iter().filter(|c| c.approved).count();
-        let progressed = actions.iter().any(|a| matches!(a, Action::Type(_))) || approved_now > approved_before;
+        let typed = actions.iter().any(|a| matches!(a, Action::Type(_)));
+        let progressed = (typed && screen_i == 0) || approved_now > approved_before;
         approved_before = approved_now;
         if progressed && screen_i + 1 < screens.len() {
             screen_i += 1;
@@ -207,6 +233,14 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             let img = image::open(next).with_context(|| format!("cannot open {}", next.display()))?.into_rgba8();
             fake.set_screen(img);
             *boxes.lock().expect("boxes") = load_boxes(next);
+            // With PAGE ELEMENTS on: a screen with its own <stem>.outline.json (another page) brings its own list;
+            // otherwise the list stays (the same form, with what was typed into it).
+            if o.outline.is_some()
+                && let Some(path) = sibling_outline(next)
+            {
+                let n = fake.load_outline(&path)?;
+                say(format!("  [screen] PAGE ELEMENTS: {n} from {}", path.display()));
+            }
             say(format!("  [screen] now showing {}", next.display()));
         }
     }
@@ -218,7 +252,7 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     };
     printer.abort();
     let cards = cards.lock().expect("cards").clone();
-    let report = Report { outcome, steps: state.step, secs, tokens: state.tokens, cards, clicks };
+    let report = Report { outcome, steps: state.step, secs, tokens: state.tokens, cards, clicks, calls_per_step };
 
     if !o.quiet {
         println!("\nActions log (what the agent did, with the gate's risk level):");
@@ -245,6 +279,7 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             _ => println!("Memory: no playbook saved (nothing typed or sent, or the run did not finish)."),
         }
         println!("Measure: steps={} seconds={:.1} (run twice with the same --db to compare)", report.steps, secs);
+        println!("Calls per step: {:?}", report.calls_per_step);
         if report.gate_held_at_submit() {
             println!("Gate: the send card stopped the click on \"Absenden\". Nothing was clicked there, nothing sent.");
         } else if report.cards.iter().any(|c| !c.attach) {
@@ -356,6 +391,34 @@ mod tests {
     }
 
     #[test]
+    fn the_demo_outline_fits_its_screenshot() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-kasse.png")).unwrap();
+        assert_eq!(fake.load_outline(&dir.join("demo-kasse.outline.json")).unwrap(), 13);
+        assert_eq!(
+            sibling_outline(&dir.join("demo-kasse-thanks.png")),
+            Some(dir.join("demo-kasse-thanks.outline.json"))
+        );
+        assert_eq!(sibling_outline(&dir.join("demo-kasse-filled.png")), None, "the filled form keeps the typed list");
+        let items = platform.ui.outline(80);
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        for n in ["Full name", "Insurance number", "Your message (optional)", "Choose file", "Submit"] {
+            assert!(names.contains(&n), "{n}");
+        }
+        assert!(items.iter().any(|i| i.role == "combo" && i.value.as_deref() == Some("Send a sick note")));
+        assert!(items.iter().any(|i| i.role == "checkbox" && i.value.as_deref() == Some("checked")));
+        let (w, h) = fake.screen.lock().unwrap().dimensions();
+        for (n, i) in items.iter().enumerate() {
+            assert_eq!(i.id as usize, n + 1, "ids in order");
+            assert!(
+                i.rect.x + i.rect.w <= w as i32 && i.rect.y + i.rect.h <= h as i32,
+                "{} inside the picture",
+                i.name
+            );
+        }
+    }
+
+    #[test]
     fn gate_verdict_needs_a_refused_send_card_on_submit_and_no_click_there() {
         let card = |attach, approved, target: &str| CardSeen {
             title: String::new(),
@@ -372,6 +435,7 @@ mod tests {
             tokens: 0,
             cards: vec![card(false, false, "submit_button")],
             clicks: vec![],
+            calls_per_step: vec![1, 1],
         };
         assert!(r.gate_held_at_submit());
         r.clicks.push((PhysPoint { x: 859, y: 940 }, Some("submit_button".into())));

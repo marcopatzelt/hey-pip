@@ -33,7 +33,7 @@ use crate::meta::{
     Content, Effort, FunctionCall, InputItem, MODEL_SPARK, MetaClient, MetaError, ResponseRequest, Role, SamBox,
     ToolDef,
 };
-use crate::platform::{ApiImage, PhysPoint, PhysRect, Platform, UiElement};
+use crate::platform::{ApiImage, OutlineItem, PhysPoint, PhysRect, Platform, UiElement, WindowInfo};
 use crate::rules::text::fmt_date;
 
 /// Long side of the screenshot sent to the model.
@@ -75,6 +75,14 @@ const PREAPPROVAL_TTL: Duration = Duration::from_secs(90);
 const PAGE_CHANGE_MAX: Duration = Duration::from_secs(2);
 /// After open_url when the platform cannot tell which window is in front.
 const PAGE_CHANGE_BLIND: Duration = Duration::from_secs(1);
+/// At most this many PAGE ELEMENTS per step.
+pub const OUTLINE_MAX: usize = 80;
+/// Pause between element actions of one planned turn (typing field after field).
+const BATCH_PACE: Duration = Duration::from_millis(80);
+/// Pixels one wheel notch moves a page (to bring an off-screen element into view).
+const WHEEL_PX: i32 = 100;
+/// Output for the calls of a turn that were not run because the page changed under them.
+const NOT_DONE_PAGE_CHANGED: &str = "not done: the page changed, look again";
 
 #[derive(Debug, Clone)]
 pub enum Task {
@@ -224,6 +232,12 @@ pub struct RunState {
     /// The user said yes to this button, but the page changed before the click: the same button on the same
     /// site may be clicked without a second card.
     preapproved: Option<Preapproval>,
+    /// PAGE ELEMENTS of this step (from the OS UI tree): what `element` numbers in click / type_text mean.
+    pub outline: Vec<OutlineItem>,
+    /// The call before this one (same turn) typed into an element: the next field follows without the pace.
+    after_element_type: bool,
+    /// A file dialog was in front when this turn started (or after its last click): no typing by element there.
+    dialog_open: bool,
 }
 
 /// A yes that could not be used because the page changed under the button.
@@ -306,7 +320,15 @@ impl RunState {
             remembered: Vec::new(),
             said_page_changed: false,
             preapproved: None,
+            outline: Vec::new(),
+            after_element_type: false,
+            dialog_open: false,
         }
+    }
+
+    /// The tool calls the model made in the last step (the CLI prints how many per step).
+    pub fn last_calls(&self) -> &[FunctionCall] {
+        &self.last_calls
     }
 
     /// Step and time budget of the current phase.
@@ -331,6 +353,7 @@ impl RunState {
         self.resumed = true;
         self.user_wait = Arc::default();
         self.preapproved = None;
+        self.outline.clear();
     }
 
     /// Run time without the time spent waiting for the user.
@@ -793,8 +816,18 @@ impl Agent {
             return Ok(StepResult::Finished(AgentOutcome::Stopped));
         }
         state.last_masks = self.bus.hit_rects();
-        let api = self.capture().await?;
-        let look = if state.step == 0 { "This is the screen." } else { "This is the screen now. Continue the task." };
+        let (api, outline) = tokio::join!(self.capture(), self.read_outline(state.phase));
+        let api = api?;
+        state.outline = outline;
+        state.after_element_type = false;
+        let mut look =
+            if state.step == 0 { "This is the screen." } else { "This is the screen now. Continue the task." }
+                .to_string();
+        let elements = prompt::page_elements(&state.outline, prompt::PAGE_ELEMENTS_MAX_CHARS);
+        if !elements.is_empty() {
+            look.push_str("\n\n");
+            look.push_str(&elements);
+        }
         input.push(InputItem::Message { role: Role::User, content: vec![Content::text(look), Content::png(&api.png)] });
         state.last_api = Some(api);
 
@@ -841,6 +874,11 @@ impl Agent {
             return Ok(StepResult::Finished(AgentOutcome::Done(text.to_string())));
         }
 
+        // A planned turn (several calls) stops when the page changes under it: the window in front before and
+        // after each click, key and page open is compared.
+        let by_element = out.calls.iter().any(|c| c.name == "type_text" && call_has_element(c));
+        let mut fg = if out.calls.len() > 1 || by_element { self.foreground().await } else { None };
+        state.dialog_open = fg.as_ref().is_some_and(WindowInfo::is_file_dialog);
         for (i, call) in out.calls.iter().enumerate() {
             if cancel.is_cancelled() {
                 return Ok(StepResult::Finished(AgentOutcome::Stopped));
@@ -860,6 +898,18 @@ impl Agent {
                         }
                         return Ok(StepResult::Continue);
                     }
+                    let rest = &out.calls[i + 1..];
+                    if !rest.is_empty() && self.page_moved(&call.name, &mut fg, state).await {
+                        tracing::info!(after = %call.name, skipped = rest.len(), "page changed: rest of the turn not done");
+                        for c in rest {
+                            state.pending_input.push(InputItem::FunctionCallOutput {
+                                call_id: c.call_id.clone(),
+                                output: NOT_DONE_PAGE_CHANGED.into(),
+                            });
+                        }
+                        state.outline.clear();
+                        return Ok(StepResult::Continue);
+                    }
                 }
                 Ok(Exec::Finish(o)) => return Ok(StepResult::Finished(o)),
                 Err(e) => {
@@ -876,6 +926,102 @@ impl Agent {
             }
         }
         Ok(StepResult::Continue)
+    }
+
+    /// After a call of a planned turn: did the page change under the rest of it? A scroll always moves it; after a
+    /// click, key or page open the window in front is compared (title, address, a file dialog that opened).
+    async fn page_moved(&self, tool: &str, fg: &mut Option<WindowInfo>, state: &mut RunState) -> bool {
+        match tool {
+            "scroll" => true,
+            "click" | "key" | "open_url" => {
+                let now = self.foreground().await;
+                let changed = match (fg.as_ref(), now.as_ref()) {
+                    (Some(a), Some(b)) => {
+                        a.title != b.title
+                            || a.class != b.class
+                            || a.address != b.address
+                            || (b.is_file_dialog() && !a.is_file_dialog())
+                    }
+                    (None, Some(b)) => b.is_file_dialog(),
+                    _ => false,
+                };
+                state.dialog_open = now.as_ref().is_some_and(WindowInfo::is_file_dialog);
+                *fg = now;
+                changed
+            }
+            _ => false,
+        }
+    }
+
+    /// PAGE ELEMENTS of the page in front (none while only looking around).
+    async fn read_outline(&self, phase: Phase) -> Vec<OutlineItem> {
+        if phase != Phase::Act {
+            return Vec::new();
+        }
+        let ui = self.platform.ui.clone();
+        tokio::task::spawn_blocking(move || ui.outline(OUTLINE_MAX)).await.unwrap_or_default()
+    }
+
+    /// Read the outline again (after scrolling) and update this step's elements in place: the same element keeps
+    /// its number (matched by role, name and how many of that kind came before it).
+    async fn refresh_outline(&self, state: &mut RunState) {
+        let fresh = self.read_outline(state.phase).await;
+        merge_outline(&mut state.outline, fresh);
+    }
+
+    /// Element #id of this step's PAGE ELEMENTS as a click target, scrolled into view when it is off-screen.
+    async fn element_target(&self, state: &mut RunState, id: u32, cancel: &CancellationToken) -> Result<ElementPick> {
+        let Some(item) = state.outline.iter().find(|i| i.id == id).cloned() else { return Ok(ElementPick::Unknown) };
+        let api = state.last_api.as_ref().ok_or_else(|| anyhow!("no screenshot yet"))?;
+        if !item.offscreen && on_screen(api, &item.rect) {
+            return Ok(ElementPick::Found(rect_target(api, item.rect), item));
+        }
+        match self.bring_into_view(state, &item, cancel).await? {
+            Some(it) => {
+                let api = state.last_api.as_ref().ok_or_else(|| anyhow!("no screenshot yet"))?;
+                Ok(ElementPick::Found(rect_target(api, it.rect), it))
+            }
+            None => Ok(ElementPick::Failed(format!(
+                "not done: #{id} \"{}\" is off-screen and could not be scrolled into view. Scroll and look again.",
+                truncate(&item.name, 60)
+            ))),
+        }
+    }
+
+    /// Scroll an off-screen element into view: the UI tree first (ScrollItem), else the mouse wheel towards it.
+    /// Then the outline and the screenshot are read again. Some(item now) if it is on the screen.
+    async fn bring_into_view(
+        &self,
+        state: &mut RunState,
+        item: &OutlineItem,
+        cancel: &CancellationToken,
+    ) -> Result<Option<OutlineItem>> {
+        self.emit(UiEvent::PointClear);
+        self.progress(t("progress_scroll", self.lang()));
+        let ui = self.platform.ui.clone();
+        let it = item.clone();
+        let by_tree = tokio::task::spawn_blocking(move || ui.scroll_into_view(&it)).await.unwrap_or(false);
+        if !by_tree {
+            let api = state.last_api.as_ref().ok_or_else(|| anyhow!("no screenshot yet"))?;
+            let screen = screen_rect(api);
+            let (top, bottom) = (screen.y, screen.y + screen.h);
+            let cy = item.center().y;
+            let dy = if cy >= bottom || cy < top { cy - (top + screen.h / 2) } else { 0 };
+            let notches = (dy as f32 / WHEEL_PX as f32).round() as i32;
+            let notches = if notches == 0 { dy.signum() } else { notches.clamp(-15, 15) };
+            if notches != 0 {
+                let center = api.to_phys(api.w / 2, api.h / 2);
+                self.blocking(move |pl| pl.input.scroll(center, notches)).await?;
+            }
+        }
+        if !self.pause(self.short_pace(), cancel).await {
+            return Ok(None);
+        }
+        self.refresh_outline(state).await;
+        state.last_masks = self.bus.hit_rects();
+        state.last_api = Some(self.capture().await?);
+        let api = state.last_api.as_ref().ok_or_else(|| anyhow!("no screenshot yet"))?;
+        Ok(state.outline.iter().find(|i| i.id == item.id && !i.offscreen && on_screen(api, &i.rect)).cloned())
     }
 
     /// The site a task is about, for recall: the insurer's form for a sick note, else the page in front.
@@ -1064,6 +1210,8 @@ impl Agent {
         if !keeps_attach {
             state.enter_after_attach = false;
         }
+        // Typing field after field of one planned turn needs no pause in between.
+        let quick = std::mem::take(&mut state.after_element_type);
         match tool {
             Tool::Say { text } => {
                 self.bubble(text.clone(), true);
@@ -1077,12 +1225,34 @@ impl Agent {
                 self.show_target(&target, description);
                 Ok(ToolRun::out(Risk::Free, format!("pointed at {description}")))
             }
-            Tool::Click { sam_query, description, .. } => {
-                self.click(tool, sam_query, description, state, cancel, lang).await
+            Tool::Click { sam_query, description, element, .. } => {
+                self.click(tool, sam_query, description, *element, state, cancel, lang).await
             }
-            Tool::TypeText { text, what, into_sam_query, field_label } => {
+            Tool::TypeText { text, what, into_sam_query, field_label, element } => {
                 // A label alone also means "click that field first".
                 let q = into_sam_query.as_deref().or(field_label.as_ref().map(|_| "text input field"));
+                // In the file dialog of an approved attach only the approved letter is typed (no element there).
+                let element = element.filter(|_| !state.enter_after_attach);
+                if let Some(id) = element {
+                    match self.element_target(state, id, cancel).await? {
+                        ElementPick::Found(target, item) => {
+                            let args = TypeArgs { text, what, field_label: field_label.as_deref(), quick };
+                            return self.type_into_element(&args, target, &item, state, cancel, lang).await;
+                        }
+                        ElementPick::Failed(msg) => return Ok(ToolRun::out(Risk::Act, msg)),
+                        ElementPick::Unknown => {
+                            let q = q.or(Some("text input field"));
+                            let mut run =
+                                self.type_text(text, what, q, field_label.as_deref(), state, cancel, lang).await?;
+                            if let Exec::Output(o) = &mut run.exec {
+                                o.push_str(&format!(
+                                    " (#{id} is not in PAGE ELEMENTS; found the field in the picture)"
+                                ));
+                            }
+                            return Ok(run);
+                        }
+                    }
+                }
                 self.type_text(text, what, q, field_label.as_deref(), state, cancel, lang).await
             }
             Tool::Key { combo, .. } => self.press_key(tool, combo, state, cancel, lang).await,
@@ -1162,21 +1332,56 @@ impl Agent {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn click(
         &self,
         tool: &Tool,
         sam_query: &str,
         description: &str,
+        element: Option<u32>,
         state: &mut RunState,
         cancel: &CancellationToken,
         lang: Lang,
     ) -> Result<ToolRun> {
         self.pip(PipState::Acting);
         let base_risk = self.gate.classify(tool, None);
-        let Some(mut target) = self.locate(state, sam_query, description, quoted_label(description)).await? else {
+        // By number from PAGE ELEMENTS: the element's own rect, no SAM / locate. Unknown number: the picture.
+        let mut by_element: Option<OutlineItem> = None;
+        let mut note = String::new();
+        let picked = match element {
+            Some(id) => match self.element_target(state, id, cancel).await? {
+                ElementPick::Found(t, item) => {
+                    by_element = Some(item);
+                    Some(t)
+                }
+                ElementPick::Failed(msg) => return Ok(ToolRun::out(base_risk, msg)),
+                ElementPick::Unknown => {
+                    note = format!(" (#{id} is not in PAGE ELEMENTS; found it in the picture)");
+                    None
+                }
+            },
+            None => None,
+        };
+        let located = match picked {
+            Some(t) => Some(t),
+            None => self.locate(state, sam_query, description, quoted_label(description)).await?,
+        };
+        let Some(mut target) = located else {
             return Ok(ToolRun::out(base_risk, not_found(sam_query)));
         };
-        let ui = self.ui_at(target.point).await;
+        let live = self.ui_at(target.point).await;
+        // A tick box by number, and the UI tree at the point agrees: ticking sends nothing, whatever its label
+        // says ("Send me a confirmation of receipt."). Only the model's is_commit makes it a card then.
+        let tick_box = |c: &str| matches!(c, "CheckBox" | "RadioButton");
+        let is_tick = by_element.as_ref().is_some_and(|i| tick_box(i.control()))
+            && live.as_ref().is_some_and(|u| tick_box(&u.control));
+        let ui = match (live, &by_element) {
+            (Some(u), _) if !u.name.trim().is_empty() => Some(u),
+            (_, Some(item)) => Some(item.as_element()),
+            (u, None) => u,
+        };
+        // The element's own name counts for the gate too (a send button by number still gets its card).
+        let element_name = by_element.as_ref().map(|i| i.name.clone()).unwrap_or_default();
         let ui_name_now = ui.as_ref().map(|u| u.name.as_str()).unwrap_or("");
         if Gate::closes_window(description, sam_query, ui_name_now) {
             return Ok(ToolRun::out(
@@ -1189,7 +1394,13 @@ impl Agent {
         self.progress(tf("progress_click", lang, &[("target", description)]));
         let mut ui_name = ui.as_ref().map(|u| u.name.clone()).unwrap_or_default();
         let mut risk = self.gate.classify(tool, ui.as_ref().map(|u| u.name.as_str()));
-        if risk == Risk::Act && ui.as_ref().is_none_or(|u| u.name.trim().is_empty()) {
+        if label_hit(&element_name) {
+            risk = Risk::Commit;
+        }
+        if is_tick && !matches!(tool, Tool::Click { is_commit: true, .. }) {
+            risk = Risk::Act;
+        }
+        if risk == Risk::Act && !is_tick && ui.as_ref().is_none_or(|u| u.name.trim().is_empty()) {
             // No name from the UI tree (Linux, icon buttons, our overlay on top): read the label from the
             // picture alone, without the task, so text on the page cannot talk the gate out of a card.
             // No label either: the model's words decide (classify already checked them for send words).
@@ -1206,7 +1417,7 @@ impl Agent {
         let mut trusted = None;
         // Opening the file picker sends nothing: no card. Only the user's own stored letters can go into the
         // dialog (approved_file), and the final send button still needs a yes.
-        let target_text = format!("{description} {ui_name}");
+        let target_text = format!("{description} {ui_name} {element_name}");
         let button_label = button_label(&ui_name, description);
         if risk == Risk::Commit && is_attach_target(&target_text) && !is_send_target(&target_text) {
             risk = Risk::Act;
@@ -1220,7 +1431,11 @@ impl Agent {
             };
             approved = Some(true);
             if card.asked && self.target_changed(state, &target, ui.as_ref()).await {
-                match self.relocate_same(state, sam_query, description, &ui_name).await {
+                let again = match &by_element {
+                    Some(item) => self.relocate_element(state, item, &ui_name).await,
+                    None => self.relocate_same(state, sam_query, description, &ui_name).await,
+                };
+                match again {
                     Some(t) => {
                         tracing::info!("the page moved while the card was open; the same button is clicked");
                         self.show_target(&t, description);
@@ -1269,12 +1484,21 @@ impl Agent {
             state.sent.push(what);
             state.send_label = Some(button_label);
         }
-        let mut out = format!("clicked {description}");
+        let mut out = format!("clicked {description}{note}");
         if let Some(to) = &trusted {
             self.bubble(tf("sent_trusted", lang, &[("to", to)]), true);
             out.push_str(" (trusted site: the user said not to ask again for it)");
         }
-        if state.enter_after_attach {
+        // Ticking a box by number does not load anything: the next planned action follows at once.
+        let stays = by_element.as_ref().is_some_and(|i| matches!(i.role.as_str(), "checkbox" | "radio"));
+        if stays && !state.enter_after_attach {
+            if let Some(v) = by_element.as_ref().and_then(|i| i.value.as_deref()) {
+                out.push_str(&format!(" (before the click it was {v})"));
+            }
+            if !self.pause(self.batch_pace(), cancel).await {
+                return Ok(ToolRun::finish(risk, AgentOutcome::Stopped));
+            }
+        } else if state.enter_after_attach {
             // The file dialog can take a few seconds to open (slow PCs). Wait for it, so the next picture
             // shows it and the model does not click the button again.
             match self.wait_for_file_dialog(cancel).await {
@@ -1309,6 +1533,104 @@ impl Agent {
             None => self.read_label(state, &target).await?.0,
         };
         same_button(approved_label, &name).then_some(target)
+    }
+
+    /// The page changed while the card was open, and the target came from PAGE ELEMENTS: read them again and take
+    /// the same element only if it is on the screen and still has the label the user approved.
+    async fn relocate_element(&self, state: &mut RunState, item: &OutlineItem, approved_label: &str) -> Option<Target> {
+        if approved_label.trim().is_empty() {
+            return None;
+        }
+        self.refresh_outline(state).await;
+        state.last_masks = self.bus.hit_rects();
+        state.last_api = Some(self.capture().await.ok()?);
+        let api = state.last_api.as_ref()?;
+        let now = state.outline.iter().find(|i| i.id == item.id && !i.offscreen && on_screen(api, &i.rect))?;
+        same_button(approved_label, &now.name).then(|| rect_target(api, now.rect))
+    }
+
+    /// The short pause between the actions of one planned turn (zero in tests).
+    fn batch_pace(&self) -> Duration {
+        if self.pace.is_zero() { Duration::ZERO } else { BATCH_PACE.min(self.short_pace()) }
+    }
+
+    /// type_text by PAGE ELEMENTS number: click the field, select its text, type, read back what it shows.
+    async fn type_into_element(
+        &self,
+        a: &TypeArgs<'_>,
+        target: Target,
+        item: &OutlineItem,
+        state: &mut RunState,
+        cancel: &CancellationToken,
+        lang: Lang,
+    ) -> Result<ToolRun> {
+        self.pip(PipState::Acting);
+        let id = item.id;
+        if item.is_password || is_secret_field(a.what) || is_secret_field(&item.name) {
+            return self.password_wait(state, cancel, lang).await;
+        }
+        if !item.takes_text() {
+            return Ok(ToolRun::out(
+                Risk::Act,
+                format!(
+                    "refused: #{id} is a {} (\"{}\"), not a text field. Use click for it.",
+                    item.role,
+                    truncate(&item.name, 40)
+                ),
+            ));
+        }
+        if state.dialog_open {
+            return Ok(ToolRun::out(
+                Risk::Act,
+                "refused: a file dialog is open. Type the file path with element null (only the user's approved \
+                 letter can go in).",
+            ));
+        }
+        self.show_target(&target, a.what);
+        let pace = if a.quick { self.batch_pace() } else { self.short_pace() };
+        if !self.pause(pace, cancel).await {
+            return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped));
+        }
+        let p = target.point;
+        self.blocking(move |pl| pl.input.click(p)).await?;
+        state.last_point = Some(p);
+        state.focus_by_key = false;
+        // Replace what the field holds (a remembered old value, a half-typed try).
+        self.blocking(|pl| pl.input.key("ctrl+a")).await?;
+        self.progress(tf("progress_type", lang, &[("what", a.what)]));
+        let chars: Vec<char> = a.text.chars().collect();
+        for chunk in chars.chunks(TYPE_CHUNK) {
+            if cancel.is_cancelled() {
+                return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped));
+            }
+            let s: String = chunk.iter().collect();
+            self.blocking(move |pl| pl.input.type_text(&s)).await?;
+        }
+        let ui = self.platform.ui.clone();
+        let shows = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
+        let label = a.field_label.map(str::trim).filter(|l| !l.is_empty() && *l != "null");
+        let label = label.map(str::to_string).unwrap_or_else(|| {
+            if item.name.trim().is_empty() { field_label(a.what) } else { truncate(item.name.trim(), 60) }
+        });
+        state.typed_fields.retain(|(l, _)| *l != label);
+        state.typed_fields.push((label, a.text.to_string()));
+        state.typed.retain(|(w, _)| w != a.what);
+        state.typed.push((a.what.to_string(), truncate(a.text, 60)));
+        self.progress(filled_line(&state.typed));
+        state.after_element_type = true;
+        let out = match shows {
+            Some(v) if squash(&v) == squash(a.text) => {
+                format!("typed {} into #{id}; the field now shows \"{}\"", a.what, truncate(&v, 60))
+            }
+            Some(v) => format!(
+                "typed {} into #{id}, but the field now shows \"{}\" instead of \"{}\". Check it and fix it if needed.",
+                a.what,
+                truncate(&v, 60),
+                truncate(a.text, 60)
+            ),
+            None => format!("typed {} into #{id}", a.what),
+        };
+        Ok(ToolRun::out(Risk::Act, out))
     }
 
     /// Site key of the page in front (see Gate::site_key).
@@ -2831,6 +3153,82 @@ fn system_open(url: &str) -> Result<()> {
     // Reap the launcher so it does not stay behind as a zombie process.
     std::thread::spawn(move || child.wait());
     Ok(())
+}
+
+/// What `element_target` found for a PAGE ELEMENTS number.
+enum ElementPick {
+    /// On the screen (scrolled there if needed).
+    Found(Target, OutlineItem),
+    /// Not in this step's list: find the target in the picture as before.
+    Unknown,
+    /// In the list but could not be brought onto the screen: this text goes to the model.
+    Failed(String),
+}
+
+/// Arguments of type_text by element.
+struct TypeArgs<'a> {
+    text: &'a str,
+    what: &'a str,
+    field_label: Option<&'a str>,
+    /// The call before typed into an element too (no pause in between).
+    quick: bool,
+}
+
+/// The call names a PAGE ELEMENTS number (any form the model sends it in).
+fn call_has_element(call: &FunctionCall) -> bool {
+    let args = match &call.arguments {
+        Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
+        v => v.clone(),
+    };
+    match args.get("element") {
+        Some(Value::Number(_)) => true,
+        Some(Value::String(s)) => s.trim().trim_start_matches('#').parse::<u32>().is_ok(),
+        _ => false,
+    }
+}
+
+/// The screen the API image shows, in physical pixels.
+fn screen_rect(api: &ApiImage) -> PhysRect {
+    PhysRect {
+        x: api.origin.x,
+        y: api.origin.y,
+        w: (api.w as f32 * api.factor).round() as i32,
+        h: (api.h as f32 * api.factor).round() as i32,
+    }
+}
+
+/// The middle of the rect is on the screen.
+fn on_screen(api: &ApiImage, r: &PhysRect) -> bool {
+    r.w > 0 && r.h > 0 && screen_rect(api).contains(PhysPoint { x: r.x + r.w / 2, y: r.y + r.h / 2 })
+}
+
+/// Update `old` (the numbers the model saw) with a fresh read: an element keeps its number when role, name and
+/// its count among same-named elements match. Elements that are gone keep their last state.
+fn merge_outline(old: &mut [OutlineItem], fresh: Vec<OutlineItem>) {
+    fn keys(items: &[OutlineItem]) -> Vec<(String, String, usize)> {
+        let mut seen: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
+        items
+            .iter()
+            .map(|i| {
+                let k = (i.role.clone(), i.name.clone());
+                let n = seen.entry(k.clone()).or_default();
+                *n += 1;
+                (k.0, k.1, *n)
+            })
+            .collect()
+    }
+    let new_keys = keys(&fresh);
+    let old_keys = keys(old);
+    for (o, k) in old.iter_mut().zip(old_keys) {
+        if let Some(pos) = new_keys.iter().position(|nk| *nk == k) {
+            let n = &fresh[pos];
+            o.rect = n.rect;
+            o.offscreen = n.offscreen;
+            o.value = n.value.clone();
+            o.enabled = n.enabled;
+            o.is_password = n.is_password;
+        }
+    }
 }
 
 #[cfg(test)]

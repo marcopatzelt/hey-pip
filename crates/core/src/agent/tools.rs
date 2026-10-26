@@ -32,6 +32,9 @@ pub enum Tool {
         is_commit: bool,
         commit_what: Option<String>,
         commit_to: Option<String>,
+        /// Number (#n) from PAGE ELEMENTS: act on that element without finding it in the picture.
+        #[serde(default)]
+        element: Option<u32>,
     },
     /// into_sam_query null = type where the focus is. `what` feeds "Ich trage {what} ein."
     TypeText {
@@ -41,6 +44,9 @@ pub enum Tool {
         /// The field's visible label ("Versichertennummer"): found in the UI tree at once, no model call.
         #[serde(default)]
         field_label: Option<String>,
+        /// Number (#n) from PAGE ELEMENTS: click that field, select its text and type.
+        #[serde(default)]
+        element: Option<u32>,
     },
     Key {
         combo: String,
@@ -182,7 +188,7 @@ impl Tool {
                 check_opt("commit_what", commit_what, 200)?;
                 check_opt("commit_to", commit_to, 200)
             }
-            Tool::TypeText { text, what, into_sam_query, field_label } => {
+            Tool::TypeText { text, what, into_sam_query, field_label, .. } => {
                 check_opt("field_label", field_label, 80)?;
                 ensure!(!text.is_empty(), "text must not be empty");
                 ensure!(text.chars().count() <= 2000, "text is too long (max 2000 chars)");
@@ -282,12 +288,12 @@ fn lenient(mut args: Value) -> Value {
             let Value::String(s) = v else { continue };
             let t = s.trim();
             match k.as_str() {
-                "into_sam_query" | "commit_what" | "commit_to" | "reason_doc_id" | "reason_deadline_id"
+                "into_sam_query" | "commit_what" | "commit_to" | "reason_doc_id" | "reason_deadline_id" | "element"
                     if t.is_empty() || t.eq_ignore_ascii_case("null") =>
                 {
                     *v = Value::Null
                 }
-                "reason_doc_id" | "reason_deadline_id" => {
+                "reason_doc_id" | "reason_deadline_id" | "element" => {
                     if let Ok(n) = t.trim_start_matches('#').parse::<i64>() {
                         *v = Value::from(n)
                     }
@@ -366,6 +372,8 @@ deletes or cancels something. The user must approve it first.";
 const COMMIT_WHAT: &str = "Only when is_commit: what is sent, in the user's language (e.g. 'deine Krankschreibung \
 20.10.–30.10.'). Otherwise null.";
 const COMMIT_TO: &str = "Only when is_commit: to whom (e.g. 'Gesundkasse (Kontaktformular)'). Otherwise null.";
+const ELEMENT: &str = "The # number of the target in PAGE ELEMENTS (e.g. 4 for '#4'), when the list has it; then Pip \
+acts on that element directly. null when there is no PAGE ELEMENTS list or the target is not in it.";
 
 /// JSON schemas: type function, strict, additionalProperties:false, all fields required
 /// (optional ones as ["string","null"]).
@@ -390,11 +398,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 ("is_commit", bool_(IS_COMMIT)),
                 ("commit_what", opt_str(COMMIT_WHAT)),
                 ("commit_to", opt_str(COMMIT_TO)),
+                ("element", opt_int(ELEMENT)),
             ]),
         ),
         def(
             "type_text",
-            "Type text. If into_sam_query is set, first click that field; if null, type where the cursor is. \
+            "Type text. If element is set, Pip clicks that field, replaces its text and reports what it shows. \
+             Else if into_sam_query is set, first click that field; if both are null, type where the cursor is. \
              Never type passwords.",
             obj(&[
                 ("text", str_("The exact text to type.")),
@@ -409,6 +419,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                         "The label printed next to or inside the field, exactly as on screen (e.g. 'Versichertennummer'), or null.",
                     ),
                 ),
+                ("element", opt_int(ELEMENT)),
             ]),
         ),
         def(
@@ -530,6 +541,35 @@ mod tests {
     }
 
     #[test]
+    fn element_numbers_parse_leniently() {
+        let t = Tool::from_call(&call(
+            "type_text",
+            json!({"text": "Erika", "what": "your name", "into_sam_query": null, "field_label": null, "element": "#3"}),
+        ))
+        .unwrap();
+        assert!(matches!(t, Tool::TypeText { element: Some(3), .. }));
+        let t = Tool::from_call(&call(
+            "click",
+            json!({"sam_query": "button", "description": "Submit", "is_commit": true, "commit_what": null,
+                   "commit_to": null, "element": "null"}),
+        ))
+        .unwrap();
+        assert!(matches!(t, Tool::Click { element: None, .. }));
+        let t = Tool::from_call(&call(
+            "click",
+            json!({"sam_query": "button", "description": "Submit", "is_commit": true, "commit_what": null,
+                   "commit_to": null, "element": 7}),
+        ))
+        .unwrap();
+        assert!(matches!(t, Tool::Click { element: Some(7), .. }));
+        let defs = tool_defs();
+        for name in ["click", "type_text"] {
+            let d = defs.iter().find(|d| d.name == name).unwrap();
+            assert_eq!(d.parameters["properties"]["element"]["type"], json!(["integer", "null"]), "{name}");
+        }
+    }
+
+    #[test]
     fn arguments_as_json_string_are_accepted() {
         let t = Tool::from_call(&call("say", Value::String(r#"{"text":"Hi"}"#.into()))).unwrap();
         assert_eq!(t, Tool::Say { text: "Hi".into() });
@@ -625,7 +665,13 @@ mod tests {
 
     #[test]
     fn redaction_truncates_strings() {
-        let t = Tool::TypeText { text: "x".repeat(200), what: "w".into(), into_sam_query: None, field_label: None };
+        let t = Tool::TypeText {
+            text: "x".repeat(200),
+            what: "w".into(),
+            into_sam_query: None,
+            field_label: None,
+            element: None,
+        };
         let r = t.redacted_args();
         let v: Value = serde_json::from_str(&r).unwrap();
         assert_eq!(v["text"].as_str().unwrap().chars().count(), 81, "{r}"); // 80 + ellipsis

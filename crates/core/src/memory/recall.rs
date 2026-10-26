@@ -144,6 +144,11 @@ fn playbook_line(p: &Playbook) -> String {
         parts.push(format!("send button \"{}\"", cut(sl, 60)));
     }
     let _ = write!(s, " {}. Follow this unless the page looks different.", parts.join("; "));
+    if !p.fields.is_empty() || p.attach_label.is_some() || p.send_label.is_some() {
+        s.push_str(
+            " When PAGE ELEMENTS lists these labels, use their # numbers as element and fill all fields in one turn.",
+        );
+    }
     s
 }
 
@@ -294,6 +299,7 @@ mod tests {
         learn(&m, "www.gesundkasse.example", "send_au");
         let s = recall(&m, &q(Some("www.gesundkasse.example"), "send_au", 4500)).unwrap();
         assert!(s.contains("LAST TIME ON THIS SITE (www.gesundkasse.example, 1 run,"), "{s}");
+        assert!(s.contains("When PAGE ELEMENTS lists these labels, use their # numbers"), "{s}");
         assert!(s.contains("open https://www.gesundkasse.example/kontakt"), "{s}");
         assert!(s.contains("\"Name\" <- full_name") && s.contains("send button \"Absenden\""), "{s}");
         // The same job without a known site borrows it; another job on an unknown site only lists the sites.
