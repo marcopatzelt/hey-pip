@@ -165,6 +165,27 @@ pub enum UserCommand {
         step: OnboardingStep,
         value: String,
     },
+    /// "Forget" in "What Pip knows". `id`: profile key, letter id, site; `task`: the task kind of a place.
+    Forget {
+        kind: ForgetKind,
+        id: String,
+        #[serde(default)]
+        task: String,
+    },
+}
+
+/// What a "Forget" button in "What Pip knows" removes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForgetKind {
+    /// A profile fact ("About you").
+    Fact,
+    /// A stored letter with its deadlines ("Your letters"; the file itself stays).
+    Letter,
+    /// A playbook ("Places I know").
+    Place,
+    /// A "Don't ask again" site.
+    Trusted,
 }
 
 /// Open approvals and questions the agent is waiting for. The app's command
@@ -259,6 +280,11 @@ mod tests {
             serde_json::from_value(serde_json::json!({"type":"approve","id":id,"answer":"yes","remember_site":true}))
                 .unwrap();
         assert!(matches!(c, UserCommand::Approve { remember_site: true, .. }));
+        let c: UserCommand = serde_json::from_value(
+            serde_json::json!({"type":"forget","kind":"place","id":"x.example","task":"send_au"}),
+        )
+        .unwrap();
+        assert!(matches!(c, UserCommand::Forget { kind: ForgetKind::Place, ref task, .. } if task == "send_au"));
     }
 
     #[tokio::test]

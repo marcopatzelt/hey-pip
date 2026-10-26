@@ -4,6 +4,7 @@
 -- All timestamps: RFC 3339 in UTC with seconds and "Z" (e.g. 2026-10-29T17:00:00Z), so text
 -- comparison = time comparison across summer/winter time. Dates (due): YYYY-MM-DD.
 -- documents_fts is contentless; rowid = documents.id.
+-- Later changes are appended as new migrations (schema_2.sql: profile source/uses, playbooks); never edit this file.
 
 CREATE TABLE IF NOT EXISTS profile (
     key        TEXT PRIMARY KEY,

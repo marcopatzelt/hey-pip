@@ -319,7 +319,9 @@ pub(crate) fn bubble_text(extract: &DocumentExtract, deadlines: &[Deadline], lan
     let second = match (unsure, first_open) {
         (true, Some(d)) => Some(say("doc_unsure_date", lang, &[("due", &day_date(d.due, lang))])),
         (true, None) => Some(t("doc_unsure", lang).to_string()),
-        (false, d) => d.map(|d| say("doc_deadline_found", lang, &[("title", &d.title), ("due", &day_date(d.due, lang))])),
+        (false, d) => {
+            d.map(|d| say("doc_deadline_found", lang, &[("title", &d.title), ("due", &day_date(d.due, lang))]))
+        }
     };
     match second {
         Some(s) => format!("{summary} {s}"),
@@ -365,7 +367,7 @@ impl DocPipeline {
     }
 
     /// PNG/JPEG/PDF path -> sha256 (dedupe) -> crop (photos) -> read -> validate -> insert_document
-    /// -> rules.apply_document -> bubble text. Also stores profile "krankenkasse" from the first AU/Kasse letter.
+    /// -> rules.apply_document -> bubble text. Also learns name, insurer and insurance number (`learn_from_letter`).
     pub async fn ingest(&self, path: &Path, lang: Lang) -> Result<IngestResult> {
         let bytes = tokio::fs::read(path).await.with_context(|| format!("cannot open {}", path.display()))?;
         let kind = sniff(&bytes).ok_or(DocError::Unsupported)?;
@@ -399,10 +401,11 @@ impl DocPipeline {
 
         let doc_id = self.memory.insert_document(path, &sha, &extract, &text)?;
         let deadlines = self.rules.apply_document(doc_id, &extract)?;
-        if self.memory.profile_get("krankenkasse")?.is_none()
-            && let Some(name) = insurer_from(&extract)
-        {
-            self.memory.profile_set("krankenkasse", &name)?;
+        // Name, insurer and insurance number from the letter (never over what the user said).
+        match crate::memory::learn_from_letter(&self.memory, doc_id, &extract) {
+            Ok(keys) if !keys.is_empty() => tracing::info!(facts = keys.len(), "learned from letter"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "learning from the letter failed"),
         }
         let bubble = bubble_text(&extract, &deadlines, lang);
         self.memory.add_event("letter", &bubble)?;

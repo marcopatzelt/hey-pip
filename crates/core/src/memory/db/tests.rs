@@ -242,3 +242,83 @@ fn memory_is_shareable() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Memory>();
 }
+
+#[test]
+fn an_existing_version_1_db_gets_the_learning_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.db");
+    {
+        // A database written before migration 2 (profile without source/uses, no playbooks).
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(crate::memory::SCHEMA_SQL).unwrap();
+        c.pragma_update(None, "user_version", 1).unwrap();
+        c.execute("INSERT INTO profile(key, value, updated_at) VALUES ('name', 'Erika', '2026-10-20T10:00:00Z')", [])
+            .unwrap();
+    }
+    let m = Memory::open(&path).unwrap();
+    let f = m.profile_meta("name").unwrap().unwrap();
+    assert_eq!((f.value.as_str(), f.source.as_str(), f.uses), ("Erika", "user", 0));
+    assert_eq!(f.confidence, 1.0);
+    let version: i64 = m.conn().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    assert_eq!(version, MIGRATIONS.len() as i64);
+    m.profile_touch(&["name".to_string()]).unwrap();
+    assert_eq!(m.profile_meta("name").unwrap().unwrap().uses, 1);
+    assert!(m.playbook_all().unwrap().is_empty());
+    drop(m);
+    // Opening again runs nothing twice.
+    let m = Memory::open(&path).unwrap();
+    assert_eq!(m.profile_meta("name").unwrap().unwrap().uses, 1);
+}
+
+#[test]
+fn prune_keeps_memory_small() {
+    let m = mem();
+    for i in 0..60 {
+        m.playbook_upsert(&Playbook {
+            site: format!("s{i}.example"),
+            task: "text".into(),
+            url: String::new(),
+            fields: vec![],
+            attach_label: None,
+            send_label: None,
+            steps: 1,
+            seconds: 1,
+            runs: 1,
+            failed_since_ok: i64::from(i == 0) * 2,
+            updated_at: Local::now(),
+        })
+        .unwrap();
+    }
+    for i in 0..520 {
+        m.add_event("x", &format!("e{i}")).unwrap();
+    }
+    m.conn().execute("UPDATE playbooks SET updated_at = '2020-01-01T00:00:00Z' WHERE site = 's1.example'", []).unwrap();
+    m.prune().unwrap();
+    let all = m.playbook_all().unwrap();
+    assert_eq!(all.len(), 50);
+    assert!(!all.iter().any(|p| p.site == "s0.example" || p.site == "s1.example"), "failed twice / too old");
+    assert_eq!(m.recent_events(1000).unwrap().len(), 500);
+    assert_eq!(m.recent_events(1).unwrap()[0].text, "e519", "the newest stay");
+}
+
+#[test]
+fn forgetting_a_letter_removes_it_from_search_and_its_deadlines() {
+    let m = mem();
+    let id = m
+        .insert_document(
+            Path::new("C:/b/au.pdf"),
+            "sha-x",
+            &au_doc(d(2026, 10, 20), d(2026, 10, 30)),
+            "Arbeitsunfähigkeit Gesundkasse",
+        )
+        .unwrap();
+    m.add_deadline(&NewDeadline { doc_id: Some(id), ..deadline("Neue AU", d(2026, 11, 2), vec![]) }).unwrap();
+    assert_eq!(m.search_documents("Arbeitsunfähigkeit", 5).unwrap().len(), 1);
+    assert!(m.document_delete(id).unwrap());
+    assert!(m.search_documents("Arbeitsunfähigkeit", 5).unwrap().is_empty());
+    assert!(m.document_by_id(id).unwrap().is_none());
+    assert!(m.open_deadlines().unwrap().is_empty());
+    assert!(!m.document_delete(id).unwrap());
+    let k = m.knowledge().unwrap();
+    assert!(k.letters.is_empty());
+}

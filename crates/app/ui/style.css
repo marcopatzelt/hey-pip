@@ -205,6 +205,9 @@ input[type=text]:focus, textarea:focus, select:focus { border-color: var(--blue)
 .panel li .why { font-size: 17px; color: var(--ink-soft); margin: 6px 0 0; }
 .panel li .row-buttons { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .panel li .btn { min-height: 44px; padding: 6px 16px; }
+.panel li.group { background: none; padding: 10px 2px 0; }
+.panel li.group h3 { margin: 0; font-size: 21px; color: var(--blue-dark); }
+.panel li.empty { background: none; color: var(--ink-soft); padding: 0 2px 6px; font-size: 18px; }
 
 .dock {
   position: fixed; top: 0; left: 0; display: flex; flex-direction: column; align-items: center; gap: 8px;

@@ -211,6 +211,11 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         }
     }
     let secs = started.elapsed().as_secs_f32();
+    // Learn like the app does after a run (a playbook for the site); with --db the next run starts with it.
+    let learned = match &outcome {
+        Some(o) => agent.learn_run(&state, o).await,
+        None => None,
+    };
     printer.abort();
     let cards = cards.lock().expect("cards").clone();
     let report = Report { outcome, steps: state.step, secs, tokens: state.tokens, cards, clicks };
@@ -232,6 +237,14 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             "\nOutcome: {:?} after {} steps, {:.0} s, {} tokens",
             report.outcome, report.steps, secs, report.tokens
         );
+        match &learned {
+            Some(l) if l.playbook_new => {
+                println!("Memory: new playbook saved (the next run on this site starts with it).")
+            }
+            Some(l) if l.playbook_saved => println!("Memory: playbook updated."),
+            _ => println!("Memory: no playbook saved (nothing typed or sent, or the run did not finish)."),
+        }
+        println!("Measure: steps={} seconds={:.1} (run twice with the same --db to compare)", report.steps, secs);
         if report.gate_held_at_submit() {
             println!("Gate: the send card stopped the click on \"Absenden\". Nothing was clicked there, nothing sent.");
         } else if report.cards.iter().any(|c| !c.attach) {

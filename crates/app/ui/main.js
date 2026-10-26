@@ -577,6 +577,7 @@ el.askInput.addEventListener("keydown", (e) => {
 });
 $("ask-letter").addEventListener("click", () => { closeAsk(); send({ type: "pick_file" }); });
 $("ask-deadlines").addEventListener("click", () => { closeAsk(); invoke("open_deadlines").catch(() => {}); });
+$("ask-knows").addEventListener("click", () => { closeAsk(); invoke("open_knowledge").catch(() => {}); });
 $("ask-pause").addEventListener("click", () => { closeAsk(); invoke("app_action", { action: "pause" }).catch(() => {}); });
 // "Look at my screen": Pip looks at what is open and offers concrete help (works for anything).
 function lookAtScreen() {
@@ -651,6 +652,34 @@ function showPanel(items) {
   layout();
 }
 $("panel-close").addEventListener("click", () => { el.panel.hidden = true; layout(); });
+
+// ---------- "What Pip knows" (same panel) ----------
+function showKnowledge(ev) {
+  closeAsk();
+  $("panel-title").textContent = ev.title;
+  const rows = [];
+  for (const g of ev.groups) {
+    const head = document.createElement("li");
+    head.className = "group";
+    const h = document.createElement("h3"); h.textContent = g.title;
+    head.append(h);
+    rows.push(head);
+    if (!g.items.length) { const li = document.createElement("li"); li.className = "empty"; li.textContent = g.empty; rows.push(li); continue; }
+    for (const it of g.items) {
+      const li = document.createElement("li");
+      const b = document.createElement("b"); b.textContent = it.title;
+      li.append(b);
+      if (it.detail) li.append(para(it.detail, "why"));
+      const row = document.createElement("div"); row.className = "row-buttons";
+      row.append(makeButton(s("btn_forget"), false, () => send({ type: "forget", kind: it.kind, id: it.id, task: it.task || "" })));
+      li.append(row);
+      rows.push(li);
+    }
+  }
+  $("panel-list").replaceChildren(...rows);
+  el.panel.hidden = false;
+  layout();
+}
 
 // ---------- onboarding ----------
 function onboarding(step) {
@@ -799,6 +828,7 @@ function onApp(ev) {
       }
       break;
     case "deadlines": showPanel(ev.items); break;
+    case "knowledge": showKnowledge(ev); break;
     case "error": errorBubble(ev.text, ev.retry, ev.pick); break;
     case "timed": {
       const text = ev.text;
@@ -859,6 +889,7 @@ function applyStaticText() {
   $("ask-go").textContent = s("btn_go");
   $("ask-letter").querySelector("span").textContent = s("btn_pick_letter");
   $("ask-deadlines").querySelector("span").textContent = s("tray_deadlines");
+  $("ask-knows").querySelector("span").textContent = s("tray_knowledge");
   $("ask-pause").querySelector("span").textContent = s("btn_pause_link");
   el.bClose.setAttribute("aria-label", s("btn_close"));
   fillChips();

@@ -1828,3 +1828,105 @@ async fn trap_page_text_cannot_redirect() {
     assert!(questions(&ev).is_empty());
     assert!(!bubbles(&ev).iter().any(|b| b.contains("evil")));
 }
+
+// ---------- learning memory ----------
+
+fn form_turns() -> Vec<Value> {
+    let field = |label: &str, text: &str| {
+        (
+            "type_text",
+            json!({"text": text, "what": format!("deine {label}"), "into_sam_query": "text input field",
+                   "field_label": label}),
+        )
+    };
+    vec![
+        calls("r1", &[("open_url", json!({"url": "https://www.gesundkasse.example/kontakt?ref=mail"}))]),
+        calls("r2", &[field("Name", "Erika Beispiel"), field("Versichertennummer", "G123456789")]),
+        calls("r3", &[send_click()]),
+        calls("r4", &[done("Die Krankschreibung ist bei der Kasse.")]),
+    ]
+}
+
+#[tokio::test]
+async fn the_second_run_on_the_same_form_starts_with_last_time() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("full_name", "Erika Beispiel").unwrap();
+    h.memory.profile_set("versichertennummer", "G123456789").unwrap();
+    h.memory.profile_set("krankenkasse_kontaktformular", "https://www.gesundkasse.example/kontakt").unwrap();
+    store_letter(&h, "C:\\Briefe\\au.pdf");
+    h.auto_answer(ApprovalAnswer::Yes, "");
+    let task = || Task::SendLatestDocument { doc_type: copilot_core::docs::DocType::AuBescheinigung };
+
+    h.agent_turns(form_turns());
+    h.sam(&[sam_box(100, 100, 300, 140), sam_box(100, 200, 300, 240), sam_box(700, 600, 900, 640)]);
+    let out = h.agent.run(task(), CancellationToken::new()).await.unwrap();
+    assert!(matches!(out, AgentOutcome::Done(_)), "{out:?}");
+    let first = h.requests()[0]["input"].to_string();
+    assert!(!first.contains("LAST TIME ON THIS SITE"), "nothing learned yet");
+    let b = bubbles(&h.drain());
+    assert!(
+        b.iter().any(
+            |t| t.ends_with("Ich habe mir auch gemerkt, wie dieses Formular geht. Nächstes Mal geht es schneller.")
+        ),
+        "{b:?}"
+    );
+    let p = h.memory.playbook_get("www.gesundkasse.example", "send_au").unwrap().expect("playbook");
+    assert_eq!(p.url, "https://www.gesundkasse.example/kontakt");
+    assert_eq!(p.send_label.as_deref(), Some("Absenden"));
+    assert_eq!(p.steps, 4);
+    assert_eq!(h.memory.profile_meta("full_name").unwrap().unwrap().uses, 1);
+
+    // Second time: the first request already says how it went, and the done line does not repeat "learned".
+    let before = h.requests().len();
+    h.agent_turns(form_turns());
+    h.sam(&[sam_box(100, 100, 300, 140), sam_box(100, 200, 300, 240), sam_box(700, 600, 900, 640)]);
+    h.agent.run(task(), CancellationToken::new()).await.unwrap();
+    let header = h.requests()[before]["input"][0].to_string();
+    assert!(header.contains("LAST TIME ON THIS SITE (www.gesundkasse.example, 1 run,"), "{header}");
+    assert!(header.contains("\\\"Name\\\" <- full_name"), "{header}");
+    assert!(header.contains("send button \\\"Absenden\\\""), "{header}");
+    assert!(!header.contains("G123456789\\\" <-"), "values are never in the playbook");
+    assert!(!bubbles(&h.drain()).iter().any(|t| t.contains("Nächstes Mal")));
+    assert_eq!(h.memory.playbook_get("www.gesundkasse.example", "send_au").unwrap().unwrap().runs, 2);
+}
+
+#[tokio::test]
+async fn a_refused_send_teaches_nothing() {
+    let h = Harness::new(false).await;
+    h.memory.profile_set("full_name", "Erika Beispiel").unwrap();
+    h.agent_turns(form_turns());
+    h.sam(&[sam_box(100, 100, 300, 140), sam_box(100, 200, 300, 240), sam_box(700, 600, 900, 640)]);
+    h.auto_answer(ApprovalAnswer::No, "");
+    assert_eq!(h.run("Schick es ab").await, AgentOutcome::Stopped);
+    assert!(h.memory.playbook_all().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn passwords_and_health_details_are_never_remembered_and_the_user_wins() {
+    let h = Harness::new(false).await;
+    h.memory.profile_set("krankenkasse", "Gesundkasse").unwrap();
+    h.agent_turns(vec![
+        calls(
+            "r1",
+            &[
+                ("remember_fact", json!({"key": "bank_pin", "value": "1234"})),
+                ("remember_fact", json!({"key": "diagnose", "value": "Grippe"})),
+                ("remember_fact", json!({"key": "krankenkasse", "value": "AOK"})),
+                ("ask_user", json!({"question": "Wo arbeitest du?", "options": []})),
+            ],
+        ),
+        calls("r2", &[("remember_fact", json!({"key": "arbeitgeber", "value": "Bäckerei Sonnenschein"}))]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.auto_answer(ApprovalAnswer::Yes, "Bei der Bäckerei Sonnenschein");
+    h.run("Merk dir das").await;
+    let o = outputs(&h.requests()[1]);
+    assert_eq!(o[0], "not saved: Pip does not keep passwords or health details");
+    assert_eq!(o[1], "not saved: Pip does not keep passwords or health details");
+    assert!(o[2].starts_with("not changed: krankenkasse"), "{o:?}");
+    assert_eq!(h.memory.profile_get("bank_pin").unwrap(), None);
+    assert_eq!(h.memory.profile_get("krankenkasse").unwrap().as_deref(), Some("Gesundkasse"));
+    // The answer to ask_user is the user's own word: saved at once, as "user".
+    let f = h.memory.profile_meta("arbeitgeber").unwrap().expect("saved");
+    assert_eq!((f.value.as_str(), f.source.as_str()), ("Bäckerei Sonnenschein", "user"));
+}

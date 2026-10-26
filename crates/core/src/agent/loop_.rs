@@ -25,7 +25,10 @@ use crate::clock::Clock;
 use crate::docs::DocType;
 use crate::events::{Bus, Button, PipState, UiEvent};
 use crate::i18n::{Lang, t, tf};
-use crate::memory::{ActionLog, DeadlineStatus, Memory, NewDeadline};
+use crate::memory::{
+    ActionLog, DeadlineStatus, Learned, Memory, NewDeadline, RecallQuery, RunSummary, SENSITIVE_REFUSAL,
+    is_protected_key, is_sensitive_key, is_sensitive_value, learn_from_run, recall, set_fact,
+};
 use crate::meta::{
     Content, Effort, FunctionCall, InputItem, MODEL_SPARK, MetaClient, MetaError, ResponseRequest, Role, SamBox,
     ToolDef,
@@ -63,7 +66,9 @@ const EV_ACCEPTED: &str = "suggestion_accepted";
 /// Event kind of a fact Pip saved (the text is "key: value").
 const EV_REMEMBERED: &str = "remembered";
 /// Profile key: sites (hosts, or the demo fixtures folder) where the user said "Don't ask again" on a send card.
-pub const PROFILE_TRUSTED_SEND: &str = "trusted_send_hosts";
+pub use crate::memory::PROFILE_TRUSTED_SEND;
+/// Profile key with the demo form (file URL) a sick note is sent through.
+pub const PROFILE_FORM: &str = "krankenkasse_kontaktformular";
 /// A yes for a button whose page changed under it still counts this long for the same button.
 const PREAPPROVAL_TTL: Duration = Duration::from_secs(90);
 /// After open_url: wait at most this long for the browser window to show the new page.
@@ -136,6 +141,22 @@ pub fn task_from_words(text: &str, voice: bool) -> Task {
     }
 }
 
+/// Short name of what a task is, for playbooks and recall: "send_au", "send_letter", "look_screen",
+/// "fill_form" (a suggestion the user accepted), "discover" or "text".
+pub fn task_kind(task: &Task) -> &'static str {
+    match task {
+        Task::SendLatestDocument { doc_type: DocType::AuBescheinigung } => "send_au",
+        Task::SendLatestDocument { .. } => "send_letter",
+        Task::Text(t) | Task::Voice(t)
+            if [Lang::En, Lang::De].iter().any(|l| t.trim() == crate::i18n::t("task_look_screen", *l)) =>
+        {
+            "look_screen"
+        }
+        Task::Discover { .. } => "discover",
+        Task::Text(_) | Task::Voice(_) => "text",
+    }
+}
+
 /// Mutable state of one run.
 #[derive(Debug)]
 pub struct RunState {
@@ -172,6 +193,14 @@ pub struct RunState {
     pub last_url: Option<String>,
     /// What Pip typed in this run: (what, text), shown on the approval card.
     pub typed: Vec<(String, String)>,
+    /// (field label on the page, full typed text) for the playbook. Only in memory during the run.
+    typed_fields: Vec<(String, String)>,
+    /// The user's answers to ask_user in this run (a fact from them counts as the user's own).
+    answers: Vec<String>,
+    /// Label of the button that opened the file picker in this run.
+    attach_label: Option<String>,
+    /// Label of the button that really sent in this run.
+    send_label: Option<String>,
     /// Tab moved the keyboard focus since the last click: the element at last_point is not the focus.
     focus_by_key: bool,
     /// Short lines of what was done, for "Weiter" after a stop.
@@ -262,6 +291,10 @@ impl RunState {
             sent: Vec::new(),
             last_url: None,
             typed: Vec::new(),
+            typed_fields: Vec::new(),
+            answers: Vec::new(),
+            attach_label: None,
+            send_label: None,
             focus_by_key: false,
             history: Vec::new(),
             resumed: false,
@@ -573,7 +606,8 @@ impl Agent {
             AgentOutcome::Stopped if !state.sent.is_empty() => AgentOutcome::StoppedAfterSend(state.sent.join(", ")),
             o => o,
         };
-        self.finish(&outcome, &state, lang);
+        let learned = self.learn_run(&state, &outcome).await;
+        self.finish(&outcome, &state, learned.as_ref().is_some_and(|l| l.playbook_new), lang);
         if matches!(outcome, AgentOutcome::Stopped | AgentOutcome::NeedsUser(_)) && state.sent.is_empty() {
             *self.paused_run.lock().expect("paused lock") = Some(state);
         }
@@ -611,8 +645,55 @@ impl Agent {
         self.emit(UiEvent::FlyHome);
     }
 
-    /// UI and memory after a run.
-    fn finish(&self, outcome: &AgentOutcome, state: &RunState, lang: Lang) {
+    /// Learn from a finished run (deterministic, no model call): a playbook for the site when it went well, a
+    /// failure mark when it failed, and which profile facts were used. Stopped runs teach nothing. Public so
+    /// the CLI dry run (which drives `step` itself) learns the same way.
+    pub async fn learn_run(&self, state: &RunState, outcome: &AgentOutcome) -> Option<Learned> {
+        let ok = match outcome {
+            AgentOutcome::Done(_) => true,
+            AgentOutcome::Failed(_) => false,
+            _ => return None,
+        };
+        let url = self.current_url(state).await;
+        let site = url.as_deref().and_then(|u| self.gate.site_key(u));
+        // The page Pip opened is the way back next time; else the page that was in front.
+        let open = state.last_url.clone().or_else(|| url.clone()).filter(|u| self.gate.site_key(u) == site);
+        let summary = RunSummary {
+            site,
+            task_kind: match (&state.task, &state.accepted) {
+                (Task::Discover { .. }, Some(_)) => "fill_form".to_string(),
+                (task, _) => task_kind(task).to_string(),
+            },
+            url: open,
+            typed: state.typed_fields.clone(),
+            attach_label: state.attach_label.clone(),
+            send_label: state.send_label.clone(),
+            steps: state.step,
+            seconds: state.active_time().as_secs().min(u64::from(u32::MAX)) as u32,
+            ok,
+        };
+        match learn_from_run(&self.memory, &summary) {
+            Ok(l) => {
+                tracing::info!(
+                    new = l.playbook_new,
+                    saved = l.playbook_saved,
+                    dropped = l.playbook_dropped,
+                    used = l.used_keys.len(),
+                    steps = summary.steps,
+                    seconds = summary.seconds,
+                    "learned from run"
+                );
+                Some(l)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "learning from the run failed");
+                None
+            }
+        }
+    }
+
+    /// UI and memory after a run. `learned_form`: a new playbook was saved ("Next time will be faster").
+    fn finish(&self, outcome: &AgentOutcome, state: &RunState, learned_form: bool, lang: Lang) {
         if let Some(id) = self.open_card.lock().expect("card lock").take() {
             self.emit(UiEvent::ApprovalClosed { id });
         }
@@ -627,7 +708,10 @@ impl Agent {
                 let line = if state.answered {
                     summary.clone()
                 } else {
-                    let line = tf("done_remember", lang, &[("fact", summary)]);
+                    let mut line = tf("done_remember", lang, &[("fact", summary)]);
+                    if learned_form {
+                        line = format!("{line} {}", t("done_learned_form", lang));
+                    }
                     self.bubble(line.clone(), true);
                     line
                 };
@@ -672,7 +756,7 @@ impl Agent {
         // step re-read every old screenshot: 13-16 s per step instead of 2-3 s.
         let header = match &state.header {
             Some(h) => h.clone(),
-            None => match self.first_message(state, lang)? {
+            None => match self.first_message(state, self.task_site(state).await, lang)? {
                 Ok(text) => {
                     state.header = Some(text.clone());
                     text
@@ -794,14 +878,44 @@ impl Agent {
         Ok(StepResult::Continue)
     }
 
-    /// Date, memory context and the task. Inner Err = the run cannot start (shown to the user).
-    fn first_message(&self, state: &mut RunState, lang: Lang) -> Result<std::result::Result<String, AgentOutcome>> {
+    /// The site a task is about, for recall: the insurer's form for a sick note, else the page in front.
+    async fn task_site(&self, state: &RunState) -> Option<String> {
+        if matches!(state.task, Task::SendLatestDocument { .. })
+            && let Some(form) = self.memory.profile_get(PROFILE_FORM).ok().flatten()
+            && let Some(site) = self.gate.site_key(&form)
+        {
+            return Some(site);
+        }
+        if matches!(state.task, Task::Discover { .. }) && state.accepted.is_none() {
+            let services = self.memory.profile_get(PROFILE_SERVICES).ok().flatten()?;
+            return self.gate.site_key(&services);
+        }
+        self.current_site(state).await
+    }
+
+    /// Date, memory context (chosen for this task and site) and the task. Inner Err = the run cannot start.
+    fn first_message(
+        &self,
+        state: &mut RunState,
+        site: Option<String>,
+        lang: Lang,
+    ) -> Result<std::result::Result<String, AgentOutcome>> {
         let now = self.clock.now();
         if matches!(state.task, Task::Discover { .. }) && state.accepted.is_none() && self.declined_lately()? {
             return Ok(Err(AgentOutcome::Done("nothing".into())));
         }
         let mut s = format!("NOW: {} ({})\n\n", now.format("%Y-%m-%d %H:%M"), now.weekday());
-        s.push_str(&prompt::context_block(&self.memory)?);
+        let task_text = match &state.task {
+            Task::Text(t) | Task::Voice(t) => t.clone(),
+            Task::SendLatestDocument { doc_type } => format!("send {} Krankschreibung sick note", doc_type.as_str()),
+            Task::Discover { after } => state.accepted.clone().unwrap_or_else(|| after.clone()),
+        };
+        let kind = match (&state.task, &state.accepted) {
+            (Task::Discover { .. }, Some(_)) => "fill_form",
+            (task, _) => task_kind(task),
+        };
+        let query = RecallQuery { task_text, site, task_kind: kind.to_string(), ..RecallQuery::default() };
+        s.push_str(&recall(&self.memory, &query)?);
         s.push_str("\nTASK\n");
         match &state.task {
             Task::Text(text) | Task::Voice(text) => {
@@ -1031,7 +1145,10 @@ impl Agent {
                 Ok(ToolRun::out(Risk::Free, format!("saved deadline #{id}, reminders set")))
             }
             Tool::AskUser { question, options } => match self.ask(state, question, options, cancel, lang).await {
-                Asked::Answer(a) => Ok(ToolRun::out(Risk::Free, format!("The user answered: {a}"))),
+                Asked::Answer(a) => {
+                    state.answers.push(a.clone());
+                    Ok(ToolRun::out(Risk::Free, format!("The user answered: {a}")))
+                }
                 Asked::Timeout => {
                     self.away_bubble("question_timeout", "btn_ask_again", None, lang);
                     Ok(ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(question.clone())))
@@ -1090,9 +1207,11 @@ impl Agent {
         // Opening the file picker sends nothing: no card. Only the user's own stored letters can go into the
         // dialog (approved_file), and the final send button still needs a yes.
         let target_text = format!("{description} {ui_name}");
+        let button_label = button_label(&ui_name, description);
         if risk == Risk::Commit && is_attach_target(&target_text) && !is_send_target(&target_text) {
             risk = Risk::Act;
             state.enter_after_attach = true;
+            state.attach_label = Some(button_label.clone());
         }
         if risk == Risk::Commit {
             let card = match self.commit_check(tool, state, Some(&target), &ui_name, cancel, lang).await? {
@@ -1133,7 +1252,9 @@ impl Agent {
                 }
             }
             state.enter_after_attach = card.attach;
-            if !card.attach {
+            if card.attach {
+                state.attach_label = Some(button_label.clone());
+            } else {
                 sent = Some(card.what);
             }
             trusted = card.trusted;
@@ -1146,6 +1267,7 @@ impl Agent {
         state.last_point = Some(p);
         if let Some(what) = sent {
             state.sent.push(what);
+            state.send_label = Some(button_label);
         }
         let mut out = format!("clicked {description}");
         if let Some(to) = &trusted {
@@ -1320,6 +1442,10 @@ impl Agent {
             self.blocking(move |pl| pl.input.type_text(&s)).await?;
         }
         if !is_path {
+            let label = field_label.map(str::trim).filter(|l| !l.is_empty() && *l != "null").map(str::to_string);
+            let label = label.unwrap_or_else(|| self::field_label(what));
+            state.typed_fields.retain(|(l, _)| *l != label);
+            state.typed_fields.push((label, text.clone()));
             state.typed.retain(|(w, _)| w != what);
             state.typed.push((what.to_string(), truncate(&text, 60)));
             // The viewer sees the form fill up: "Name ✓ · Insurance number ✓".
@@ -1499,10 +1625,32 @@ impl Agent {
     /// to keys like the insurer's form, are saved at once only when the user said them; otherwise (text from a
     /// letter or a web page could redirect where Pip sends things) they wait for the user's Send on the next
     /// card, which lists them ("I'll remember: …").
+    /// Passwords, codes and health details are never kept. A fact from the user's own words or answers counts
+    /// as "user"; anything else as "model", which never replaces what the user said or a letter showed.
     fn remember(&self, key: &str, value: &str, state: &mut RunState) -> Result<ToolRun> {
-        let old = self.memory.profile_get(key)?;
+        if is_sensitive_key(key) || is_sensitive_value(value) {
+            return Ok(ToolRun::out(Risk::Free, SENSITIVE_REFUSAL));
+        }
+        let from_user = user_said(&state.task, value) || state.answers.iter().any(|a| contains_words(a, value));
+        let source = if from_user { "user" } else { "model" };
+        let old_fact = self.memory.profile_meta(key)?;
+        let old = old_fact.as_ref().map(|f| f.value.clone());
         if old.as_deref() == Some(value) {
+            if from_user {
+                set_fact(&self.memory, key, value, source)?;
+            }
             return Ok(ToolRun::out(Risk::Free, format!("remembered {key}")));
+        }
+        if let Some(f) = &old_fact
+            && crate::memory::source_rank(&f.source) > crate::memory::source_rank(source)
+        {
+            return Ok(ToolRun::out(
+                Risk::Free,
+                format!(
+                    "not changed: {key} came from the user or a letter and stays \"{}\". Ask the user if it is wrong.",
+                    truncate(&f.value, 80)
+                ),
+            ));
         }
         // "Gesundkasse" -> "Gesundkasse Beispielstadt" is a refinement, not a new target.
         let refines = old.as_deref().is_some_and(|o| {
@@ -1513,7 +1661,7 @@ impl Agent {
         let line = format!("{}: {}", key.replace('_', " "), truncate(value, 120));
         state.remembered.retain(|l| !l.starts_with(&format!("{}: ", key.replace('_', " "))));
         state.remembered.push(line);
-        if risky && !user_said(&state.task, value) {
+        if risky && !from_user {
             state.pending_facts.retain(|(k, _)| k != key);
             state.pending_facts.push((key.to_string(), value.to_string()));
             return Ok(ToolRun::out(
@@ -1521,20 +1669,21 @@ impl Agent {
                 format!("noted {key}; it is saved when the user approves the next send (the card lists it)"),
             ));
         }
-        self.save_fact(key, value)?;
+        self.save_fact(key, value, source)?;
         Ok(ToolRun::out(Risk::Free, format!("remembered {key}")))
     }
 
-    fn save_fact(&self, key: &str, value: &str) -> Result<()> {
-        self.memory.profile_set(key, value)?;
+    fn save_fact(&self, key: &str, value: &str, source: &str) -> Result<()> {
+        if !set_fact(&self.memory, key, value, source)? {
+            return Ok(());
+        }
         self.event(EV_REMEMBERED, &format!("{}: {}", key.replace('_', " "), truncate(value, 120)));
         Ok(())
     }
 
     /// Sites where the user ticked "Don't ask again".
     fn trusted_sites(&self) -> Vec<String> {
-        let list = self.memory.profile_get(PROFILE_TRUSTED_SEND).ok().flatten().unwrap_or_default();
-        list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        crate::memory::trusted_sites(&self.memory)
     }
 
     fn trust_site(&self, site: &str) {
@@ -1670,8 +1819,9 @@ impl Agent {
         match answer {
             ApprovalAnswer::Yes => {
                 // The user saw the held-back facts on the card and said Send.
+                // Shown on the card and confirmed with Send: "typed" (above a letter, below the user's words).
                 for (k, v) in std::mem::take(&mut state.pending_facts) {
-                    self.save_fact(&k, &v)?;
+                    self.save_fact(&k, &v, "typed")?;
                 }
                 if remember_site
                     && plain_send
@@ -2600,27 +2750,19 @@ fn looks_like_address(v: &str) -> bool {
         || low.starts_with("file:")
 }
 
-/// Profile keys that decide where things go, or who the user is.
-fn is_protected_key(key: &str) -> bool {
-    [
-        "url",
-        "formular",
-        "kontakt",
-        "adress",
-        "address",
-        "mail",
-        "iban",
-        "konto",
-        "krankenkasse",
-        "arbeitgeber",
-        "employer",
-        "insurer",
-        "versichert",
-        "lang",
-        "name",
-    ]
-    .iter()
-    .any(|w| key.contains(w))
+/// The value is in the user's answer (spaces and case ignored).
+fn contains_words(answer: &str, value: &str) -> bool {
+    let v = squash(value).to_lowercase();
+    !v.is_empty() && squash(answer).to_lowercase().contains(&v)
+}
+
+/// The label of a button for the playbook: its name from the UI tree, else the quoted label, else the words.
+fn button_label(ui_name: &str, description: &str) -> String {
+    let name = ui_name.trim();
+    if !name.is_empty() {
+        return truncate(name, 60);
+    }
+    truncate(&quoted_label(description).unwrap_or_else(|| description.trim().to_string()), 60)
 }
 
 /// "deinen Namen" -> "Namen" for the card's "Ausgefüllt" list (drop the possessive).

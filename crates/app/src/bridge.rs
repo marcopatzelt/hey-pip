@@ -11,10 +11,12 @@ use anyhow::Result;
 use chrono::{Datelike, NaiveDate};
 use copilot_core::agent::{AgentOutcome, CancellationToken, StopReason, Task, task_from_words};
 use copilot_core::docs::DocError;
-use copilot_core::events::{Bus, Button, OnboardingStep, PipState, UiEvent, UserCommand};
+use copilot_core::docs::DocType;
+use copilot_core::events::{Bus, Button, ForgetKind, OnboardingStep, PipState, UiEvent, UserCommand};
 use copilot_core::i18n::{Lang, t, tf};
-use copilot_core::memory::DeadlineStatus;
+use copilot_core::memory::{DeadlineStatus, Knowledge, untrust_site};
 use copilot_core::meta::MetaError;
+use copilot_core::rules::text::fmt_date;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -84,6 +86,18 @@ const UI_KEYS: &[&str] = &[
     "deadlines_none",
     "hint_not_legal_advice",
     "tray_deadlines",
+    "tray_knowledge",
+    "btn_forget",
+];
+
+/// Profile keys that are Pip's own settings, not something about the person ("What Pip knows" hides them).
+const SETTING_KEYS: &[&str] = &[
+    "lang",
+    "onboarded",
+    "screen_notice_ok",
+    "trusted_send_hosts",
+    "krankenkasse_kontaktformular",
+    "krankenkasse_services",
 ];
 
 /// App-only events for the page (not part of the core bus).
@@ -101,6 +115,11 @@ pub enum AppEvent {
     },
     Deadlines {
         items: Vec<DeadlineItem>,
+    },
+    /// "What Pip knows": groups of rows, each with a Forget button.
+    Knowledge {
+        title: String,
+        groups: Vec<KnowGroup>,
     },
     /// An error bubble that can always be closed; `retry` = what "Nochmal" sends (exactly the thing that failed),
     /// `pick` = offer "Anderes Foto wählen" instead.
@@ -130,6 +149,24 @@ pub struct DeadlineItem {
     pub when: String,
     pub overdue: bool,
     pub why: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct KnowGroup {
+    pub title: String,
+    /// Shown when `items` is empty.
+    pub empty: String,
+    pub items: Vec<KnowItem>,
+}
+
+/// One row; Forget sends `{type:"forget", kind, id, task}`.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct KnowItem {
+    pub kind: ForgetKind,
+    pub id: String,
+    pub task: String,
+    pub title: String,
+    pub detail: String,
 }
 
 pub struct Ctx {
@@ -259,6 +296,11 @@ fn open_deadlines(ctx: tauri::State<'_, Shared>) {
     ctx.show_deadlines();
 }
 
+#[tauri::command]
+fn open_knowledge(ctx: tauri::State<'_, Shared>) {
+    ctx.show_knowledge();
+}
+
 // ---------- entry ----------
 
 pub fn run() -> Result<()> {
@@ -274,6 +316,7 @@ pub fn run() -> Result<()> {
             ui_command,
             overlay_info,
             ui_strings,
+            open_knowledge,
             ui_ready,
             wake,
             focus_window,
@@ -467,6 +510,7 @@ async fn dispatch(ctx: Shared, mut rx: mpsc::Receiver<UserCommand>) {
                 }
             }
             UserCommand::OnboardingAnswer { step, value } => c.onboarding_answer(step, value),
+            UserCommand::Forget { kind, id, task } => ctx.forget(kind, &id, &task),
         }
     }
 }
@@ -525,6 +569,12 @@ pub fn toggle_pause(app: &AppHandle) {
 pub fn show_deadlines(app: &AppHandle) {
     if let Some(ctx) = ctx_of(app) {
         ctx.show_deadlines();
+    }
+}
+
+pub fn show_knowledge(app: &AppHandle) {
+    if let Some(ctx) = ctx_of(app) {
+        ctx.show_knowledge();
     }
 }
 
@@ -1342,6 +1392,141 @@ impl Ctx {
         };
         self.app_event(AppEvent::Deadlines { items });
     }
+
+    /// "What Pip knows": about you, your letters, places Pip knows, sites where Pip sends without asking.
+    fn show_knowledge(&self) {
+        let lang = self.lang();
+        let k = self.backend.memory.clone().and_then(|m| guard("knowledge", || m.knowledge()).ok()).unwrap_or_default();
+        self.app_event(AppEvent::Knowledge { title: t("know_title", lang).into(), groups: knowledge_groups(&k, lang) });
+    }
+
+    /// A Forget button: remove that one thing, then show the list again.
+    fn forget(&self, kind: ForgetKind, id: &str, task: &str) {
+        let Some(m) = self.backend.memory.clone() else { return };
+        let r = guard("forget", || match kind {
+            ForgetKind::Fact => m.profile_delete(id),
+            ForgetKind::Letter => m.document_delete(id.parse()?),
+            ForgetKind::Place => m.playbook_delete(id, task),
+            ForgetKind::Trusted => untrust_site(&m, id),
+        });
+        match r {
+            // Only the kind: the id can be personal.
+            Ok(found) => tracing::info!(?kind, found, "forgotten"),
+            Err(e) => tracing::warn!("forget: {e:#}"),
+        }
+        if kind == ForgetKind::Letter {
+            self.update_tray_tip();
+        }
+        self.show_knowledge();
+    }
+}
+
+/// The groups of "What Pip knows", in plain words.
+fn knowledge_groups(k: &Knowledge, lang: Lang) -> Vec<KnowGroup> {
+    let empty = t("know_empty", lang).to_string();
+    let date_of =
+        |id: i64| k.letters.iter().find(|d| d.id == id).map(|d| d.extract.date.unwrap_or(d.created_at.date_naive()));
+    let facts = k
+        .facts
+        .iter()
+        .filter(|f| !SETTING_KEYS.contains(&f.key.as_str()) && !f.value.contains("://"))
+        .map(|f| {
+            let (kind, doc) = f.source.split_once(':').unwrap_or((f.source.as_str(), ""));
+            let detail = match kind {
+                "user" => t("know_src_user", lang).to_string(),
+                "typed" => t("know_src_typed", lang).to_string(),
+                "letter" => match doc.parse().ok().and_then(date_of) {
+                    Some(d) => tf("know_src_letter_date", lang, &[("date", &fmt_date(d, lang))]),
+                    None => t("know_src_letter", lang).to_string(),
+                },
+                _ => t("know_src_model", lang).to_string(),
+            };
+            KnowItem {
+                kind: ForgetKind::Fact,
+                id: f.key.clone(),
+                task: String::new(),
+                title: format!("{}: {}", fact_label(&f.key, lang), f.value),
+                detail,
+            }
+        })
+        .collect();
+    let letters = k
+        .letters
+        .iter()
+        .map(|d| {
+            let ty = match d.doc_type {
+                DocType::AuBescheinigung => "know_type_au",
+                DocType::Bescheid => "know_type_decision",
+                DocType::Rechnung => "know_type_invoice",
+                DocType::Mahnung => "know_type_reminder",
+                DocType::Vertrag => "know_type_contract",
+                DocType::Brief | DocType::Sonstiges => "know_type_letter",
+            };
+            let date = d.extract.date.unwrap_or(d.created_at.date_naive());
+            KnowItem {
+                kind: ForgetKind::Letter,
+                id: d.id.to_string(),
+                task: String::new(),
+                title: tf("know_letter_from", lang, &[("type", t(ty, lang)), ("sender", d.extract.sender.trim())]),
+                detail: fmt_date(date, lang),
+            }
+        })
+        .collect();
+    let site_name = |site: &str| {
+        if site.starts_with("file:") { t("page_local", lang).to_string() } else { site.to_string() }
+    };
+    let places = k
+        .playbooks
+        .iter()
+        .map(|p| {
+            let task = match p.task.as_str() {
+                "send_au" => "know_task_send_au",
+                "send_letter" => "know_task_send_letter",
+                "fill_form" => "know_task_fill_form",
+                _ => "know_task_other",
+            };
+            let date = fmt_date(p.updated_at.date_naive(), lang);
+            let n = p.runs.to_string();
+            let key = if p.runs == 1 { "know_place_once" } else { "know_place_runs" };
+            KnowItem {
+                kind: ForgetKind::Place,
+                id: p.site.clone(),
+                task: p.task.clone(),
+                title: site_name(&p.site),
+                detail: tf(key, lang, &[("task", t(task, lang)), ("n", &n), ("date", &date)]),
+            }
+        })
+        .collect();
+    let trusted = k
+        .trusted_sites
+        .iter()
+        .map(|s| KnowItem {
+            kind: ForgetKind::Trusted,
+            id: s.clone(),
+            task: String::new(),
+            title: site_name(s),
+            detail: t("know_trusted_detail", lang).to_string(),
+        })
+        .collect();
+    let group = |key: &str, items: Vec<KnowItem>| KnowGroup { title: t(key, lang).into(), empty: empty.clone(), items };
+    vec![
+        group("know_about_you", facts),
+        group("know_letters", letters),
+        group("know_places", places),
+        group("know_trusted", trusted),
+    ]
+}
+
+/// "krankenkasse" -> "Health insurer"; unknown keys: "favourite_shop" -> "Favourite shop".
+fn fact_label(key: &str, lang: Lang) -> String {
+    let k = format!("know_key_{key}");
+    let known = t(&k, lang);
+    if known != k {
+        return known.to_string();
+    }
+    let words = key.replace(['_', '-'], " ");
+    let mut c = words.trim().chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 fn outcome_kind(o: &AgentOutcome) -> &'static str {
@@ -1574,6 +1759,35 @@ mod tests {
     }
 
     #[test]
+    fn knowledge_in_plain_words() {
+        use copilot_core::memory::{Memory, RunSummary, learn_from_run};
+        let m = Memory::open_in_memory().unwrap();
+        m.profile_set("krankenkasse", "Gesundkasse").unwrap();
+        m.profile_set("lang", "en").unwrap();
+        m.profile_set("trusted_send_hosts", "www.gesundkasse.example").unwrap();
+        m.profile_set_with("favourite_shop", "Bäckerei", "model", 0.6).unwrap();
+        let run = RunSummary {
+            site: Some("www.gesundkasse.example".into()),
+            task_kind: "send_au".into(),
+            send_label: Some("Send".into()),
+            ok: true,
+            ..Default::default()
+        };
+        learn_from_run(&m, &run).unwrap();
+        let g = knowledge_groups(&m.knowledge().unwrap(), Lang::En);
+        let titles: Vec<&str> = g.iter().map(|g| g.title.as_str()).collect();
+        assert_eq!(titles, ["About you", "Your letters", "Places I know", "Where I may send without asking"]);
+        let about: Vec<(&str, &str)> = g[0].items.iter().map(|i| (i.title.as_str(), i.detail.as_str())).collect();
+        assert!(about.contains(&("Health insurer: Gesundkasse", "you told me")), "{about:?}");
+        assert!(about.contains(&("Favourite shop: Bäckerei", "I noticed it while helping")), "{about:?}");
+        assert!(!about.iter().any(|(t, _)| t.starts_with("Lang")), "settings are not facts about you");
+        assert!(g[1].items.is_empty() && g[1].empty == "Nothing yet.");
+        assert_eq!(g[2].items[0].task, "send_au");
+        assert!(g[2].items[0].detail.starts_with("Sending a sick note · once, on "), "{}", g[2].items[0].detail);
+        assert_eq!(g[3].items[0].kind, ForgetKind::Trusted);
+    }
+
+    #[test]
     fn app_events_serialize_like_ui_events() {
         let v = serde_json::to_value(AppEvent::Acting { on: true }).unwrap();
         assert_eq!(v, serde_json::json!({"type":"acting","on":true}));
@@ -1583,7 +1797,17 @@ mod tests {
 /// What the user typed as their name, made into a name: "ich heiße erika." -> "Erika".
 fn clean_name(raw: &str) -> String {
     let mut s = raw.trim();
-    for p in ["ich heiße ", "ich heisse ", "ich bin ", "mein name ist ", "nenn mich ", "my name is ", "i am ", "i'm ", "call me "] {
+    for p in [
+        "ich heiße ",
+        "ich heisse ",
+        "ich bin ",
+        "mein name ist ",
+        "nenn mich ",
+        "my name is ",
+        "i am ",
+        "i'm ",
+        "call me ",
+    ] {
         if s.len() > p.len() && s.is_char_boundary(p.len()) && s[..p.len()].eq_ignore_ascii_case(p) {
             s = s[p.len()..].trim_start();
             break;

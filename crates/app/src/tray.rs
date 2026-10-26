@@ -1,4 +1,4 @@
-//! Tray menu: Pause / Meine Fristen / Beenden (strings via core::i18n).
+//! Tray menu: Pause / My deadlines / What Pip knows / Quit (strings via core::i18n).
 
 use anyhow::Result;
 use copilot_core::i18n::{Lang, t, tf};
@@ -32,8 +32,9 @@ impl Tray {
 pub fn setup(app: &AppHandle, lang: Lang) -> Result<Tray> {
     let pause = MenuItem::with_id(app, "pause", t("tray_pause", lang), true, None::<&str>)?;
     let deadlines = MenuItem::with_id(app, "deadlines", t("tray_deadlines", lang), true, None::<&str>)?;
+    let knowledge = MenuItem::with_id(app, "knowledge", t("tray_knowledge", lang), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", t("tray_quit", lang), true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&pause, &deadlines, &quit])?;
+    let menu = Menu::with_items(app, &[&pause, &deadlines, &knowledge, &quit])?;
     let mut builder = TrayIconBuilder::with_id("pip").tooltip("Pip").menu(&menu).show_menu_on_left_click(true);
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
@@ -42,6 +43,7 @@ pub fn setup(app: &AppHandle, lang: Lang) -> Result<Tray> {
         .on_menu_event(|app, ev| match ev.id().as_ref() {
             "pause" => crate::bridge::toggle_pause(app),
             "deadlines" => crate::bridge::show_deadlines(app),
+            "knowledge" => crate::bridge::show_knowledge(app),
             "quit" => crate::bridge::ask_quit(app),
             _ => {}
         })

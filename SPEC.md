@@ -198,7 +198,9 @@ Gebaut (26.10.): `click` und `key` haben zusätzlich `is_commit`, `commit_what`,
 ### 6.3 Schranke (Freigabe)
 - Stufen: **frei** (lesen, zeigen, merken), **handeln** (klicken, tippen; sichtbar, jederzeit stoppbar), **Commit** (Senden, Absenden, Abschicken, Hochladen eines privaten Dokuments, Bezahlen, Kaufen, Löschen, Kündigen, Submit, Send, Pay, Upload, Delete).
 - Commit wird an DREI Stellen erkannt, eine reicht: Modell meldet es, Wortliste auf `description`/`sam_query`, Name aus dem UI-Baum am Klickpunkt.
-- Karte zeigt: was, an wen, welche Anlagen, Bildausschnitt des Knopfs. Knöpfe (gebaut, 26.10.): "Ja, abschicken" bzw. "Ja, anhängen" / "Noch nicht". "Ändern" gibt es nicht: der Nutzer sagt es Pip einfach neu. Ohne Antwort in 5 min = Nein. Die Wartezeit auf die Karte zählt nicht gegen die 3 Minuten des Laufs.
+- **Karten (Stand 26.10. abends): genau eine pro Aufgabe**, beim Klick, der etwas vom Computer wegschickt: „Ready to send to …?“ mit „Send“ / „Not yet“ und dem Häkchen „Don't ask again for <site>“ (danach schickt Pip auf dieser Seite ohne Karte ab und sagt es: „Sent. You told me …“). Löschen, Bezahlen, Bestellen und Kündigen fragen immer und nie mit Häkchen. Der Knopfdruck ist die Zustimmung, keine zweite Frage.
+- **Keine Karte für:** Seite öffnen (`open_url`; persönliche Daten in der Adresse werden abgelehnt), merken (`remember_fact`; Adressen, Links und Änderungen an geschützten Schlüsseln aus fremder Quelle warten auf das nächste Senden und stehen auf dessen Karte: „I'll remember: …“), Dateiauswahl öffnen und den eigenen gespeicherten Brief anhängen (nur dieser Pfad darf in den Dialog).
+- Karte zeigt: was, an wen (Name + echter Host), Anlagen, was ausgefüllt wurde, Bildausschnitt des Knopfs. "Ändern" gibt es nicht: der Nutzer sagt es Pip einfach neu. Ohne Antwort in 5 min = Nein. Die Wartezeit auf die Karte zählt nicht gegen die 3 Minuten des Laufs.
 - Ob die Karte "anhängen" oder "abschicken" sagt, entscheidet nur das Ziel (Beschreibung, SAM-Begriff, UI-Name), nie der Text "Was". Ein Sende-Wort im Ziel gewinnt (Live-Fehler 26.10.: "Absenden" mit "Was: … (Datei au.pdf)" zeigte "Darf ich das anhängen?").
 - Tasten: Enter, Return und Strg+Enter brauchen immer eine Freigabe (Enter im Formular schickt es ab). Ausnahme: ein Enter direkt nach einem freigegebenen Anhängen bestätigt den Datei-Dialog. Leertaste auf einem Sende-Knopf und Umschalt+Entf brauchen eine Freigabe.
 - `type_text` klickt nie auf einen Knopf, der nach Senden oder Hochladen aussieht; dafür gibt es `click` mit `is_commit`.
@@ -236,7 +238,8 @@ Daten mit `source_text` belegen; ohne Zitat → als "unsicher" zeigen.
 ## 8. Gedächtnis (SQLite)
 | Tabelle | Inhalt |
 |---|---|
-| `profile` | key, value, updated_at (Name, Kasse, Arbeitgeber, Bundesland, Sprache) |
+| `profile` | key, value, updated_at, source, confidence, last_used_at, uses (Name, Kasse, Arbeitgeber, Bundesland, Sprache) |
+| `playbooks` | site, task, url, fields_json (`[[Feldname, Profil-Schlüssel]]`, nie Werte), attach_label, send_label, steps, seconds, runs, failed_since_ok, updated_at |
 | `documents` | id, path (lokal), sha256, doc_type, extract_json, created_at |
 | `documents_fts` | FTS5 über Text + Zusammenfassung |
 | `deadlines` | id, title, due, rule_id, doc_id, status (offen/erledigt/verworfen), remind_at JSON |
@@ -247,6 +250,17 @@ Daten mit `source_text` belegen; ohne Zitat → als "unsicher" zeigen.
 Ort: `%APPDATA%/papierkram-copilot/`. Dokumente bleiben lokal; an die API geht nur das, was ein Aufruf braucht.
 - Zeiten in der Datenbank: RFC 3339 in UTC (Reihenfolge stimmt auch bei der Zeitumstellung). Fälligkeiten: `YYYY-MM-DD`.
 - Profil-Schlüssel, die der Agent nutzt: `name`, `krankenkasse`, `bundesland`, `lang` ("de"/"en"), im DEMO_MODE `krankenkasse_kontaktformular` (file-URL des Demo-Formulars).
+
+### 8.1 Lernendes Gedächtnis (gebaut 26.10.)
+Pip startet mit wenig und wird mit jeder Aufgabe schneller. Alles deterministisch im Rust-Code, kein extra Modellaufruf (`memory/learn.rs`, `memory/recall.rs`, Migration 2 in `schema_2.sql`).
+- **Quellen:** `user` (eigene Worte, Antwort auf `ask_user`, Einrichtung) > `typed` (auf der Senden-Karte bestätigt) > `letter:<id>` > `model`. Eine niedrigere Quelle ersetzt nie eine höhere (`remember_fact` antwortet dann „not changed …“).
+- **Nie gespeichert:** Schlüssel mit password/passwort/pin/tan/code/diagnos/icd/befund → „not saved: Pip does not keep passwords or health details“.
+- **Aus Briefen** (`learn_from_letter`, nach dem Einlesen): `full_name` (Person), `krankenkasse` (Kassen-Erkennung), `versichertennummer` (Buchstabe + 9 Ziffern, nur AU/Kassenbrief). Füllt nur Lücken oder ersetzt Vermutungen.
+- **Nach einem Lauf** (`learn_from_run`): Ist er fertig und wurde getippt oder gesendet, entsteht/aktualisiert sich ein Playbook pro (Seite, Aufgabenart): Adresse ohne Query, welches Feld welchen Profil-Schlüssel bekam (Wert = Profilwert), Anhängen- und Senden-Knopf (nur ein wirklich ausgeführter Senden-Klick), Schritte, Sekunden. Fehlgeschlagen → `failed_since_ok + 1`; ab 2 wird es gelöscht. Abbruch lehrt nichts. Benutzte Fakten: `uses + 1`.
+- **Erinnern** (`recall`, erste Anfrage eines Laufs, Budget 4500 Zeichen): Profil (geschützte zuerst, dann nach Nutzung, max. 30, mit Quelle) → 5 nächste offene Fristen mit Id → „LAST TIME ON THIS SITE (host, N runs, last DATUM, S steps, T s): open URL; fields: "Name" <- full_name …; send button "…". Follow this unless the page looks different.“ (gleiche Seite; sonst dieselbe Aufgabe woanders bei send_au/send_letter; sonst nur die Liste bekannter Seiten) → Briefe (neuester je Art + 2 FTS-Treffer) → Muster („3 sick notes so far, about 14 days each …“) → 5 Ereignisse. Seite: Formular der Kasse bei Krankschreibung, sonst die Seite im Vordergrund.
+- **Sichtbar:** Neues Playbook → Erledigt-Satz endet mit „I also learned how this form works. Next time will be faster.“ Tray und Frage-Kasten: **„What Pip knows“** mit „About you“ (mit Quelle: „from your letter of …“, „you told me“), „Your letters“, „Places I know“, „Where I may send without asking“; jede Zeile hat **Forget** (`UserCommand::Forget`).
+- **Klein halten** (`prune` beim Öffnen): Playbooks mit 2 Fehlern oder > 180 Tage alt weg; max. 50 Playbooks, 500 Ereignisse, 5000 Aktionszeilen.
+- **Messen:** `copilot-cli --db X agent … --approve all` zweimal; jede Runde druckt `Measure: steps=… seconds=…` (eval/README.md).
 
 ## 9. Regel-Motor
 - Läuft jede Minute (`tokio::time::interval`). Prüft `deadlines` und Regel-Bedingungen. Feuert Erinnerungen, nie doppelt (`fired_at`).

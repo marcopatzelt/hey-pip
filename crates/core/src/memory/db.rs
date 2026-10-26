@@ -84,6 +84,58 @@ pub struct ActionLog {
     pub tokens: u64,
 }
 
+/// One profile fact with where it came from (SPEC §8, learning memory).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileFact {
+    pub key: String,
+    pub value: String,
+    /// "user" | "typed" | "letter" or "letter:<doc id>" | "model"
+    pub source: String,
+    pub confidence: f64,
+    pub updated_at: DateTime<Local>,
+    pub last_used_at: Option<DateTime<Local>>,
+    pub uses: i64,
+}
+
+/// How a task went on one site last time. Labels and profile keys only, never the typed values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Playbook {
+    /// Site key (host, or the demo fixtures folder).
+    pub site: String,
+    /// Task kind: "send_au", "send_letter", "look_screen", "text", …
+    pub task: String,
+    pub url: String,
+    /// (field label on the page, profile key whose value went in)
+    pub fields: Vec<(String, String)>,
+    pub attach_label: Option<String>,
+    pub send_label: Option<String>,
+    pub steps: i64,
+    pub seconds: i64,
+    pub runs: i64,
+    pub failed_since_ok: i64,
+    pub updated_at: DateTime<Local>,
+}
+
+/// Everything "What Pip knows" shows.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Knowledge {
+    pub facts: Vec<ProfileFact>,
+    /// Newest first.
+    pub letters: Vec<DocumentRow>,
+    /// Newest first.
+    pub playbooks: Vec<Playbook>,
+    /// Sites where the user said "Don't ask again".
+    pub trusted_sites: Vec<String>,
+}
+
+/// Limits kept by `prune` (called at open).
+const MAX_PLAYBOOKS: i64 = 50;
+const MAX_EVENTS: i64 = 500;
+const MAX_ACTIONS: i64 = 5000;
+const PLAYBOOK_MAX_AGE_DAYS: i64 = 180;
+/// A playbook that failed this often in a row since its last success is dropped.
+pub const PLAYBOOK_MAX_FAILS: i64 = 2;
+
 /// %APPDATA%\papierkram-copilot\memory.db (Windows, via env APPDATA) or
 /// ~/.local/share/papierkram-copilot/memory.db (Linux, via HOME / XDG_DATA_HOME). No `dirs` crate.
 pub fn default_db_path() -> Result<PathBuf> {
@@ -103,7 +155,7 @@ fn data_dir() -> Result<PathBuf> {
 }
 
 /// Schema migrations; entry i brings the db to `user_version = i + 1`. Append, never edit.
-const MIGRATIONS: &[&str] = &[super::SCHEMA_SQL];
+const MIGRATIONS: &[&str] = &[super::SCHEMA_SQL, super::SCHEMA_2_SQL];
 
 /// Stored time format: RFC 3339, UTC, seconds, "Z" (sorts like time).
 fn ts(t: DateTime<Local>) -> String {
@@ -142,6 +194,53 @@ impl DeadlineStatus {
 const DOC_COLS: &str = "d.id, d.path, d.sha256, d.doc_type, d.extract_json, d.created_at";
 const DEADLINE_COLS: &str =
     "dl.id, dl.title, dl.due, dl.rule_id, dl.doc_id, dl.status, dl.remind_at, dl.why, dl.source";
+
+const FACT_COLS: &str = "key, value, source, confidence, updated_at, last_used_at, uses";
+const PLAYBOOK_COLS: &str =
+    "site, task, url, fields_json, attach_label, send_label, steps, seconds, runs, failed_since_ok, updated_at";
+
+fn fact_from_row(r: &Row) -> rusqlite::Result<ProfileFact> {
+    Ok(ProfileFact {
+        key: r.get(0)?,
+        value: r.get(1)?,
+        source: r.get(2)?,
+        confidence: r.get(3)?,
+        updated_at: parse_ts(&r.get::<_, String>(4)?)?,
+        last_used_at: r.get::<_, Option<String>>(5)?.map(|s| parse_ts(&s)).transpose()?,
+        uses: r.get(6)?,
+    })
+}
+
+fn playbook_from_row(r: &Row) -> rusqlite::Result<Playbook> {
+    let fields: Vec<(String, String)> = serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default();
+    Ok(Playbook {
+        site: r.get(0)?,
+        task: r.get(1)?,
+        url: r.get(2)?,
+        fields,
+        attach_label: r.get(4)?,
+        send_label: r.get(5)?,
+        steps: r.get(6)?,
+        seconds: r.get(7)?,
+        runs: r.get(8)?,
+        failed_since_ok: r.get(9)?,
+        updated_at: parse_ts(&r.get::<_, String>(10)?)?,
+    })
+}
+
+/// The FTS "summary" column of a letter (also needed to delete its index row again).
+fn fts_summary(extract: &DocumentExtract) -> String {
+    [
+        extract.summary_simple.as_str(),
+        extract.sender.as_str(),
+        extract.recipient.as_str(),
+        extract.reference.as_deref().unwrap_or(""),
+        type_words(extract.doc_type),
+        &extract.requests.join(" "),
+        &extract.deadlines.iter().map(|d| d.title.as_str()).collect::<Vec<_>>().join(" "),
+    ]
+    .join(" ")
+}
 
 fn doc_from_row(r: &Row) -> rusqlite::Result<DocumentRow> {
     let extract: DocumentExtract = serde_json::from_str(&r.get::<_, String>(4)?).map_err(|e| conv_err(e.into()))?;
@@ -225,7 +324,9 @@ impl Memory {
             tx.pragma_update(None, "user_version", (i + 1) as i64)?;
             tx.commit()?;
         }
-        Ok(Self(Mutex::new(conn)))
+        let me = Self(Mutex::new(conn));
+        me.prune()?;
+        Ok(me)
     }
 
     fn conn(&self) -> MutexGuard<'_, Connection> {
@@ -237,12 +338,160 @@ impl Memory {
         Ok(self.conn().query_row("SELECT value FROM profile WHERE key = ?1", [key], |r| r.get(0)).optional()?)
     }
 
+    /// A fact the user gave (onboarding, settings): source "user", confidence 1.0.
     pub fn profile_set(&self, key: &str, value: &str) -> Result<()> {
+        self.profile_set_with(key, value, "user", 1.0)
+    }
+
+    /// Upsert with where the fact came from. No rank check here (see `learn::set_fact`); uses stay.
+    pub fn profile_set_with(&self, key: &str, value: &str, source: &str, confidence: f64) -> Result<()> {
         self.conn().execute(
-            "INSERT INTO profile(key, value, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-            params![key, value, ts(Local::now())],
+            "INSERT INTO profile(key, value, updated_at, source, confidence) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at,
+               source = excluded.source, confidence = excluded.confidence",
+            params![key, value, ts(Local::now()), source, confidence],
         )?;
+        Ok(())
+    }
+
+    /// These facts were just used (typed into a form): uses + 1, last_used_at = now.
+    pub fn profile_touch(&self, keys: &[String]) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        let now = ts(Local::now());
+        for k in keys {
+            tx.execute("UPDATE profile SET uses = uses + 1, last_used_at = ?1 WHERE key = ?2", params![now, k])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// True if there was such a fact.
+    pub fn profile_delete(&self, key: &str) -> Result<bool> {
+        Ok(self.conn().execute("DELETE FROM profile WHERE key = ?1", [key])? > 0)
+    }
+
+    pub fn profile_meta(&self, key: &str) -> Result<Option<ProfileFact>> {
+        let sql = format!("SELECT {FACT_COLS} FROM profile WHERE key = ?1");
+        Ok(self.conn().query_row(&sql, [key], fact_from_row).optional()?)
+    }
+
+    /// All facts with source and use count, most used first (then by key).
+    pub fn profile_meta_all(&self) -> Result<Vec<ProfileFact>> {
+        let c = self.conn();
+        let sql = format!("SELECT {FACT_COLS} FROM profile ORDER BY uses DESC, key");
+        let mut st = c.prepare(&sql)?;
+        let rows = st.query_map([], fact_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn playbook_get(&self, site: &str, task: &str) -> Result<Option<Playbook>> {
+        let sql = format!("SELECT {PLAYBOOK_COLS} FROM playbooks WHERE site = ?1 AND task = ?2");
+        Ok(self.conn().query_row(&sql, [site, task], playbook_from_row).optional()?)
+    }
+
+    /// Insert or replace (site, task); `updated_at` is set to now.
+    pub fn playbook_upsert(&self, p: &Playbook) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO playbooks(site, task, url, fields_json, attach_label, send_label, steps, seconds, runs,
+                                   failed_since_ok, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(site, task) DO UPDATE SET url = excluded.url, fields_json = excluded.fields_json,
+               attach_label = excluded.attach_label, send_label = excluded.send_label, steps = excluded.steps,
+               seconds = excluded.seconds, runs = excluded.runs, failed_since_ok = excluded.failed_since_ok,
+               updated_at = excluded.updated_at",
+            params![
+                p.site,
+                p.task,
+                p.url,
+                serde_json::to_string(&p.fields)?,
+                p.attach_label,
+                p.send_label,
+                p.steps,
+                p.seconds,
+                p.runs,
+                p.failed_since_ok,
+                ts(Local::now())
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// True if there was such a playbook.
+    pub fn playbook_delete(&self, site: &str, task: &str) -> Result<bool> {
+        Ok(self.conn().execute("DELETE FROM playbooks WHERE site = ?1 AND task = ?2", [site, task])? > 0)
+    }
+
+    /// Newest first.
+    pub fn playbook_all(&self) -> Result<Vec<Playbook>> {
+        let c = self.conn();
+        let sql = format!("SELECT {PLAYBOOK_COLS} FROM playbooks ORDER BY updated_at DESC, site, task");
+        let mut st = c.prepare(&sql)?;
+        let rows = st.query_map([], playbook_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Profile facts, the newest 20 letters, playbooks and trusted sites (for "What Pip knows").
+    pub fn knowledge(&self) -> Result<Knowledge> {
+        let letters = self.search_documents("", 20)?;
+        let trusted = self.profile_get(super::learn::PROFILE_TRUSTED_SEND)?.unwrap_or_default();
+        Ok(Knowledge {
+            facts: self.profile_meta_all()?,
+            letters,
+            playbooks: self.playbook_all()?,
+            trusted_sites: trusted.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        })
+    }
+
+    /// Forget a letter: its search index row, its deadlines with their reminders, and the row itself.
+    /// The file on disk stays (it is the user's). True if there was such a letter.
+    pub fn document_delete(&self, id: i64) -> Result<bool> {
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        let row = tx
+            .query_row("SELECT extract_json, text FROM documents WHERE id = ?1", [id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .optional()?;
+        let Some((json, text)) = row else { return Ok(false) };
+        if let Ok(extract) = serde_json::from_str::<DocumentExtract>(&json) {
+            // Contentless FTS5: a row is removed with the 'delete' command and its original values.
+            tx.execute(
+                "INSERT INTO documents_fts(documents_fts, rowid, text, summary) VALUES ('delete', ?1, ?2, ?3)",
+                params![id, text, fts_summary(&extract)],
+            )?;
+        }
+        tx.execute("DELETE FROM reminders WHERE deadline_id IN (SELECT id FROM deadlines WHERE doc_id = ?1)", [id])?;
+        tx.execute("DELETE FROM deadlines WHERE doc_id = ?1", [id])?;
+        tx.execute("DELETE FROM documents WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Keeps memory small and fresh: drops playbooks that failed twice since their last success or were not
+    /// used for 180 days; keeps at most 50 playbooks, 500 events and 5000 action rows (the newest).
+    pub fn prune(&self) -> Result<()> {
+        let old = ts(Local::now() - chrono::Duration::days(PLAYBOOK_MAX_AGE_DAYS));
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        tx.execute(
+            "DELETE FROM playbooks WHERE failed_since_ok >= ?1 OR updated_at < ?2",
+            params![PLAYBOOK_MAX_FAILS, old],
+        )?;
+        tx.execute(
+            "DELETE FROM playbooks WHERE rowid NOT IN
+               (SELECT rowid FROM playbooks ORDER BY updated_at DESC LIMIT ?1)",
+            [MAX_PLAYBOOKS],
+        )?;
+        tx.execute(
+            "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY at DESC, id DESC LIMIT ?1)",
+            [MAX_EVENTS],
+        )?;
+        tx.execute(
+            "DELETE FROM actions_log WHERE id NOT IN (SELECT id FROM actions_log ORDER BY id DESC LIMIT ?1)",
+            [MAX_ACTIONS],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -263,16 +512,7 @@ impl Memory {
             return Ok(id);
         }
         let json = serde_json::to_string(extract)?;
-        let summary = [
-            extract.summary_simple.as_str(),
-            extract.sender.as_str(),
-            extract.recipient.as_str(),
-            extract.reference.as_deref().unwrap_or(""),
-            type_words(extract.doc_type),
-            &extract.requests.join(" "),
-            &extract.deadlines.iter().map(|d| d.title.as_str()).collect::<Vec<_>>().join(" "),
-        ]
-        .join(" ");
+        let summary = fts_summary(extract);
         let tx = c.transaction()?;
         tx.execute(
             "INSERT INTO documents(path, sha256, doc_type, extract_json, text, created_at) VALUES (?1,?2,?3,?4,?5,?6)",
