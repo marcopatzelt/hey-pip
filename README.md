@@ -147,7 +147,7 @@ Dates come from rules in code (weekends and public holidays included), never fro
 
 ### Built on Meta's models
 
-Pip would not be possible without Meta's model family. Computer use for everyday people needs three things at once:
+Pip would not be possible without Meta's model family. A personal assistant that can act for you needs three things at once:
 a model that can **see** a screen and **reason** about it, a model that knows **exactly where** a button is, and a
 way to keep personal letters **private**. Meta offers all three, from one API and as open weights:
 
