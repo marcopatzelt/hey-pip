@@ -1,7 +1,7 @@
 //! Tray menu: Pause / My deadlines / What Pip knows / Quit (strings via core::i18n).
 
 use anyhow::Result;
-use copilot_core::i18n::{Lang, t, tf};
+use pip_core::i18n::{Lang, t, tf};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Wry};

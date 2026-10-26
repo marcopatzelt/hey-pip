@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use copilot_core::i18n::Lang;
-use copilot_core::meta::{
+use pip_core::i18n::Lang;
+use pip_core::meta::{
     Content, Effort, InputItem, MetaClient, MetaError, ResponseEvent, ResponseRequest, RetryPolicy, ToolDef,
 };
 use futures_util::StreamExt;
@@ -209,7 +209,7 @@ async fn transcribe_multipart() {
         })
         .mount(&server)
         .await;
-    let wav = copilot_core::meta::wav_from_pcm16(&[0i16; 1600], 16_000).unwrap();
+    let wav = pip_core::meta::wav_from_pcm16(&[0i16; 1600], 16_000).unwrap();
     let t = client(&server).transcribe(wav, Lang::De).await.unwrap();
     assert_eq!(t, "Hallo Pip");
 }

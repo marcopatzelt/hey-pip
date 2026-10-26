@@ -1,5 +1,5 @@
 //! Live accuracy check of the document pipeline on the invented letters (real Meta API, ~5 cents).
-//! Run: `cargo test -p copilot-core --test docs_live -- --ignored --nocapture`
+//! Run: `cargo test -p pip-core --test docs_live -- --ignored --nocapture`
 //! Optional: DOCS_LIVE_FILES="au_erika_erst_foto.jpg,bescheid_wohngeld.pdf" to limit the run.
 //! Writes the SAM crop of the photo to target/docs_live/au_erika_erst_foto.crop.png.
 //! OWNER: agent "docs-cli".
@@ -8,12 +8,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{Local, NaiveDate, TimeZone};
-use copilot_core::clock::{Clock, FixedClock};
-use copilot_core::docs::DocPipeline;
-use copilot_core::i18n::Lang;
-use copilot_core::memory::Memory;
-use copilot_core::meta::MetaClient;
-use copilot_core::rules::RuleEngine;
+use pip_core::clock::{Clock, FixedClock};
+use pip_core::docs::DocPipeline;
+use pip_core::i18n::Lang;
+use pip_core::memory::Memory;
+use pip_core::meta::MetaClient;
+use pip_core::rules::RuleEngine;
 use serde_json::Value;
 
 const ALL: &[&str] = &[

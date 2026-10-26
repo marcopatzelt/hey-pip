@@ -13,8 +13,8 @@ publish = false
 # Every dependency any crate needs is declared here. Crates refer to it with
 # `name.workspace = true`. Do not add dependencies later without the orchestrator.
 [workspace.dependencies]
-copilot-core = { path = "crates/core" }
-copilot-platform = { path = "crates/platform" }
+pip-core = { path = "crates/core" }
+pip-platform = { path = "crates/platform" }
 
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "process"] }
 tokio-util = "0.7"

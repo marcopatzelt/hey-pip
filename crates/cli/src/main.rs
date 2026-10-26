@@ -1,16 +1,16 @@
-//! copilot-cli: developer tool, no overlay. Uses the real Meta API (key from `.env`) and the fake
+//! pip-cli: developer tool, no overlay. Uses the real Meta API (key from `.env`) and the fake
 //! platform (a PNG as the screen), so every command runs the same on Linux and Windows.
 //!
 //! Examples:
-//!   copilot-cli read fixtures/letters/au_erika_erst_foto.jpg
-//!   copilot-cli sam fixtures/screens/kasse_form.png "button" --out target/cli/sam.png
-//!   copilot-cli ground fixtures/screens/kasse_form.png "Knopf Absenden" --query button
-//!   copilot-cli rules --now 2026-10-29T18:00
-//!   copilot-cli agent "Schick die Krankschreibung an die Gesundkasse"
-//!   copilot-cli agent "Send my sick note" --screen fixtures/screens/demo-kasse.png \
+//!   pip-cli read fixtures/letters/au_erika_erst_foto.jpg
+//!   pip-cli sam fixtures/screens/kasse_form.png "button" --out target/cli/sam.png
+//!   pip-cli ground fixtures/screens/kasse_form.png "Knopf Absenden" --query button
+//!   pip-cli rules --now 2026-10-29T18:00
+//!   pip-cli agent "Schick die Krankschreibung an die Gesundkasse"
+//!   pip-cli agent "Send my sick note" --screen fixtures/screens/demo-kasse.png \
 //!       --outline fixtures/screens/demo-kasse.outline.json
-//!   copilot-cli transcribe sample.wav
-//!   copilot-cli eval
+//!   pip-cli transcribe sample.wav
+//!   pip-cli eval
 
 mod agent_cmd;
 mod eval;
@@ -24,14 +24,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use clap::{Parser, Subcommand, ValueEnum};
-use copilot_core::clock::{Clock, DemoClock, FixedClock, clock_from_env};
-use copilot_core::config::Config;
-use copilot_core::i18n::Lang;
-use copilot_core::memory::Memory;
-use copilot_core::meta::MetaClient;
+use pip_core::clock::{Clock, DemoClock, FixedClock, clock_from_env};
+use pip_core::config::Config;
+use pip_core::i18n::Lang;
+use pip_core::memory::Memory;
+use pip_core::meta::MetaClient;
 
 #[derive(Parser, Debug)]
-#[command(name = "copilot-cli", version, about = "Papierkram-Copilot developer CLI (real Meta API, fake screen)")]
+#[command(name = "pip-cli", version, about = "Papierkram-Copilot developer CLI (real Meta API, fake screen)")]
 struct Cli {
     /// SQLite file (default: a fresh in-memory database)
     #[arg(long, global = true)]

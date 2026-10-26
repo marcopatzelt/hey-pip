@@ -9,14 +9,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use chrono::{Datelike, NaiveDate};
-use copilot_core::agent::{AgentOutcome, CancellationToken, StopReason, Task, task_from_words};
-use copilot_core::docs::DocError;
-use copilot_core::docs::DocType;
-use copilot_core::events::{Bus, Button, ForgetKind, OnboardingStep, PipState, UiEvent, UserCommand};
-use copilot_core::i18n::{Lang, t, tf};
-use copilot_core::memory::{DeadlineStatus, Knowledge, untrust_site};
-use copilot_core::meta::MetaError;
-use copilot_core::rules::text::fmt_date;
+use pip_core::agent::{AgentOutcome, CancellationToken, StopReason, Task, task_from_words};
+use pip_core::docs::DocError;
+use pip_core::docs::DocType;
+use pip_core::events::{Bus, Button, ForgetKind, OnboardingStep, PipState, UiEvent, UserCommand};
+use pip_core::i18n::{Lang, t, tf};
+use pip_core::memory::{DeadlineStatus, Knowledge, untrust_site};
+use pip_core::meta::MetaError;
+use pip_core::rules::text::fmt_date;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -273,7 +273,7 @@ fn app_action(ctx: tauri::State<'_, Shared>, action: String) {
 #[tauri::command]
 fn save_key(ctx: tauri::State<'_, Shared>, key: String) -> Result<(), String> {
     let lang = ctx.lang();
-    match copilot_core::config::save_api_key(&key) {
+    match pip_core::config::save_api_key(&key) {
         Ok(_) => {
             ctx.pip(PipState::Happy);
             ctx.say(t("setup_key_saved", lang), vec![]);
@@ -479,7 +479,7 @@ async fn dispatch(ctx: Shared, mut rx: mpsc::Receiver<UserCommand>) {
             UserCommand::Resume => ctx.resume(),
             UserCommand::Quit => quit(&ctx.app),
             UserCommand::Approve { id, answer, remember_site } => {
-                if answer == copilot_core::agent::ApprovalAnswer::Yes {
+                if answer == pip_core::agent::ApprovalAnswer::Yes {
                     ctx.quiet_mouse(QUIET_AFTER_YES);
                     if remember_site {
                         ctx.bus.pending.mark_remember_site(id);
@@ -1230,7 +1230,7 @@ impl Ctx {
         // in the top-left corner. Without one it opens in the middle of the screen.
         tracing::info!("file dialog: open");
         #[cfg(windows)]
-        copilot_platform::windows::center_own_dialog_soon();
+        pip_platform::windows::center_own_dialog_soon();
         dialog.pick_file(move |file| {
             tracing::info!("file dialog: closed, picked={}", file.is_some());
             if let Some(path) = file.and_then(|f| f.into_path().ok()) {
@@ -1760,7 +1760,7 @@ mod tests {
 
     #[test]
     fn knowledge_in_plain_words() {
-        use copilot_core::memory::{Memory, RunSummary, learn_from_run};
+        use pip_core::memory::{Memory, RunSummary, learn_from_run};
         let m = Memory::open_in_memory().unwrap();
         m.profile_set("krankenkasse", "Gesundkasse").unwrap();
         m.profile_set("lang", "en").unwrap();

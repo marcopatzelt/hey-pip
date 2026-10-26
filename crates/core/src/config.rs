@@ -16,7 +16,7 @@ pub struct Config {
     pub demo_mode: bool,
     /// DEBUG_SHOTS=1: write screenshots to data_dir/shots (demo data only)
     pub debug_shots: bool,
-    /// %APPDATA%\papierkram-copilot (Windows) or ~/.local/share/papierkram-copilot (Linux)
+    /// %APPDATA%\Pip (Windows) or ~/.local/share/Pip (Linux)
     pub data_dir: PathBuf,
     /// FIXTURES_DIR, default <repo>/fixtures (used by DEMO_MODE url checks)
     pub fixtures_dir: PathBuf,
@@ -55,7 +55,7 @@ impl Config {
     }
 }
 
-const APP_DIR: &str = "papierkram-copilot";
+const APP_DIR: &str = "Pip";
 
 /// data_dir/pip.log: the app's log on machines without a console (Windows release build).
 pub fn log_file() -> PathBuf {
@@ -146,8 +146,8 @@ mod tests {
         assert!(c.demo_mode, "demo mode is on unless turned off");
         assert!(!c.debug_shots);
         if !cfg!(windows) {
-            assert_eq!(c.data_dir, PathBuf::from("/home/x/.local/share/papierkram-copilot"));
-            assert_eq!(c.db_path(), PathBuf::from("/home/x/.local/share/papierkram-copilot/memory.db"));
+            assert_eq!(c.data_dir, PathBuf::from("/home/x/.local/share/Pip"));
+            assert_eq!(c.db_path(), PathBuf::from("/home/x/.local/share/Pip/memory.db"));
         }
     }
 

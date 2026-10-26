@@ -58,7 +58,7 @@ flowchart LR
         Screen["Screen + mouse/keyboard<br/>+ UI Automation"]
     end
 
-    subgraph Core["copilot-core (Rust, OS-free)"]
+    subgraph Core["pip-core (Rust, OS-free)"]
         Bus(("event bus"))
         Agent["Agent loop<br/>screenshot → plan → ground → act"]
         Gate{"Approval gate<br/>send · attach · pay · delete"}
@@ -113,7 +113,7 @@ flowchart LR
 |---|---|---|
 | **Muse Spark 1.3** (`/v1/responses`) | The brain: plans each screen step with tool calls, reads letters into JSON (PDF as `input_file`), points at targets and picks among SAM boxes, writes Pip's plain-language sentences. | built |
 | **SAM 3.1** (`/v1/responses`, streamed) | The eyes for shapes: cuts the sheet out of a phone photo; proposes exact boxes for buttons on the screen so clicks land in the middle of the real element. | built |
-| **Muse Voice Transcribe 1.0** (`/v1/asr/transcribe`) | Hold Ctrl+Shift+Space (or the microphone button) and say what you need. | built; checked with a recorded sentence through `copilot-cli transcribe` (Oct 26); microphone on Windows still to test |
+| **Muse Voice Transcribe 1.0** (`/v1/asr/transcribe`) | Hold Ctrl+Shift+Space (or the microphone button) and say what you need. | built; checked with a recorded sentence through `pip-cli transcribe` (Oct 26); microphone on Windows still to test |
 | **Muse Image 1.0** (`/v1/images/generations`, `/edits`) | Designed Pip: the character and its eight poses (idle, wave, listen, think, point, happy, ask, sleep). | used offline |
 | **Muse Glimmer** (open weights, local) | Private mode: read letters on the computer without sending them anywhere. | planned |
 
@@ -133,7 +133,7 @@ Pip uses Meta's colour world (blue to violet) but no Meta logo and no Meta chara
   not click and looks again.
 - **New pages, new addresses and new send targets ask first.** Opening an unknown website, storing an address or link,
   or changing where letters are sent needs a "yes". Addresses that carry the user's data are refused.
-- **Your letters stay on your computer** (`%APPDATA%\papierkram-copilot\memory.db`). Only what one call needs goes
+- **Your letters stay on your computer** (`%APPDATA%\Pip\memory.db`). Only what one call needs goes
   to the Meta API: the letter image, or the current screenshot.
 - **Screenshots live in memory only.** They are not written to disk.
 - **No secrets in logs.** The API key comes from the environment or `.env` and is redacted from every error text.
@@ -152,17 +152,17 @@ MODEL_API_KEY=...            # Meta Model API key
 # DEMO_MODE=1                # default: only local demo pages may be submitted
 
 cargo test --workspace                        # unit + mock-server tests, no API calls
-cargo test -p copilot-core -- --ignored       # live tests against the Meta API (costs cents)
+cargo test -p pip-core -- --ignored       # live tests against the Meta API (costs cents)
 
 # Windows app (on Windows)
-cargo build --release -p copilot-app -p copilot-cli
+cargo build --release -p pip-app -p pip-cli
 # or cross-compile from Linux
-cargo xwin build --release --target x86_64-pc-windows-msvc -p copilot-app -p copilot-cli
+cargo xwin build --release --target x86_64-pc-windows-msvc -p pip-app -p pip-cli
 ```
 
-Run `copilot-app.exe`. Pip appears in the bottom-right corner. The demo form is built into the exe (Pip writes it to
-`%APPDATA%\papierkram-copilot\fixtures\`); the `fixtures/` folder next to the exe is only needed for the example
-letters. Without a key, Pip shows a field to paste it (stored in `%APPDATA%\papierkram-copilot\.env`).
+Run `pip-app.exe`. Pip appears in the bottom-right corner. The demo form is built into the exe (Pip writes it to
+`%APPDATA%\Pip\fixtures\`); the `fixtures/` folder next to the exe is only needed for the example
+letters. Without a key, Pip shows a field to paste it (stored in `%APPDATA%\Pip\.env`).
 
 Switches for testing: `PIP_MOCK=1` (scripted demo without the API), `PIP_WINDOWED=1` (corner window instead of the
 full-screen overlay), `PIP_LANG=en`, `PIP_MUTE=1`, `DEMO_NOW=2026-10-29T18:00` (time travel for reminders),
@@ -172,12 +172,12 @@ full-screen overlay), `PIP_LANG=en`, `PIP_MUTE=1`, `DEMO_NOW=2026-10-29T18:00` (
 ### Developer CLI (no overlay, same core)
 
 ```sh
-copilot-cli read fixtures/letters/au_erika_erst_foto.jpg      # crop + read + rules, compared with *.expected.json
-copilot-cli sam fixtures/screens/kasse_form.png "button" --out boxes.png
-copilot-cli ground fixtures/screens/kasse_form.png "Absenden button at the bottom right"
-copilot-cli rules --now 2026-10-29T18:00                      # deadlines and the reminder that fires now
-copilot-cli agent "Schick die Krankschreibung an die Gesundkasse"   # dry run on screenshots, nothing is clicked
-copilot-cli eval                                              # the eval below -> eval/results.md
+pip-cli read fixtures/letters/au_erika_erst_foto.jpg      # crop + read + rules, compared with *.expected.json
+pip-cli sam fixtures/screens/kasse_form.png "button" --out boxes.png
+pip-cli ground fixtures/screens/kasse_form.png "Absenden button at the bottom right"
+pip-cli rules --now 2026-10-29T18:00                      # deadlines and the reminder that fires now
+pip-cli agent "Schick die Krankschreibung an die Gesundkasse"   # dry run on screenshots, nothing is clicked
+pip-cli eval                                              # the eval below -> eval/results.md
 ```
 
 Example dry run (abridged):
@@ -194,7 +194,7 @@ Outcome: Stopped. The send card stopped the click on "Absenden". Nothing was cli
 
 ## Eval
 
-Ten tasks with invented data (`eval/tasks.json`), run with `copilot-cli eval` against the real API:
+Ten tasks with invented data (`eval/tasks.json`), run with `pip-cli eval` against the real API:
 5 letters (are fields and deadlines right?), 4 click targets on the demo form (does the click land on the element?),
 and 1 agent run (does the gate stop the click on *Absenden*?). Full table: [`eval/results.md`](eval/results.md).
 

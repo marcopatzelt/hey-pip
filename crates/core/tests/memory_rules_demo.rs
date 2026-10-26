@@ -5,11 +5,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use chrono::NaiveDate;
-use copilot_core::docs::{AuInfo, AuKind, DocType, DocumentExtract};
-use copilot_core::events::UiEvent;
-use copilot_core::i18n::Lang;
-use copilot_core::memory::Memory;
-use copilot_core::rules::{DemoClock, FixedClock, RuleEngine, local_at};
+use pip_core::docs::{AuInfo, AuKind, DocType, DocumentExtract};
+use pip_core::events::UiEvent;
+use pip_core::i18n::Lang;
+use pip_core::memory::Memory;
+use pip_core::rules::{DemoClock, FixedClock, RuleEngine, local_at};
 
 fn d(y: i32, m: u32, day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, day).unwrap()

@@ -1,5 +1,5 @@
 [package]
-name = "copilot-cli"
+name = "pip-cli"
 description = "Developer CLI: read letters, SAM boxes, one agent step on a PNG, transcribe WAV, eval"
 edition.workspace = true
 version.workspace = true
@@ -8,12 +8,12 @@ rust-version.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "copilot-cli"
+name = "pip-cli"
 path = "src/main.rs"
 
 [dependencies]
-copilot-core.workspace = true
-copilot-platform.workspace = true
+pip-core.workspace = true
+pip-platform.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 clap.workspace = true

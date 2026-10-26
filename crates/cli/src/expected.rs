@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
-use copilot_core::docs::{AuInfo, AuKind, DocType, DocumentExtract, ExtractedDeadline};
-use copilot_core::memory::Deadline;
+use pip_core::docs::{AuInfo, AuKind, DocType, DocumentExtract, ExtractedDeadline};
+use pip_core::memory::Deadline;
 use serde_json::Value;
 
 pub struct Check {

@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use copilot_core::events::Bus;
-use copilot_core::platform::{PhysPoint, PhysRect};
+use pip_core::events::Bus;
+use pip_core::platform::{PhysPoint, PhysRect};
 use serde::Serialize;
 use tauri::{PhysicalPosition, PhysicalSize, WebviewWindow};
 
@@ -108,7 +108,7 @@ pub fn setup(win: &WebviewWindow, bus: Bus, windowed: bool, mouse_stop: MouseSto
     win.show()?;
     #[cfg(windows)]
     if let Ok(h) = win.hwnd() {
-        copilot_platform::windows::set_overlay_window(h.0 as isize);
+        pip_platform::windows::set_overlay_window(h.0 as isize);
     }
     // Clicks on Pip, the card or a bubble must not pull the keyboard away from the page Pip works on.
     if let Err(e) = win.set_focusable(false) {

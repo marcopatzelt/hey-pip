@@ -4,10 +4,10 @@
 
 use std::time::Duration;
 
-use copilot_core::agent::{APPROVAL_TIMEOUT, AgentOutcome, ApprovalAnswer, ApprovalCard, CancellationToken};
-use copilot_core::events::{Bus, Button, PipState, UiEvent};
-use copilot_core::i18n::{Lang, t, tf};
-use copilot_core::platform::PhysRect;
+use pip_core::agent::{APPROVAL_TIMEOUT, AgentOutcome, ApprovalAnswer, ApprovalCard, CancellationToken};
+use pip_core::events::{Bus, Button, PipState, UiEvent};
+use pip_core::i18n::{Lang, t, tf};
+use pip_core::platform::PhysRect;
 use uuid::Uuid;
 
 use crate::overlay::OverlayInfo;
@@ -196,7 +196,7 @@ mod tests {
 
     #[tokio::test]
     async fn story_runs_to_done_when_approved() {
-        let (bus, _rx) = copilot_core::events::Bus::new();
+        let (bus, _rx) = pip_core::events::Bus::new();
         let mut ui = bus.to_ui.subscribe();
         let b2 = bus.clone();
         let approver = tokio::spawn(async move {
@@ -221,7 +221,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_means_nothing_sent() {
-        let (bus, _rx) = copilot_core::events::Bus::new();
+        let (bus, _rx) = pip_core::events::Bus::new();
         let mut ui = bus.to_ui.subscribe();
         let b2 = bus.clone();
         tokio::spawn(async move {
@@ -237,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_ends_the_story() {
-        let (bus, _rx) = copilot_core::events::Bus::new();
+        let (bus, _rx) = pip_core::events::Bus::new();
         let token = CancellationToken::new();
         token.cancel();
         assert_eq!(run_task_paced(&bus, screen(), Lang::En, token, 0.0).await, AgentOutcome::Stopped);

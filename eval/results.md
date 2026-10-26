@@ -1,6 +1,6 @@
 # Eval results
 
-Run: 2026-10-26 14:12 · `copilot-cli eval` · invented data only · real Meta API
+Run: 2026-10-26 14:12 · `pip-cli eval` · invented data only · real Meta API
 
 ## Letters (Muse Spark reads, SAM 3.1 crops photos, rules compute deadlines)
 

@@ -1,4 +1,4 @@
-//! copilot-core: everything that does not touch the operating system.
+//! pip-core: everything that does not touch the operating system.
 //! Meta API client, agent loop, memory (SQLite), deadline rules, document pipeline,
 //! the event bus to the UI, UI strings. Builds and tests on Linux.
 //!

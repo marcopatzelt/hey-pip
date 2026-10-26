@@ -9,11 +9,11 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
-use copilot_core::clock::{Clock, FixedClock};
-use copilot_core::docs::DocPipeline;
-use copilot_core::memory::Memory;
-use copilot_core::meta::Usage;
-use copilot_core::rules::RuleEngine;
+use pip_core::clock::{Clock, FixedClock};
+use pip_core::docs::DocPipeline;
+use pip_core::memory::Memory;
+use pip_core::meta::Usage;
+use pip_core::rules::RuleEngine;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -75,7 +75,7 @@ pub async fn run(ctx: &Ctx, tasks_path: &Path, out: &Path) -> Result<()> {
     let mut md = String::from("# Eval results\n\n");
     let _ = writeln!(
         md,
-        "Run: {} · `copilot-cli eval` · invented data only · real Meta API\n",
+        "Run: {} · `pip-cli eval` · invented data only · real Meta API\n",
         Local::now().format("%Y-%m-%d %H:%M")
     );
 

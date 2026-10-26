@@ -6,11 +6,11 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Local};
-use copilot_core::clock::{Clock, FixedClock};
-use copilot_core::docs::{DocError, DocPipeline, DocumentExtract};
-use copilot_core::events::UiEvent;
-use copilot_core::memory::{Deadline, Memory};
-use copilot_core::rules::{RuleEngine, local_at};
+use pip_core::clock::{Clock, FixedClock};
+use pip_core::docs::{DocError, DocPipeline, DocumentExtract};
+use pip_core::events::UiEvent;
+use pip_core::memory::{Deadline, Memory};
+use pip_core::rules::{RuleEngine, local_at};
 
 use crate::{Ctx, expected};
 

@@ -136,8 +136,8 @@ const PLAYBOOK_MAX_AGE_DAYS: i64 = 180;
 /// A playbook that failed this often in a row since its last success is dropped.
 pub const PLAYBOOK_MAX_FAILS: i64 = 2;
 
-/// %APPDATA%\papierkram-copilot\memory.db (Windows, via env APPDATA) or
-/// ~/.local/share/papierkram-copilot/memory.db (Linux, via HOME / XDG_DATA_HOME). No `dirs` crate.
+/// %APPDATA%\Pip\memory.db (Windows, via env APPDATA) or
+/// ~/.local/share/Pip/memory.db (Linux, via HOME / XDG_DATA_HOME). No `dirs` crate.
 pub fn default_db_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("memory.db"))
 }
@@ -151,7 +151,7 @@ fn data_dir() -> Result<PathBuf> {
     } else {
         env("HOME").context("HOME is not set")?.join(".local").join("share")
     };
-    Ok(base.join("papierkram-copilot"))
+    Ok(base.join("Pip"))
 }
 
 /// Schema migrations; entry i brings the db to `user_version = i + 1`. Append, never edit.

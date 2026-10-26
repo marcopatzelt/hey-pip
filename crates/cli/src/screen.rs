@@ -4,11 +4,11 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use copilot_core::agent::{API_MAX_SIDE, Agent, Gate};
-use copilot_core::events::Bus;
-use copilot_core::meta::SamBox;
-use copilot_core::platform::{ApiImage, Frame, PhysPoint};
-use copilot_platform::fake::FakePlatform;
+use pip_core::agent::{API_MAX_SIDE, Agent, Gate};
+use pip_core::events::Bus;
+use pip_core::meta::SamBox;
+use pip_core::platform::{ApiImage, Frame, PhysPoint};
+use pip_platform::fake::FakePlatform;
 
 use crate::Ctx;
 use crate::letters::write_file;

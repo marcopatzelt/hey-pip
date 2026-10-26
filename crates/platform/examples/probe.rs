@@ -9,10 +9,10 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use copilot_core::platform::PhysPoint;
+use pip_core::platform::PhysPoint;
 
 fn main() -> Result<()> {
-    copilot_platform::set_dpi_awareness();
+    pip_platform::set_dpi_awareness();
     let mut args = std::env::args().skip(1);
     let mut seconds = 10u64;
     let mut shot = None;
@@ -31,7 +31,7 @@ fn main() -> Result<()> {
         }
     }
 
-    match copilot_platform::monitors() {
+    match pip_platform::monitors() {
         Ok(ms) => {
             for m in ms {
                 println!(
@@ -49,7 +49,7 @@ fn main() -> Result<()> {
         Err(e) => println!("monitors: {e:#}"),
     }
 
-    let platform = copilot_platform::native()?;
+    let platform = pip_platform::native()?;
     let t = Instant::now();
     match platform.screen.capture_primary() {
         Ok(f) => {
@@ -77,7 +77,7 @@ fn main() -> Result<()> {
 
     #[cfg(windows)]
     if let Some(name) = &find {
-        let win = copilot_platform::windows::WinPlatform::new_arc()?;
+        let win = pip_platform::windows::WinPlatform::new_arc()?;
         let hits = win.find(name);
         println!("find {name:?} in foreground window: {} hit(s)", hits.len());
         for h in hits {
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
         println!("click at ({},{}) in 3 s ...", p.x, p.y);
         std::thread::sleep(Duration::from_secs(3));
         match platform.input.click(p) {
-            Ok(()) => println!("clicked; cursor now {:?}", copilot_platform::cursor_pos()),
+            Ok(()) => println!("clicked; cursor now {:?}", pip_platform::cursor_pos()),
             Err(e) => println!("click: {e:#}"),
         }
     }
@@ -104,7 +104,7 @@ fn main() -> Result<()> {
     println!("element under the mouse, {seconds} s:");
     let mut last = None;
     for _ in 0..seconds {
-        let pos = copilot_platform::cursor_pos();
+        let pos = pip_platform::cursor_pos();
         let el = pos.and_then(|p| platform.ui.element_at(p));
         let line = format!("  cursor {pos:?} -> {el:?}");
         if last.as_ref() != Some(&line) {

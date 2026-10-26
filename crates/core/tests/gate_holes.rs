@@ -5,12 +5,12 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use copilot_core::agent::{Agent, AgentOutcome, ApprovalAnswer, CancellationToken, Gate, Task};
-use copilot_core::clock::SystemClock;
-use copilot_core::events::{Bus, UiEvent};
-use copilot_core::memory::Memory;
-use copilot_core::meta::MetaClient;
-use copilot_core::platform::{
+use pip_core::agent::{Agent, AgentOutcome, ApprovalAnswer, CancellationToken, Gate, Task};
+use pip_core::clock::SystemClock;
+use pip_core::events::{Bus, UiEvent};
+use pip_core::memory::Memory;
+use pip_core::meta::MetaClient;
+use pip_core::platform::{
     Frame, Input, OutlineItem, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo,
 };
 use serde_json::{Value, json};
@@ -286,7 +286,7 @@ impl Harness {
     }
 }
 
-fn cards(events: &[UiEvent]) -> Vec<copilot_core::agent::ApprovalCard> {
+fn cards(events: &[UiEvent]) -> Vec<pip_core::agent::ApprovalCard> {
     events
         .iter()
         .filter_map(|e| if let UiEvent::ApprovalRequest { card } = e { Some(card.clone()) } else { None })
@@ -295,7 +295,7 @@ fn cards(events: &[UiEvent]) -> Vec<copilot_core::agent::ApprovalCard> {
 
 // ======================= adversarial gate tests =======================
 
-use copilot_core::agent::{Risk, Tool};
+use pip_core::agent::{Risk, Tool};
 
 fn key(c: &str) -> (&'static str, Value) {
     ("key", json!({"combo": c, "is_commit": false, "commit_what": null, "commit_to": null}))

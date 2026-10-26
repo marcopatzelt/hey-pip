@@ -4,12 +4,12 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use copilot_core::agent::{Agent, AgentOutcome, ApprovalAnswer, CancellationToken, Gate, Task};
-use copilot_core::clock::SystemClock;
-use copilot_core::events::{Bus, UiEvent};
-use copilot_core::memory::Memory;
-use copilot_core::meta::MetaClient;
-use copilot_core::platform::{
+use pip_core::agent::{Agent, AgentOutcome, ApprovalAnswer, CancellationToken, Gate, Task};
+use pip_core::clock::SystemClock;
+use pip_core::events::{Bus, UiEvent};
+use pip_core::memory::Memory;
+use pip_core::meta::MetaClient;
+use pip_core::platform::{
     Frame, Input, OutlineItem, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo,
 };
 use serde_json::{Value, json};
@@ -413,7 +413,7 @@ fn bubbles(events: &[UiEvent]) -> Vec<String> {
 fn progress(events: &[UiEvent]) -> Vec<String> {
     events.iter().filter_map(|e| if let UiEvent::Progress { text } = e { Some(text.clone()) } else { None }).collect()
 }
-fn cards(events: &[UiEvent]) -> Vec<copilot_core::agent::ApprovalCard> {
+fn cards(events: &[UiEvent]) -> Vec<pip_core::agent::ApprovalCard> {
     events
         .iter()
         .filter_map(|e| if let UiEvent::ApprovalRequest { card } = e { Some(card.clone()) } else { None })
@@ -709,7 +709,7 @@ async fn step_limit_ends_the_run() {
     // empty script -> the model keeps calling `wait 0`
     let out = h.run("endlos").await;
     assert!(matches!(out, AgentOutcome::Failed(ref t) if t.starts_with("Das dauert zu lange")), "{out:?}");
-    assert_eq!(h.requests().len(), copilot_core::agent::MAX_STEPS as usize);
+    assert_eq!(h.requests().len(), pip_core::agent::MAX_STEPS as usize);
     assert!(h.drain().iter().any(|e| matches!(e, UiEvent::Error { retry: true, .. })));
 }
 
@@ -776,7 +776,7 @@ async fn send_latest_document_without_letter_asks_for_it() {
     let out = h
         .agent
         .run(
-            Task::SendLatestDocument { doc_type: copilot_core::docs::DocType::AuBescheinigung },
+            Task::SendLatestDocument { doc_type: pip_core::docs::DocType::AuBescheinigung },
             CancellationToken::new(),
         )
         .await
@@ -822,7 +822,7 @@ async fn enter_in_a_form_needs_approval() {
 }
 
 fn store_letter(h: &Harness, path: &str) -> i64 {
-    let x: copilot_core::docs::DocumentExtract = serde_json::from_value(json!({
+    let x: pip_core::docs::DocumentExtract = serde_json::from_value(json!({
         "doc_type": "au_bescheinigung", "sender": "Praxis Dr. Beispiel", "recipient": "Gesundkasse",
         "date": "2026-10-20", "reference": null, "summary_simple": "Krankschreibung", "requests": [], "deadlines": [],
         "au": {"from": "2026-10-20", "until": "2026-10-30", "first_or_follow": "erst", "issued": null},
@@ -912,7 +912,7 @@ async fn the_approved_letter_is_typed_into_the_file_dialog() {
     let out = h
         .agent
         .run(
-            Task::SendLatestDocument { doc_type: copilot_core::docs::DocType::AuBescheinigung },
+            Task::SendLatestDocument { doc_type: pip_core::docs::DocType::AuBescheinigung },
             CancellationToken::new(),
         )
         .await
@@ -1057,7 +1057,7 @@ async fn network_error_mid_step_still_answers_every_call() {
     assert_eq!(ids, vec!["call_r1_0", "call_r1_1"]);
 }
 
-// ---------- live tests (real Meta API, cost a few cents): cargo test -p copilot-core --test agent_loop -- --ignored ----------
+// ---------- live tests (real Meta API, cost a few cents): cargo test -p pip-core --test agent_loop -- --ignored ----------
 
 /// Screenshot of fixtures/demo-kasse/index.html at 1600x1000 (env AGENT_LIVE_PNG, default fixtures/screens/kasse_form.png).
 fn live_png() -> Option<image::RgbaImage> {
@@ -1100,7 +1100,7 @@ async fn live_ground_demo_form() {
     let (agent, platform, _bus) = live_agent(png, false);
     let mut frame = platform.capture_primary().unwrap();
     frame.mask(&[]);
-    let api = frame.for_api(copilot_core::agent::API_MAX_SIDE).unwrap();
+    let api = frame.for_api(pip_core::agent::API_MAX_SIDE).unwrap();
     let cases = [
         ("text input field", "das Eingabefeld „Vor- und Nachname“", NAME_FIELD),
         ("text input field", "das Eingabefeld „Versichertennummer“", NUMBER_FIELD),
@@ -1139,7 +1139,7 @@ async fn live_agent_fills_the_form() {
             eprintln!("ui: {}", serde_json::to_string(&ev).unwrap().chars().take(160).collect::<String>());
         }
     });
-    let mut state = copilot_core::agent::RunState::new(Task::Text(
+    let mut state = pip_core::agent::RunState::new(Task::Text(
         "Trag meinen Namen und meine Versichertennummer in das Formular ein. Nicht abschicken.".into(),
     ));
     let cancel = CancellationToken::new();
@@ -1147,7 +1147,7 @@ async fn live_agent_fills_the_form() {
     for _ in 0..2 {
         let r = agent.step(&mut state, &cancel).await.unwrap();
         eprintln!("step -> {r:?}; actions so far {:?}", platform.actions());
-        if r != copilot_core::agent::StepResult::Continue {
+        if r != pip_core::agent::StepResult::Continue {
             break;
         }
     }
@@ -1572,12 +1572,12 @@ struct Disc {
 }
 
 async fn discover_setup(page: &str) -> Disc {
-    use copilot_core::docs::{DocType, DocumentExtract};
+    use pip_core::docs::{DocType, DocumentExtract};
     let dir = tempfile::tempdir().unwrap();
     let kasse = dir.path().join("demo-kasse");
     std::fs::create_dir_all(&kasse).unwrap();
     std::fs::write(kasse.join("services.html"), page).unwrap();
-    let url = copilot_core::config::file_url(&kasse.join("services.html").canonicalize().unwrap());
+    let url = pip_core::config::file_url(&kasse.join("services.html").canonicalize().unwrap());
     let h = Harness::with_fixtures(true, dir.path()).await;
     h.memory.profile_set("lang", "en").unwrap();
     h.memory.profile_set("krankenkasse", "Gesundkasse").unwrap();
@@ -1601,7 +1601,7 @@ async fn discover_setup(page: &str) -> Disc {
         h.memory.insert_document(std::path::Path::new("kasse_brief.pdf"), "sha-kasse", &letter, "Fragebogen").unwrap();
     let deadline = h
         .memory
-        .add_deadline(&copilot_core::memory::NewDeadline {
+        .add_deadline(&pip_core::memory::NewDeadline {
             title: "Return the questionnaire".into(),
             due: d(11, 13),
             rule_id: Some("frist_aus_brief".into()),
@@ -1623,7 +1623,7 @@ fn suggest(quote: &str, doc: Option<i64>, deadline: Option<i64>) -> (&'static st
     ("suggest", json!({"page_quote": quote, "reason_doc_id": doc, "reason_deadline_id": deadline}))
 }
 
-fn questions(events: &[UiEvent]) -> Vec<(String, Vec<copilot_core::events::Button>)> {
+fn questions(events: &[UiEvent]) -> Vec<(String, Vec<pip_core::events::Button>)> {
     events
         .iter()
         .filter_map(|e| match e {
@@ -1701,15 +1701,15 @@ async fn suggest_quote_not_on_page_is_refused() {
     let ev = x.h.drain();
     assert!(questions(&ev).is_empty());
     assert!(bubbles(&ev).is_empty(), "nothing found = not a word: {:?}", bubbles(&ev));
-    assert!(ev.iter().any(|e| matches!(e, UiEvent::Pip { state: copilot_core::events::PipState::Idle })));
-    assert!(!ev.iter().any(|e| matches!(e, UiEvent::Pip { state: copilot_core::events::PipState::Happy })));
+    assert!(ev.iter().any(|e| matches!(e, UiEvent::Pip { state: pip_core::events::PipState::Idle })));
+    assert!(!ev.iter().any(|e| matches!(e, UiEvent::Pip { state: pip_core::events::PipState::Happy })));
     assert!(!event_kinds(&x.h.memory).iter().any(|k| k.starts_with("suggested") || k.starts_with("done")));
 }
 
 #[tokio::test]
 async fn suggest_unknown_doc_id_refused() {
     let mut x = discover_setup(SERVICES_HTML).await;
-    x.h.memory.set_deadline_status(x.deadline, copilot_core::memory::DeadlineStatus::Done).unwrap();
+    x.h.memory.set_deadline_status(x.deadline, pip_core::memory::DeadlineStatus::Done).unwrap();
     x.h.agent_turns(vec![
         calls("r1", &[("open_url", json!({"url": x.url}))]),
         calls("r2", &[suggest(QUOTE, Some(999), None), suggest(QUOTE, None, Some(x.deadline))]),
@@ -1794,7 +1794,7 @@ async fn discover_has_a_small_budget_and_ends_silently() {
     // The model only waits: after DISCOVER_STEPS steps the run ends without a word.
     let out = discover(&x.h).await;
     assert_eq!(out, AgentOutcome::Done("nothing".into()));
-    assert_eq!(x.h.requests().len(), copilot_core::agent::DISCOVER_STEPS as usize);
+    assert_eq!(x.h.requests().len(), pip_core::agent::DISCOVER_STEPS as usize);
     let ev = x.h.drain();
     assert!(bubbles(&ev).is_empty());
     assert!(!ev.iter().any(|e| matches!(e, UiEvent::Error { .. })));
@@ -1916,7 +1916,7 @@ async fn the_second_run_on_the_same_form_starts_with_last_time() {
     h.memory.profile_set("krankenkasse_kontaktformular", "https://www.gesundkasse.example/kontakt").unwrap();
     store_letter(&h, "C:\\Briefe\\au.pdf");
     h.auto_answer(ApprovalAnswer::Yes, "");
-    let task = || Task::SendLatestDocument { doc_type: copilot_core::docs::DocType::AuBescheinigung };
+    let task = || Task::SendLatestDocument { doc_type: pip_core::docs::DocType::AuBescheinigung };
 
     h.agent_turns(form_turns());
     h.sam(&[sam_box(100, 100, 300, 140), sam_box(100, 200, 300, 240), sam_box(700, 600, 900, 640)]);

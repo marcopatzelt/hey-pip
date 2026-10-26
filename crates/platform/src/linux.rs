@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
-use copilot_core::platform::{Frame, Input, PhysPoint, Platform, Screen, UiElement, UiTree};
+use pip_core::platform::{Frame, Input, PhysPoint, Platform, Screen, UiElement, UiTree};
 
 use crate::MonitorInfo;
 use crate::keys::{KeyName, Modifier, check_typeable, parse_combo};

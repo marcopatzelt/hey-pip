@@ -8,15 +8,15 @@ use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
-use copilot_core::agent::{Agent, Gate, PROFILE_LANG, PROFILE_SERVICES};
-use copilot_core::clock::{Clock, SystemClock, clock_from_env};
-use copilot_core::config::{Config, file_url};
-use copilot_core::docs::DocPipeline;
-use copilot_core::events::Bus;
-use copilot_core::i18n::Lang;
-use copilot_core::memory::{Memory, default_db_path, seed_demo_profile};
-use copilot_core::meta::MetaClient;
-use copilot_core::rules::RuleEngine;
+use pip_core::agent::{Agent, Gate, PROFILE_LANG, PROFILE_SERVICES};
+use pip_core::clock::{Clock, SystemClock, clock_from_env};
+use pip_core::config::{Config, file_url};
+use pip_core::docs::DocPipeline;
+use pip_core::events::Bus;
+use pip_core::i18n::Lang;
+use pip_core::memory::{Memory, default_db_path, seed_demo_profile};
+use pip_core::meta::MetaClient;
+use pip_core::rules::RuleEngine;
 
 pub struct Backend {
     pub mock: bool,
@@ -133,7 +133,7 @@ impl Backend {
             }
             _ => None,
         };
-        let platform = ok_or_log("platform", guard("platform", copilot_platform::native));
+        let platform = ok_or_log("platform", guard("platform", pip_platform::native));
         // DEMO_MODE pages: the shipped/repo fixtures folder and the copy of the demo form in the data folder.
         let builtin = config.as_ref().and_then(|c| write_demo_form(&c.data_dir.join("fixtures")));
         let mut fixture_dirs: Vec<std::path::PathBuf> = config.iter().map(|c| c.fixtures_dir.clone()).collect();
@@ -325,13 +325,13 @@ mod tests {
     #[test]
     fn demo_profile_from_built_in_letters() {
         let names: Vec<&str> = DEMO_LETTERS.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, copilot_core::memory::DEMO_LETTER_FILES);
+        assert_eq!(names, pip_core::memory::DEMO_LETTER_FILES);
         let dir = tempfile::tempdir().unwrap();
         let letters = dir.path().join("demo-letters");
         write_demo_letters(&letters).unwrap();
         let mem = Arc::new(Memory::open_in_memory().unwrap());
         let now = chrono::Local::now();
-        let rules = RuleEngine::new(mem.clone(), Arc::new(copilot_core::clock::FixedClock::new(now)));
+        let rules = RuleEngine::new(mem.clone(), Arc::new(pip_core::clock::FixedClock::new(now)));
         assert!(seed_demo_profile(&mem, &rules, &letters, now).unwrap());
         assert_eq!(mem.profile_get("name").unwrap().as_deref(), Some("Erika"));
         let wohngeld = mem.search_documents("Wohngeld", 5).unwrap();

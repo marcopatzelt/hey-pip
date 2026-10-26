@@ -1,10 +1,10 @@
 //! Live tests against the real Meta Model API. Cost: a few cents per full run.
-//! Run: `cargo test -p copilot-core --test meta_live -- --ignored --nocapture`
+//! Run: `cargo test -p pip-core --test meta_live -- --ignored --nocapture`
 //! Needs MODEL_API_KEY in the environment or in the repo's .env. OWNER: agent "meta".
 //! Optional: ASR_TEST_WAV=<path to a mono 16 kHz WAV with speech>.
 
-use copilot_core::i18n::Lang;
-use copilot_core::meta::{
+use pip_core::i18n::Lang;
+use pip_core::meta::{
     Content, Effort, InputItem, MODEL_SPARK, MetaClient, ResponseEvent, ResponseRequest, ToolDef, fit_image,
 };
 use futures_util::StreamExt;
@@ -151,7 +151,7 @@ async fn live_transcribe() {
     let c = client();
     let (wav, has_speech) = match std::env::var("ASR_TEST_WAV") {
         Ok(p) => (std::fs::read(p).unwrap(), true),
-        Err(_) => (copilot_core::meta::wav_from_pcm16(&vec![0i16; 16_000], 16_000).unwrap(), false),
+        Err(_) => (pip_core::meta::wav_from_pcm16(&vec![0i16; 16_000], 16_000).unwrap(), false),
     };
     let t = c.transcribe(wav, Lang::De).await.unwrap();
     println!("transcript={t:?}");

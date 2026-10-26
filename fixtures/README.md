@@ -18,7 +18,7 @@ Made by `python3 fixtures/letters/make_letters.py` (reportlab, pymupdf, ImageMag
 | `uni_rueckmeldung.pdf/.png` | university re-registration for Jonas Muster, fee due 15.01.2027 | `frist_aus_brief` 2027-01-15 |
 
 Live accuracy check (real API, about 5 cents):
-`cargo test -p copilot-core --test docs_live -- --ignored --nocapture`
+`cargo test -p pip-core --test docs_live -- --ignored --nocapture`
 
 ## screens/
 Made by `python3 fixtures/screens/make_screens.py` (headless Firefox, 1600x1000).

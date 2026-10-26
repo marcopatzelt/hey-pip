@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use copilot_core::platform::{
+use pip_core::platform::{
     Frame, Input, OutlineItem, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo,
 };
 
@@ -201,7 +201,7 @@ mod tests {
         assert!(platform.ui.element_at(p).is_none());
 
         let el = UiElement { name: "Absenden".into(), control: "Button".into(), is_password: false };
-        fake.elements.lock().unwrap().push((copilot_core::platform::PhysRect { x: 0, y: 0, w: 10, h: 10 }, el.clone()));
+        fake.elements.lock().unwrap().push((pip_core::platform::PhysRect { x: 0, y: 0, w: 10, h: 10 }, el.clone()));
         assert_eq!(platform.ui.element_at(p), Some(el.clone()));
         assert_eq!(platform.ui.find_by_name("absend").len(), 1);
         assert!(platform.ui.find_by_name("").is_empty());

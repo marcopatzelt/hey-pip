@@ -234,7 +234,7 @@ fn action_log_and_tokens() {
 #[test]
 fn default_path_shape() {
     let p = default_db_path().unwrap();
-    assert!(p.ends_with("papierkram-copilot/memory.db") || p.ends_with("papierkram-copilot\\memory.db"));
+    assert!(p.ends_with("Pip/memory.db") || p.ends_with("Pip\\memory.db"));
 }
 
 #[test]

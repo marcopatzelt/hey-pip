@@ -7,14 +7,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use copilot_core::agent::{Agent, AgentOutcome, CancellationToken, Gate, PROFILE_LANG, RunState, StepResult, Task};
-use copilot_core::clock::{Clock, FixedClock};
-use copilot_core::config::file_url;
-use copilot_core::events::{Bus, UiEvent};
-use copilot_core::i18n::t;
-use copilot_core::platform::{PhysPoint, PhysRect};
-use copilot_core::rules::RuleEngine;
-use copilot_platform::fake::{Action, FakePlatform};
+use pip_core::agent::{Agent, AgentOutcome, CancellationToken, Gate, PROFILE_LANG, RunState, StepResult, Task};
+use pip_core::clock::{Clock, FixedClock};
+use pip_core::config::file_url;
+use pip_core::events::{Bus, UiEvent};
+use pip_core::i18n::t;
+use pip_core::platform::{PhysPoint, PhysRect};
+use pip_core::rules::RuleEngine;
+use pip_platform::fake::{Action, FakePlatform};
 use serde_json::Value;
 
 use crate::letters::seed_letter;
@@ -298,7 +298,7 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
 async fn print_events(
     bus: Bus,
     approve: Approve,
-    lang: copilot_core::i18n::Lang,
+    lang: pip_core::i18n::Lang,
     quiet: bool,
     boxes: Arc<Mutex<Boxes>>,
     cards: Arc<Mutex<Vec<CardSeen>>>,
@@ -364,9 +364,9 @@ async fn print_events(
                     target,
                 });
                 let answer = if yes {
-                    copilot_core::agent::ApprovalAnswer::Yes
+                    pip_core::agent::ApprovalAnswer::Yes
                 } else {
-                    copilot_core::agent::ApprovalAnswer::No
+                    pip_core::agent::ApprovalAnswer::No
                 };
                 bus.pending.resolve_approval(card.id, answer);
             }

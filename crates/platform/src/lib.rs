@@ -1,4 +1,4 @@
-//! Implementations of `copilot_core::platform` traits.
+//! Implementations of `pip_core::platform` traits.
 //! - windows: xcap (capture) + enigo (mouse/keyboard) + uiautomation (element names, IsPassword, find by name)
 //! - linux: best effort via helper programs (grim/import, xdotool on X11); no UI tree ("Linux in theory")
 //! - fake: a PNG as the screen, input recorded (CLI, eval, tests)
@@ -12,8 +12,8 @@ pub mod linux;
 #[cfg(windows)]
 pub mod windows;
 
-pub use copilot_core::platform::Platform;
-use copilot_core::platform::{PhysPoint, PhysRect, UiElement};
+pub use pip_core::platform::Platform;
+use pip_core::platform::{PhysPoint, PhysRect, UiElement};
 
 /// One screen as the OS reports it (physical pixels).
 #[derive(Debug, Clone, PartialEq)]

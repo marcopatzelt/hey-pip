@@ -112,7 +112,7 @@ impl MetaClient {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(180))
-            .user_agent(concat!("papierkram-copilot/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("hey-pip/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("reqwest client with rustls");
         Self {
@@ -277,7 +277,7 @@ pub fn load_dotenv() {
     {
         dotenvy::from_path(env).ok();
     }
-    // Where Pip's own "Schlüssel einfügen" field stores the key (%APPDATA%\papierkram-copilot\.env).
+    // Where Pip's own "Schlüssel einfügen" field stores the key (%APPDATA%\Pip\.env).
     let env = crate::config::env_file();
     if env.is_file() {
         dotenvy::from_path(env).ok();

@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use copilot_core::i18n::Lang;
+use pip_core::i18n::Lang;
 
 pub trait Speaker: Send + Sync {
     fn speak(&self, text: &str, lang: Lang) -> Result<()>;
@@ -71,7 +71,7 @@ impl Recorder {
             return Err(TooShort.into());
         }
         crate::backend::guard("pcm_f32_to_wav16k", || {
-            copilot_core::meta::pcm_f32_to_wav16k(&c.samples, c.rate, c.channels)
+            pip_core::meta::pcm_f32_to_wav16k(&c.samples, c.rate, c.channels)
         })
     }
 }
@@ -247,7 +247,7 @@ mod tests {
         assert!(e.downcast_ref::<TooShort>().is_some());
     }
 
-    /// Opens the real microphone for one second (audio stays in memory). `cargo test -p copilot-app -- --ignored`
+    /// Opens the real microphone for one second (audio stays in memory). `cargo test -p pip-app -- --ignored`
     #[test]
     #[ignore]
     fn records_one_second_as_wav16k() {
