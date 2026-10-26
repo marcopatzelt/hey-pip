@@ -971,9 +971,20 @@ impl Agent {
         if let Some(what) = sent {
             state.sent.push(what);
         }
-        Ok(ToolRun { exec: Exec::Output(format!("clicked {description}")), risk, approved })
+        let mut out = format!("clicked {description}");
+        if state.enter_after_attach {
+            // The file dialog can take a few seconds to open (slow PCs). Wait for it, so the next picture
+            // shows it and the model does not click the button again.
+            match self.wait_for_file_dialog(cancel).await {
+                Some(true) => out.push_str(". The file dialog is open now: type the full file path, then press enter."),
+                Some(false) => out.push_str(". No file dialog has opened yet."),
+                None => {}
+            }
+        }
+        Ok(ToolRun { exec: Exec::Output(out), risk, approved })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn type_text(
         &self,
         text: &str,
@@ -1534,6 +1545,24 @@ impl Agent {
         self.emit(UiEvent::FlyTo { x: target.point.x, y: target.point.y });
     }
 
+    /// Some(true) once a file dialog is in front (max 6 s), Some(false) if none came, None if unknown (Linux).
+    async fn wait_for_file_dialog(&self, cancel: &CancellationToken) -> Option<bool> {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        loop {
+            let fg = self.foreground().await;
+            match fg {
+                Some(w) if w.is_file_dialog() => {
+                    // let it finish drawing before the screenshot
+                    let _ = self.pause(Duration::from_millis(400), cancel).await;
+                    return Some(true);
+                }
+                None => return None,
+                Some(_) if Instant::now() >= deadline || cancel.is_cancelled() => return Some(false),
+                Some(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+            }
+        }
+    }
+
     async fn ui_at(&self, p: PhysPoint) -> Option<UiElement> {
         let ui = self.platform.ui.clone();
         tokio::task::spawn_blocking(move || ui.element_at(p)).await.ok().flatten()
@@ -1552,7 +1581,9 @@ impl Agent {
     /// After a slow "Ja": is the thing under the click point still what the user approved?
     /// Compares the UI-tree name and the pixels inside the target box with a fresh screenshot.
     async fn target_changed(&self, state: &RunState, target: &Target, before: Option<&UiElement>) -> bool {
-        let after = self.ui_at(target.point).await;
+        // Pip himself or his bubble may sit on the button: then the UI tree names Pip, not the button.
+        let pip_on_point = self.bus.hit_rects().iter().any(|r| r.contains(target.point));
+        let after = if pip_on_point { None } else { self.ui_at(target.point).await };
         if let (Some(b), Some(a)) = (before, after.as_ref())
             && names_differ(&b.name, &a.name)
         {
