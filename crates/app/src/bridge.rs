@@ -1131,6 +1131,8 @@ impl Ctx {
         // No parent: the parent would be the full-screen overlay, and Windows then puts the dialog
         // in the top-left corner. Without one it opens in the middle of the screen.
         tracing::info!("file dialog: open");
+        #[cfg(windows)]
+        copilot_platform::windows::center_own_dialog_soon();
         dialog.pick_file(move |file| {
             tracing::info!("file dialog: closed, picked={}", file.is_some());
             if let Some(path) = file.and_then(|f| f.into_path().ok()) {

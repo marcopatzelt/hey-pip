@@ -110,6 +110,10 @@ pub struct RunState {
     pub previous_response_id: Option<String>,
     /// function_call_output items (and the first user message) for the next call.
     pub pending_input: Vec<InputItem>,
+    /// Date, memory and task, built once per run (every step is a fresh request with this text).
+    header: Option<String>,
+    /// The previous step's calls, replayed in front of their outputs.
+    last_calls: Vec<FunctionCall>,
     pub last_api: Option<ApiImage>,
     /// Pip's own rects that were greyed out in last_api.
     last_masks: Vec<PhysRect>,
@@ -183,6 +187,8 @@ impl RunState {
             started: Instant::now(),
             previous_response_id: None,
             pending_input: Vec::new(),
+            header: None,
+            last_calls: Vec::new(),
             last_api: None,
             last_masks: Vec::new(),
             tokens: 0,
@@ -209,6 +215,8 @@ impl RunState {
         self.started = Instant::now();
         self.previous_response_id = None;
         self.pending_input.clear();
+        self.header = None;
+        self.last_calls.clear();
         self.answered = false;
         self.enter_after_attach = false;
         self.focus_by_key = false;
@@ -557,27 +565,51 @@ impl Agent {
             return Ok(StepResult::Finished(AgentOutcome::Stopped));
         }
         let lang = self.lang();
-        let mut input = state.pending_input.clone();
-        let first_text = if state.previous_response_id.is_none() {
-            match self.first_message(state, lang)? {
-                Ok(text) => text,
+        // Every step is a fresh request: header, what was done so far, the last step's calls with their
+        // results, and only the newest screenshot. A stored conversation (previous_response_id) made each
+        // step re-read every old screenshot: 13-16 s per step instead of 2-3 s.
+        let header = match &state.header {
+            Some(h) => h.clone(),
+            None => match self.first_message(state, lang)? {
+                Ok(text) => {
+                    state.header = Some(text.clone());
+                    text
+                }
                 Err(outcome) => return Ok(StepResult::Finished(outcome)),
-            }
-        } else {
-            "This is the screen now.".to_string()
+            },
         };
+        let mut text = header;
+        if !state.history.is_empty() {
+            text.push_str("\nDONE SO FAR IN THIS TASK (oldest first):\n");
+            for line in &state.history {
+                text.push_str(&format!("- {line}\n"));
+            }
+        }
+        if state.resumed {
+            text.push_str(
+                "You were interrupted and continue now. Do not type into fields that already show the right text; \
+                 continue with what is still missing.\n",
+            );
+        }
+        let mut input = vec![InputItem::user(vec![Content::text(text)])];
+        for c in &state.last_calls {
+            input.push(InputItem::FunctionCall {
+                call_id: c.call_id.clone(),
+                name: c.name.clone(),
+                arguments: c.arguments.to_string(),
+            });
+        }
+        input.append(&mut state.pending_input);
 
         self.pip(PipState::Thinking);
         // Let the last action land (a window coming to the front, a page loading) before the next picture.
-        if state.previous_response_id.is_some() && !self.pause(self.pace, cancel).await {
+        if state.step > 0 && !self.pause(self.pace, cancel).await {
             return Ok(StepResult::Finished(AgentOutcome::Stopped));
         }
         state.last_masks = self.bus.hit_rects();
         let api = self.capture().await?;
-        input.push(InputItem::Message {
-            role: Role::User,
-            content: vec![Content::text(first_text), Content::png(&api.png)],
-        });
+        let look = if state.step == 0 { "This is the screen." } else { "This is the screen now. Continue the task." };
+        input.push(InputItem::Message { role: Role::User, content: vec![Content::text(look), Content::png(&api.png)] });
         state.last_api = Some(api);
 
         let req = ResponseRequest {
@@ -589,9 +621,20 @@ impl Agent {
             effort: Effort::Low,
             stream: false,
         };
-        let out = self.meta.respond(&req).await?;
+        let out = match self.meta.respond(&req).await {
+            Ok(out) => out,
+            Err(e) => {
+                // Keep the last step's calls and results for the retry.
+                for item in req.input {
+                    if matches!(item, InputItem::FunctionCallOutput { .. }) {
+                        state.pending_input.push(item);
+                    }
+                }
+                return Err(e);
+            }
+        };
         state.pending_input.clear();
-        state.previous_response_id = Some(out.id.clone());
+        state.last_calls = out.calls.clone();
         let tokens = out.usage.input_tokens + out.usage.output_tokens;
         state.tokens += tokens;
         state.step += 1;
@@ -671,16 +714,6 @@ impl Agent {
                     doc.path.display(),
                 ));
             }
-        }
-        if state.resumed {
-            s.push_str("\nEARLIER IN THIS TASK (you were interrupted):\n");
-            for line in &state.history {
-                s.push_str(&format!("- {line}\n"));
-            }
-            s.push_str(
-                "Continue the task. Look at the screen first. Do not type into fields that already show the right \
-                 text; continue with what is still missing.\n",
-            );
         }
         Ok(Ok(s))
     }
@@ -793,6 +826,8 @@ impl Agent {
             }
             Tool::Key { combo, .. } => self.press_key(tool, combo, state, cancel, lang).await,
             Tool::Scroll { direction, amount } => {
+                // The page moves: an old highlight would point at the wrong spot.
+                self.emit(UiEvent::PointClear);
                 self.pip(PipState::Acting);
                 self.progress(t("progress_scroll", lang));
                 let api = state.last_api.as_ref().ok_or_else(|| anyhow!("no screenshot yet"))?;
@@ -1519,9 +1554,9 @@ impl Agent {
     async fn target_changed(&self, state: &RunState, target: &Target, before: Option<&UiElement>) -> bool {
         let after = self.ui_at(target.point).await;
         if let (Some(b), Some(a)) = (before, after.as_ref())
-            && b.name.trim() != a.name.trim()
+            && names_differ(&b.name, &a.name)
         {
-            tracing::info!("target name changed while the card was open");
+            tracing::info!(before = %b.name, after = %a.name, "target name changed while the card was open");
             return true;
         }
         // Our own card or bubble over the target would look like a change: skip the pixel check then.
@@ -1762,6 +1797,13 @@ impl Agent {
         let args = self.ask_spark(instr, text, &api.png, tool, "ground_xy").await?;
         Ok(args.and_then(|a| point_from_xy(&a, api.w, api.h)))
     }
+}
+
+/// Two UI names of the same spot really differ. Empty = unknown; a button and the text inside it
+/// ("Datei auswählen" / "Datei auswählen Keine ausgewählt") count as the same.
+fn names_differ(before: &str, after: &str) -> bool {
+    let (b, a) = (before.trim().to_lowercase(), after.trim().to_lowercase());
+    !(b.is_empty() || a.is_empty() || b == a || b.contains(&a) || a.contains(&b))
 }
 
 /// 400/404 "referenced response not found or expired": the stored conversation is gone.
@@ -2068,6 +2110,14 @@ fn system_open(url: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn names_differ_ignores_unknown_and_nested() {
+        assert!(!super::names_differ("Datei auswählen", ""));
+        assert!(!super::names_differ("Datei auswählen", "Datei auswählen Keine ausgewählt"));
+        assert!(!super::names_differ(" Absenden ", "absenden"));
+        assert!(super::names_differ("Datei auswählen", "Absenden"));
+    }
+
     use super::*;
 
     fn sb(x1: u32, y1: u32, x2: u32, y2: u32) -> SamBox {

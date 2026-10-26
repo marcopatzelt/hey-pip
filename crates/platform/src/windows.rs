@@ -91,6 +91,61 @@ impl WinPlatform {
     }
 }
 
+/// Windows opens Pip's file dialog in the top-left corner (its owner is the full-screen overlay).
+/// Wait for our dialog (class "#32770") and move it to the middle of the screen, where the user looks.
+pub fn center_own_dialog_soon() {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, GetSystemMetrics, GetWindowRect, SM_CXSCREEN, SM_CYSCREEN, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+    };
+    std::thread::spawn(|| {
+        let class: Vec<u16> = "#32770".encode_utf16().chain(Some(0)).collect();
+        for _ in 0..50 {
+            sleep(Duration::from_millis(100));
+            let h = unsafe { FindWindowW(class.as_ptr(), std::ptr::null()) };
+            if h.is_null() {
+                continue;
+            }
+            let mut pid = 0u32;
+            unsafe { GetWindowThreadProcessId(h, &mut pid) };
+            if pid != std::process::id() {
+                continue;
+            }
+            let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            if unsafe { GetWindowRect(h, &mut r) } == 0 {
+                return;
+            }
+            let (w, hgt) = (r.right - r.left, r.bottom - r.top);
+            let (sw, sh) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+            let (x, y) = (((sw - w) / 2).max(0), ((sh - hgt) / 2).max(0));
+            unsafe { SetWindowPos(h, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER) };
+            return;
+        }
+    });
+}
+
+/// True if the top window under the point is Pip's overlay (click-through was off there).
+fn overlay_at(p: PhysPoint) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, WindowFromPoint};
+    let ours = OVERLAY_HWND.load(std::sync::atomic::Ordering::SeqCst);
+    if ours == 0 {
+        return false;
+    }
+    let h = unsafe { WindowFromPoint(POINT { x: p.x, y: p.y }) };
+    !h.is_null() && unsafe { GetAncestor(h, GA_ROOT) } as isize == ours
+}
+
+/// True if the foreground window belongs to Pip (the ask box or a question has the keyboard).
+fn foreground_is_ours() -> bool {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return false;
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    pid == std::process::id() || hwnd as isize == OVERLAY_HWND.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// The foreground window's title and class; None if it is one of ours (Pip's overlay) or there is none.
 fn foreground_window() -> Option<(isize, String, String)> {
     let hwnd = unsafe { GetForegroundWindow() };
@@ -383,7 +438,8 @@ impl UiTree for WinPlatform {
     fn element_at(&self, p: PhysPoint) -> Option<UiElement> {
         with_uia(|uia| {
             let el = uia.element_from_point(Point::new(p.x, p.y))?;
-            if el.get_process_id().ok() == Some(std::process::id()) {
+            // Pip's bubbles live in a WebView2 child process: check the window under the point too.
+            if el.get_process_id().ok() == Some(std::process::id()) || overlay_at(p) {
                 // Our own overlay is under the point (click-through was off); we cannot see below it.
                 // "Unknown": the agent then reads the label from the picture and errs towards a card.
                 return Ok(None);
@@ -396,7 +452,7 @@ impl UiTree for WinPlatform {
     fn focused(&self) -> Option<UiElement> {
         with_uia(|uia| {
             let el = uia.get_focused_element()?;
-            if el.get_process_id().ok() == Some(std::process::id()) {
+            if el.get_process_id().ok() == Some(std::process::id()) || foreground_is_ours() {
                 return Ok(None); // Pip's own window has the focus: unknown for the page
             }
             Ok(Some(describe(&el)))

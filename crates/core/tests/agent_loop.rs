@@ -376,9 +376,15 @@ async fn fills_a_field_then_finishes() {
         assert_eq!(r["reasoning"]["effort"], "low");
     }
     assert!(reqs[0]["input"].to_string().contains("Trag meinen Namen ein"));
-    assert_eq!(reqs[1]["previous_response_id"], "r1");
+    // Every step is a fresh request: the last call is replayed in front of its output, no stored conversation.
+    assert!(reqs[1]["previous_response_id"].is_null());
     assert_eq!(outputs(&reqs[1]), vec!["typed deinen Namen"]);
-    assert_eq!(reqs[1]["input"][0]["call_id"], "call_r1_0");
+    assert_eq!(reqs[1]["input"][1]["type"], "function_call");
+    assert_eq!(reqs[1]["input"][1]["call_id"], "call_r1_0");
+    assert_eq!(reqs[1]["input"][2]["call_id"], "call_r1_0");
+    assert!(reqs[1]["input"][0].to_string().contains("DONE SO FAR"));
+    // only the newest screenshot is sent
+    assert_eq!(reqs[1]["input"].to_string().matches("input_image").count(), 1);
     // model calls are logged with tokens
     assert!(h.memory.tokens_today().unwrap() >= 220);
     assert_eq!(h.memory.recent_events(1).unwrap()[0].kind, "done");
@@ -878,7 +884,7 @@ async fn weiter_continues_the_stopped_run_with_what_was_done() {
     let last = reqs.last().unwrap();
     assert!(last["previous_response_id"].is_null(), "fresh conversation");
     let text = last["input"].to_string();
-    assert!(text.contains("EARLIER IN THIS TASK") && text.contains("typed deinen Namen"), "{text}");
+    assert!(text.contains("DONE SO FAR IN THIS TASK") && text.contains("typed deinen Namen"), "{text}");
     assert_eq!(h.platform.typed(), "Erika", "nothing typed twice");
     let _ = h.drain();
 }
@@ -949,7 +955,7 @@ async fn network_error_mid_step_still_answers_every_call() {
     let out = h.run("Weiter").await;
     assert_eq!(out, AgentOutcome::Done("ok".into()));
     let r = h.requests();
-    assert_eq!(r[1]["previous_response_id"], "r1");
+    assert!(r[1]["previous_response_id"].is_null());
     let ids: Vec<&str> = r[1]["input"]
         .as_array()
         .unwrap()
@@ -1186,6 +1192,6 @@ async fn lost_conversation_starts_fresh_with_history() {
     let last = reqs.last().unwrap();
     assert!(last["previous_response_id"].is_null(), "fresh conversation after the loss");
     let text = last["input"].to_string();
-    assert!(text.contains("EARLIER IN THIS TASK") && text.contains("deinen Namen"), "{text}");
+    assert!(text.contains("DONE SO FAR IN THIS TASK") && text.contains("deinen Namen"), "{text}");
     assert_eq!(h.platform.typed(), "Erika Beispiel", "nothing typed twice");
 }

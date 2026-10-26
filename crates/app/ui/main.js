@@ -495,6 +495,8 @@ function showCard(card) {
   $("card-yes").textContent = card.yes_label;
   $("card-no").textContent = card.no_label;
   el.card.hidden = false;
+  // The card says it all and has its own "Noch nicht": the status line must never sit on its buttons.
+  el.dock.hidden = true;
   st.lastSpoke = performance.now();
   hop();
   layout();
@@ -502,6 +504,7 @@ function showCard(card) {
 function hideCard() {
   st.card = null;
   el.card.hidden = true;
+  el.dock.hidden = false;
   layout();
 }
 function answerCard(answer) {

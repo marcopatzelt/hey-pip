@@ -96,6 +96,8 @@ pub enum Role {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputItem {
     Message { role: Role, content: Vec<Content> },
+    /// A call the model made earlier, replayed without `previous_response_id` (arguments as a JSON string).
+    FunctionCall { call_id: String, name: String, arguments: String },
     FunctionCallOutput { call_id: String, output: String },
 }
 
