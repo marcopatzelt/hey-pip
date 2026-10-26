@@ -15,7 +15,19 @@ mod tray;
 mod voice;
 
 fn main() {
+    use tracing_subscriber::fmt::writer::{BoxMakeWriter, MakeWriterExt};
+    // Log to stdout and to data_dir/pip.log: the Windows release build has no console.
+    let log = copilot_core::config::log_file();
+    let _ = std::fs::create_dir_all(log.parent().unwrap_or(std::path::Path::new(".")));
+    let too_big = std::fs::metadata(&log).is_ok_and(|m| m.len() > 2_000_000);
+    let file = std::fs::OpenOptions::new().create(true).append(!too_big).write(true).truncate(too_big).open(&log);
+    let writer = match file {
+        Ok(f) => BoxMakeWriter::new(std::io::stdout.and(std::sync::Mutex::new(f))),
+        Err(_) => BoxMakeWriter::new(std::io::stdout),
+    };
     tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(writer)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,tao=warn,wry=warn".into())

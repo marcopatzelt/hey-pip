@@ -4,7 +4,10 @@
 
 const TAURI = window.__TAURI__;
 const invoke = (cmd, args) => TAURI.core.invoke(cmd, args);
-const send = (cmd) => invoke("ui_command", { cmd }).catch((e) => console.warn("ui_command", e));
+const jsLog = (level, msg) => { try { invoke("js_log", { level, msg: String(msg) }).catch(() => {}); } catch (_) {} };
+window.addEventListener("error", (e) => jsLog("error", `${e.message} at ${e.filename}:${e.lineno}`));
+window.addEventListener("unhandledrejection", (e) => jsLog("error", `promise: ${e.reason}`));
+const send = (cmd) => invoke("ui_command", { cmd }).catch((e) => jsLog("warn", `ui_command ${cmd.type}: ${e}`));
 const $ = (id) => document.getElementById(id);
 
 const PNG = { idle: "idle", listening: "listen", thinking: "think", pointing: "point", acting: "point",
@@ -621,6 +624,7 @@ function onboarding(step) {
       if (!v) { input.focus(); return; }
       st.pose = null;
       showPose();
+      hideBubble();
       send({ type: "onboarding_answer", step: "ask_name", value: v });
     };
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });

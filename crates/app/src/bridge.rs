@@ -167,6 +167,17 @@ async fn ui_command(ctx: tauri::State<'_, Shared>, cmd: UserCommand) -> Result<(
     ctx.bus.from_ui.send(cmd).await.map_err(|e| e.to_string())
 }
 
+/// Page errors and warnings go to the log file (the Windows build has no dev tools).
+#[tauri::command]
+fn js_log(level: String, msg: String) {
+    let msg: String = msg.chars().take(500).collect();
+    if level == "error" {
+        tracing::error!("page: {msg}");
+    } else {
+        tracing::warn!("page: {msg}");
+    }
+}
+
 #[tauri::command]
 fn overlay_info(ctx: tauri::State<'_, Shared>) -> OverlayInfo {
     ctx.screen()
@@ -264,7 +275,8 @@ pub fn run() -> Result<()> {
             release_focus,
             app_action,
             save_key,
-            open_deadlines
+            open_deadlines,
+            js_log
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::DragDrop(dd) = event {
@@ -405,6 +417,11 @@ async fn forward_events(ctx: Shared) {
 async fn dispatch(ctx: Shared, mut rx: mpsc::Receiver<UserCommand>) {
     while let Some(cmd) = rx.recv().await {
         let c = ctx.clone();
+        if !matches!(cmd, UserCommand::HitRects { .. }) {
+            // Only the command name: texts and paths can be personal.
+            let dbg = format!("{cmd:?}");
+            tracing::info!("ui command: {}", dbg.split([' ', '{', '(']).next().unwrap_or(""));
+        }
         match cmd {
             UserCommand::HitRects { rects } => {
                 *ctx.bus.hit_rects.write().expect("hit_rects lock") = overlay::sanitize(rects);
@@ -596,6 +613,11 @@ impl Ctx {
             *self.onboarding.lock().expect("onb lock") = OnboardingStep::AskName;
             self.bus.emit(UiEvent::Onboarding { step: OnboardingStep::AskName });
             self.bus.emit(UiEvent::Speak { text: format!("{} {}", t("onb_hello", lang), t("onb_ask_name", lang)) });
+        } else if self.backend.profile_get("onboarded").is_none() && !env_flag("PIP_SKIP_ONBOARDING") {
+            // The first start ended before the first letter: invite again instead of "welcome back".
+            *self.onboarding.lock().expect("onb lock") = OnboardingStep::FirstLetter;
+            self.pip(PipState::Idle);
+            self.bus.emit(UiEvent::Onboarding { step: OnboardingStep::FirstLetter });
         } else {
             self.pip(PipState::Idle);
             let text = match name {
@@ -610,7 +632,7 @@ impl Ctx {
         let lang = self.lang();
         match step {
             OnboardingStep::AskName => {
-                let name: String = value.trim().chars().take(40).collect();
+                let name = clean_name(&value);
                 if name.is_empty() {
                     self.bus.emit(UiEvent::Onboarding { step: OnboardingStep::AskName });
                     return;
@@ -1106,10 +1128,11 @@ impl Ctx {
                 dialog = dialog.set_directory(dir);
             }
         }
-        if let Some(w) = self.window() {
-            dialog = dialog.set_parent(&w);
-        }
+        // No parent: the parent would be the full-screen overlay, and Windows then puts the dialog
+        // in the top-left corner. Without one it opens in the middle of the screen.
+        tracing::info!("file dialog: open");
         dialog.pick_file(move |file| {
+            tracing::info!("file dialog: closed, picked={}", file.is_some());
             if let Some(path) = file.and_then(|f| f.into_path().ok()) {
                 let _ = bus.from_ui.try_send(UserCommand::DropFiles { paths: vec![path] });
             }
@@ -1504,5 +1527,38 @@ mod tests {
     fn app_events_serialize_like_ui_events() {
         let v = serde_json::to_value(AppEvent::Acting { on: true }).unwrap();
         assert_eq!(v, serde_json::json!({"type":"acting","on":true}));
+    }
+}
+
+/// What the user typed as their name, made into a name: "ich heiße erika." -> "Erika".
+fn clean_name(raw: &str) -> String {
+    let mut s = raw.trim();
+    for p in ["ich heiße ", "ich heisse ", "ich bin ", "mein name ist ", "nenn mich ", "my name is ", "i am ", "i'm ", "call me "] {
+        if s.len() > p.len() && s.is_char_boundary(p.len()) && s[..p.len()].eq_ignore_ascii_case(p) {
+            s = s[p.len()..].trim_start();
+            break;
+        }
+    }
+    let s = s.trim_end_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace());
+    let s: String = s.chars().take(40).collect();
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::clean_name;
+
+    #[test]
+    fn names() {
+        assert_eq!(clean_name("  erika "), "Erika");
+        assert_eq!(clean_name("Ich heiße Erika."), "Erika");
+        assert_eq!(clean_name("ich bin Erika Muster!"), "Erika Muster");
+        assert_eq!(clean_name("Bin"), "Bin");
+        assert_eq!(clean_name("..."), "");
+        assert_eq!(clean_name("Ölaf"), "Ölaf");
     }
 }

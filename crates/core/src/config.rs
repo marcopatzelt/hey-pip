@@ -57,6 +57,11 @@ impl Config {
 
 const APP_DIR: &str = "papierkram-copilot";
 
+/// data_dir/pip.log: the app's log on machines without a console (Windows release build).
+pub fn log_file() -> PathBuf {
+    data_dir(&|k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty())).join("pip.log")
+}
+
 /// data_dir/.env: where the key pasted into Pip is kept (read by `meta::load_dotenv`).
 pub fn env_file() -> PathBuf {
     data_dir(&|k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty())).join(".env")
