@@ -292,6 +292,10 @@ mod draw {
 
 pub trait Screen: Send + Sync {
     fn capture_primary(&self) -> Result<Frame>;
+    /// True when screenshots never show Pip's overlay (Windows: excluded from capture), so no masks are needed.
+    fn hides_overlay(&self) -> bool {
+        false
+    }
 }
 
 pub trait Input: Send + Sync {

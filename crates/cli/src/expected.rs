@@ -129,6 +129,7 @@ pub fn to_extract(x: &Value) -> Result<DocumentExtract> {
         recipient: s(&x["recipient_contains"]),
         date: date(&x["date"]),
         reference: x["reference"].as_str().map(str::to_string),
+        person: None,
         summary_simple: summary,
         requests: vec![],
         deadlines,

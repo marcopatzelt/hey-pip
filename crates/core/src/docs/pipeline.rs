@@ -188,9 +188,10 @@ fn instructions(lang: Lang) -> String {
          - deadlines: only dates by which the reader must do or pay something. source_text = exact quote.\n\
          - Sick note (Arbeitsunfähigkeitsbescheinigung): doc_type au_bescheinigung, sender = doctor's practice, \
            recipient = the health insurer printed on the form (Krankenkasse), reference = Versicherten-Nr., \
+           person = the insured person's full name as \"Vorname Nachname\", \
            au.from = \"arbeitsunfähig seit\", au.until = \"bis einschließlich\", first_or_follow from the ticked box, \
            au.issued = \"festgestellt am\". A sick note has no deadlines of its own.\n\
-         - For any other letter au is null.\n\
+         - For any other letter au is null. person = the full name of the person the letter is addressed to or about.\n\
          - bescheid = an official decision with a legal remedy notice (Rechtsbehelfsbelehrung / Widerspruch).\n\
          - letter_text = the full readable text of the letter, plain, line breaks kept (for search).\n\
          - confidence: how sure you are about the dates and names (0.0 to 1.0)."
@@ -484,6 +485,7 @@ mod tests {
             recipient: "Erika Beispiel".into(),
             date: Some(d("2026-10-14")),
             reference: None,
+            person: None,
             summary_simple: "Du bekommst 96 Euro Wohngeld im Monat. Das gilt ein Jahr.".into(),
             requests: vec![],
             deadlines: vec![],

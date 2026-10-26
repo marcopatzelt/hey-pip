@@ -38,6 +38,9 @@ pub enum Tool {
         text: String,
         what: String,
         into_sam_query: Option<String>,
+        /// The field's visible label ("Versichertennummer"): found in the UI tree at once, no model call.
+        #[serde(default)]
+        field_label: Option<String>,
     },
     Key {
         combo: String,
@@ -128,6 +131,12 @@ pub(crate) fn normalize_combo(combo: &str) -> anyhow::Result<String> {
         KEY_NAMES.contains(&last.as_str()) || is_fkey || is_char,
         "unknown key '{last}' (use enter, tab, backspace, arrows, f1-f12 or one letter)"
     );
+    // Closing keys end the user's windows or tabs (unsaved work).
+    let joined = parts.join("+");
+    ensure!(
+        !matches!(joined.as_str(), "alt+f4" | "ctrl+w" | "ctrl+f4" | "ctrl+q" | "ctrl+shift+w" | "ctrl+shift+q"),
+        "keys that close windows or tabs are not available; Pip never closes the user's windows"
+    );
     // Alt + letter/digit triggers access keys (a form's submit button, Outlook "Senden", a dialog's "&Ja").
     ensure!(
         !(mods.iter().any(|m| m == "alt") && is_char),
@@ -163,7 +172,8 @@ impl Tool {
                 check_opt("commit_what", commit_what, 200)?;
                 check_opt("commit_to", commit_to, 200)
             }
-            Tool::TypeText { text, what, into_sam_query } => {
+            Tool::TypeText { text, what, into_sam_query, field_label } => {
+                check_opt("field_label", field_label, 80)?;
                 ensure!(!text.is_empty(), "text must not be empty");
                 ensure!(text.chars().count() <= 2000, "text is too long (max 2000 chars)");
                 // A typed line break or tab would act like Enter/Tab and could send a form past the gate.
@@ -359,6 +369,10 @@ pub fn tool_defs() -> Vec<ToolDef> {
                     "into_sam_query",
                     opt_str("Shape phrase of the field to click first (e.g. 'text input field'), or null."),
                 ),
+                (
+                    "field_label",
+                    opt_str("The label printed next to or inside the field, exactly as on screen (e.g. 'Versichertennummer'), or null."),
+                ),
             ]),
         ),
         def(
@@ -412,7 +426,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 ("question", str_("Short question in the user's language.")),
                 (
                     "options",
-                    json!({"type": "array", "items": {"type": "string"}, "description": "0 to 4 short answer buttons."}),
+                    json!({"type": "array", "items": {"type": "string"}, "description": "0 to 4 short answer buttons. Empty = open question: the user types the answer, which you get back as text."}),
                 ),
             ]),
         ),
@@ -510,7 +524,8 @@ mod tests {
     fn key_combos() {
         assert_eq!(normalize_combo("Ctrl + A").unwrap(), "ctrl+a");
         assert_eq!(normalize_combo("enter").unwrap(), "enter");
-        assert_eq!(normalize_combo("alt+F4").unwrap(), "alt+f4");
+        assert!(normalize_combo("alt+F4").is_err());
+        assert!(normalize_combo("Ctrl + W").is_err());
         assert!(normalize_combo("win+r").is_err());
         // Esc is the user's stop key; Alt+letter is an access key that can send.
         assert!(normalize_combo("esc").is_err());
@@ -543,7 +558,7 @@ mod tests {
 
     #[test]
     fn redaction_truncates_strings() {
-        let t = Tool::TypeText { text: "x".repeat(200), what: "w".into(), into_sam_query: None };
+        let t = Tool::TypeText { text: "x".repeat(200), what: "w".into(), into_sam_query: None, field_label: None };
         let r = t.redacted_args();
         let v: Value = serde_json::from_str(&r).unwrap();
         assert_eq!(v["text"].as_str().unwrap().chars().count(), 81, "{r}"); // 80 + ellipsis

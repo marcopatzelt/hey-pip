@@ -65,6 +65,9 @@ pub struct DocumentExtract {
     pub date: Option<NaiveDate>,
     /// Aktenzeichen / Versichertennummer
     pub reference: Option<String>,
+    /// Full name of the person the letter is about (patient, insured person, addressee).
+    #[serde(default)]
+    pub person: Option<String>,
     /// Max 3 sentences, plain language, user's language.
     pub summary_simple: String,
     pub requests: Vec<String>,
@@ -123,6 +126,7 @@ pub fn extract_schema() -> Value {
             "recipient": string("Who it is addressed to. For a sick note: the health insurer printed on the form"),
             "date": nullable("string", &format!("Date of the letter, {DATE}")),
             "reference": nullable("string", "Aktenzeichen, Versichertennummer, Kundennummer or Matrikelnummer"),
+            "person": nullable("string", "full name of the person the letter is about (patient, insured person or addressee), exactly as printed"),
             "summary_simple": string("At most 3 short sentences in plain language, in the user's language, no jargon"),
             "requests": { "type": "array", "items": { "type": "string" },
                 "description": "What the letter asks the reader to do, short, in the user's language" },
@@ -163,6 +167,7 @@ pub fn validate(extract: &mut DocumentExtract) -> Vec<String> {
     // The live API sometimes sends a nullable field as the string "null" (seen 2026-10-26).
     let present = |r: &String| !r.is_empty() && !r.eq_ignore_ascii_case("null");
     extract.reference = extract.reference.take().map(|r| r.trim().to_string()).filter(present);
+    extract.person = extract.person.take().map(|r| r.trim().to_string()).filter(present);
     extract.consequences_if_ignored =
         extract.consequences_if_ignored.take().map(|r| r.trim().to_string()).filter(present);
     extract.requests.retain(|r| present(&r.trim().to_string()));
@@ -246,7 +251,7 @@ pub(crate) fn from_model_value(mut v: Value) -> anyhow::Result<(DocumentExtract,
             obj.insert(key.into(), json!([]));
         }
     }
-    for key in ["reference", "consequences_if_ignored"] {
+    for key in ["reference", "person", "consequences_if_ignored"] {
         let fixed = match obj.get(key) {
             Some(Value::String(s)) if !s.trim().is_empty() => Value::String(s.clone()),
             Some(Value::Number(n)) => Value::String(n.to_string()),
@@ -337,6 +342,7 @@ mod tests {
             recipient: "Gesundkasse Beispielstadt".into(),
             date: Some(d("2026-10-20")),
             reference: Some("G123456789".into()),
+            person: None,
             summary_simple: "Krankschreibung vom 20.10. bis 30.10.2026.".into(),
             requests: vec![],
             deadlines: vec![],

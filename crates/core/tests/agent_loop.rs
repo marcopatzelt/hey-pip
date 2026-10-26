@@ -118,6 +118,8 @@ struct Script {
     agent_requests: Mutex<Vec<Value>>,
     /// While > 0, SAM and `locate` calls answer 503 (each call counts down).
     fail_ground: Mutex<u32>,
+    /// While > 0, agent calls with a previous_response_id answer 400 "referenced response not found".
+    lose_conversation: Mutex<u32>,
 }
 
 #[derive(Clone)]
@@ -159,6 +161,14 @@ impl Respond for Responder {
             let v = s.pick.lock().unwrap().pop_front();
             let v = v.unwrap_or_else(|| calls("p_pick", &[("choose", json!({"choice": 1}))]));
             return ResponseTemplate::new(200).set_body_json(v);
+        }
+        if body["previous_response_id"].is_string() {
+            let mut l = s.lose_conversation.lock().unwrap();
+            if *l > 0 {
+                *l -= 1;
+                return ResponseTemplate::new(400)
+                    .set_body_string(r#"{"error":{"message":"referenced response not found or expired"}}"#);
+            }
         }
         s.agent_requests.lock().unwrap().push(body);
         let v =
@@ -1160,4 +1170,22 @@ async fn open_url_asks_for_unknown_hosts_once() {
         }
     }
     assert_eq!(n, 1, "one card for the new host, none for the same host or localhost");
+}
+
+#[tokio::test]
+async fn lost_conversation_starts_fresh_with_history() {
+    let h = Harness::new(true).await;
+    *h.script.lose_conversation.lock().unwrap() = 1;
+    h.agent_turns(vec![
+        calls("r1", &[("type_text", json!({"text": "Erika Beispiel", "what": "deinen Namen", "into_sam_query": null}))]),
+        calls("r2", &[done("Fertig.")]),
+    ]);
+    let outcome = h.run("Trag meinen Namen ein").await;
+    assert!(matches!(outcome, AgentOutcome::Done(_)), "{outcome:?}");
+    let reqs = h.requests();
+    let last = reqs.last().unwrap();
+    assert!(last["previous_response_id"].is_null(), "fresh conversation after the loss");
+    let text = last["input"].to_string();
+    assert!(text.contains("EARLIER IN THIS TASK") && text.contains("deinen Namen"), "{text}");
+    assert_eq!(h.platform.typed(), "Erika Beispiel", "nothing typed twice");
 }

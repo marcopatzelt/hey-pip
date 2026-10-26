@@ -172,10 +172,44 @@ fn primary_monitor() -> Result<xcap::Monitor> {
     all.into_iter().nth(idx).context("no screen found")
 }
 
+/// Pip's overlay window (0 = none). While a screenshot is taken it is excluded from capture, so the model
+/// sees the page under Pip's bubbles instead of grey masks; the user keeps seeing Pip.
+static OVERLAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Called by the app once the overlay window exists.
+pub fn set_overlay_window(hwnd: isize) {
+    OVERLAY_HWND.store(hwnd, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Sets the display affinity of the overlay; false if there is no overlay or Windows refused.
+fn exclude_overlay(on: bool) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE};
+    let h = OVERLAY_HWND.load(std::sync::atomic::Ordering::SeqCst);
+    if h == 0 {
+        return false;
+    }
+    let affinity = if on { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE };
+    unsafe { SetWindowDisplayAffinity(h as _, affinity) != 0 }
+}
+
 impl Screen for WinPlatform {
+    fn hides_overlay(&self) -> bool {
+        OVERLAY_HWND.load(std::sync::atomic::Ordering::SeqCst) != 0
+    }
+
     fn capture_primary(&self) -> Result<Frame> {
         let m = primary_monitor()?;
-        let image = m.capture_image().map_err(|e| anyhow!("cannot take a screenshot: {e}"))?;
+        let excluded = exclude_overlay(true);
+        if excluded {
+            sleep(Duration::from_millis(60)); // the next desktop frame is drawn without the overlay
+        } else if self.hides_overlay() {
+            tracing::warn!("overlay could not be hidden from the screenshot");
+        }
+        let image = m.capture_image().map_err(|e| anyhow!("cannot take a screenshot: {e}"));
+        if excluded {
+            exclude_overlay(false);
+        }
+        let image = image?;
         let (w, h) = (m.width().unwrap_or(0), m.height().unwrap_or(0));
         if (w, h) != image.dimensions() {
             // Would mean the process is not DPI aware and coordinates are off.

@@ -22,6 +22,7 @@ fn sick_note() -> DocumentExtract {
         recipient: "Erika Musterfrau".into(),
         date: Some(d(2026, 10, 20)),
         reference: None,
+        person: None,
         summary_simple: "Krankschreibung vom 20.10. bis 30.10.".into(),
         requests: vec![],
         deadlines: vec![],

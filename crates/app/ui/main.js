@@ -397,6 +397,29 @@ el.bubble.addEventListener("click", (e) => {
 el.bClose.addEventListener("click", () => hideBubble());
 
 /** Core / app buttons: "cmd:<type>" -> UserCommand, "app:<action>" -> app_action, "close" -> just close. */
+// A question without choices: a text field and one button that sends what was typed.
+function openQuestion(ev, qid) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.maxLength = 200;
+  input.setAttribute("aria-label", ev.text);
+  const submit = () => {
+    const v = input.value.trim();
+    if (!v) { input.focus(); return; }
+    hideBubble();
+    invoke("release_focus").catch(() => {});
+    send({ type: "answer", question_id: qid, choice: v });
+  };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  const b = ev.buttons[0];
+  say(ev.text, {
+    kind: "question", sticky: true, qid, extra: [input],
+    buttons: [{ label: b.label, primary: true, onClick: submit }],
+  });
+  invoke("focus_window").catch(() => {});
+  setTimeout(() => input.focus(), 120);
+}
+
 function runButton(id, qid) {
   if (qid) { send({ type: "answer", question_id: qid, choice: id }); return; }
   if (id.startsWith("cmd:")) send({ type: id.slice(4) });
@@ -678,6 +701,7 @@ function onUi(ev) {
       break;
     case "bubble": {
       const qid = ev.question_id;
+      if (qid && ev.buttons.some((b) => b.id === "__text__")) { openQuestion(ev, qid); break; }
       say(ev.text, {
         buttons: ev.buttons.map((b) => ({
           label: b.label, primary: b.primary,

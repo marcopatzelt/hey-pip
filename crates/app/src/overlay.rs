@@ -105,6 +105,10 @@ pub fn setup(win: &WebviewWindow, bus: Bus, windowed: bool, mouse_stop: MouseSto
         }
     }
     win.show()?;
+    #[cfg(windows)]
+    if let Ok(h) = win.hwnd() {
+        copilot_platform::windows::set_overlay_window(h.0 as isize);
+    }
     // Clicks on Pip, the card or a bubble must not pull the keyboard away from the page Pip works on.
     if let Err(e) = win.set_focusable(false) {
         tracing::debug!("set_focusable: {e}");

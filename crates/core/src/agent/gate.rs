@@ -259,6 +259,22 @@ impl Gate {
     /// or the UI name / quoted label looks final (`label_hit`). Keys: see `key_commits`; Space when the
     /// focused element looks like a send button or is unknown (ui_name None).
     /// Click/TypeText/Key/Scroll/OpenUrl = Act; the rest Free.
+    /// Pip never closes, minimizes or quits the user's windows (unsaved work, the user's own programs).
+    /// A popup's own close button ("X vom Hinweis") stays allowed.
+    pub fn closes_window(description: &str, sam_query: &str, ui_name: &str) -> bool {
+        let text = format!("{description} {sam_query}").to_lowercase();
+        let ui = ui_name.trim().to_lowercase();
+        let popup = ["hinweis", "popup", "pop-up", "meldung", "banner", "cookie", "dialog", "notice", "tooltip"]
+            .iter()
+            .any(|w| text.contains(w));
+        let window = ["fenster", "window", "programm", "app ", "anwendung", "powershell", "terminal"]
+            .iter()
+            .any(|w| text.contains(w));
+        let closing = ["schließ", "schliess", "close", "minimi", "beend", "quit", "exit"].iter().any(|w| text.contains(w));
+        let ui_close = matches!(ui.as_str(), "schließen" | "close" | "minimieren" | "minimize" | "fenster schließen");
+        !popup && ((window && closing) || (ui_close && window))
+    }
+
     pub fn classify(&self, tool: &Tool, ui_name: Option<&str>) -> Risk {
         match tool {
             Tool::Click { sam_query, description, is_commit, .. } => {
@@ -496,7 +512,7 @@ mod tests {
             g.classify(&Tool::Point { sam_query: "submit button".into(), description: "Absenden".into() }, None),
             Risk::Free
         );
-        let t = Tool::TypeText { text: "x".into(), what: "w".into(), into_sam_query: None };
+        let t = Tool::TypeText { text: "x".into(), what: "w".into(), into_sam_query: None, field_label: None };
         assert_eq!(g.classify(&t, None), Risk::Act);
         assert_eq!(g.classify(&Tool::OpenUrl { url: "https://x".into() }, None), Risk::Act);
     }
@@ -556,5 +572,20 @@ mod tests {
         assert!(!is_send_target("Datei auswählen"));
         assert!(is_delete_target("Konto löschen"));
         assert!(!is_delete_target("Absenden"));
+    }
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::Gate;
+
+    #[test]
+    fn window_close_is_refused_popup_close_is_not() {
+        assert!(Gate::closes_window("das Schließen-Kreuz oben rechts im PowerShell-Fenster", "close button X", "Schließen"));
+        assert!(Gate::closes_window("das X zum Schließen oben rechts am schwarzen Fenster", "close button X", ""));
+        assert!(Gate::closes_window("Fenster minimieren", "minimize button", ""));
+        assert!(!Gate::closes_window("das X zum Schließen vom Hinweis oben rechts", "close button X", "Schließen"));
+        assert!(!Gate::closes_window("das Feld Vor- und Nachname", "name text field", "Vor- und Nachname"));
+        assert!(!Gate::closes_window("den Knopf Absenden", "green submit button", "Absenden"));
     }
 }

@@ -404,6 +404,7 @@ impl Agent {
             result: truncate(result, 200),
             tokens,
         };
+        tracing::info!(tool = %row.tool, risk = %row.risk, approved = ?row.approved, args = %truncate(&row.args_redacted, 160), result = %row.result, "agent action");
         if let Err(e) = self.memory.log_action(&row) {
             tracing::warn!(error = %e, "actions_log write failed");
         }
@@ -429,6 +430,7 @@ impl Agent {
         self.pip(PipState::Thinking);
         self.progress(t("thinking", lang));
         let mut retries = 0u32;
+        let mut relinks = 0u32;
         let outcome = loop {
             if cancel.is_cancelled() {
                 break AgentOutcome::Stopped;
@@ -445,6 +447,14 @@ impl Agent {
                 None => break AgentOutcome::Failed(too_long(&state, lang)),
                 Some(Ok(StepResult::Continue)) => retries = 0,
                 Some(Ok(StepResult::Finished(o))) => break o,
+                Some(Err(e)) if lost_conversation(&e) && relinks < 2 => {
+                    // The API forgot the previous response: start a fresh conversation that lists what was done.
+                    relinks += 1;
+                    tracing::warn!(error = %e, step = state.step, "model conversation lost, starting a fresh one");
+                    state.previous_response_id = None;
+                    state.pending_input.clear();
+                    state.resumed = true;
+                }
                 Some(Err(e)) => {
                     let retryable = e.downcast_ref::<MetaError>().is_some_and(MetaError::is_retryable);
                     tracing::warn!(error = %e, retryable, step = state.step, "agent step failed");
@@ -558,6 +568,10 @@ impl Agent {
         };
 
         self.pip(PipState::Thinking);
+        // Let the last action land (a window coming to the front, a page loading) before the next picture.
+        if state.previous_response_id.is_some() && !self.pause(self.pace, cancel).await {
+            return Ok(StepResult::Finished(AgentOutcome::Stopped));
+        }
         state.last_masks = self.bus.hit_rects();
         let api = self.capture().await?;
         input.push(InputItem::Message {
@@ -659,13 +673,13 @@ impl Agent {
             }
         }
         if state.resumed {
-            s.push_str("\nEARLIER IN THIS TASK (before the user paused you):\n");
+            s.push_str("\nEARLIER IN THIS TASK (you were interrupted):\n");
             for line in &state.history {
                 s.push_str(&format!("- {line}\n"));
             }
             s.push_str(
-                "The user asked you to continue. Look at the screen first. Do not type into fields that already \
-                 show the right text; continue with what is still missing.\n",
+                "Continue the task. Look at the screen first. Do not type into fields that already show the right \
+                 text; continue with what is still missing.\n",
             );
         }
         Ok(Ok(s))
@@ -673,11 +687,13 @@ impl Agent {
 
     async fn capture(&self) -> Result<ApiImage> {
         let screen = self.platform.screen.clone();
-        let rects = self.bus.hit_rects();
+        let rects = if screen.hides_overlay() { Vec::new() } else { self.bus.hit_rects() };
         tokio::task::spawn_blocking(move || {
             let mut frame = screen.capture_primary()?;
             frame.mask(&rects);
-            frame.for_api(API_MAX_SIDE)
+            let api = frame.for_api(API_MAX_SIDE)?;
+            save_debug_shot(&api);
+            Ok(api)
         })
         .await?
     }
@@ -770,8 +786,10 @@ impl Agent {
             Tool::Click { sam_query, description, .. } => {
                 self.click(tool, sam_query, description, state, cancel, lang).await
             }
-            Tool::TypeText { text, what, into_sam_query } => {
-                self.type_text(text, what, into_sam_query.as_deref(), state, cancel, lang).await
+            Tool::TypeText { text, what, into_sam_query, field_label } => {
+                // A label alone also means "click that field first".
+                let q = into_sam_query.as_deref().or(field_label.as_ref().map(|_| "text input field"));
+                self.type_text(text, what, q, field_label.as_deref(), state, cancel, lang).await
             }
             Tool::Key { combo, .. } => self.press_key(tool, combo, state, cancel, lang).await,
             Tool::Scroll { direction, amount } => {
@@ -856,9 +874,17 @@ impl Agent {
         let Some(target) = self.locate(state, sam_query, description, quoted_label(description)).await? else {
             return Ok(ToolRun::out(base_risk, not_found(sam_query)));
         };
+        let ui = self.ui_at(target.point).await;
+        let ui_name_now = ui.as_ref().map(|u| u.name.as_str()).unwrap_or("");
+        if Gate::closes_window(description, sam_query, ui_name_now) {
+            return Ok(ToolRun::out(
+                base_risk,
+                "refused: Pip never closes, minimizes or quits the user's windows. To bring a window to the front, \
+                 click a visible part of it or its taskbar button, or use open_url for a web page.",
+            ));
+        }
         self.show_target(&target, description);
         self.progress(tf("progress_click", lang, &[("target", description)]));
-        let ui = self.ui_at(target.point).await;
         let mut ui_name = ui.as_ref().map(|u| u.name.clone()).unwrap_or_default();
         let mut risk = self.gate.classify(tool, ui.as_ref().map(|u| u.name.as_str()));
         if risk == Risk::Act && ui.as_ref().is_none_or(|u| u.name.trim().is_empty()) {
@@ -918,6 +944,7 @@ impl Agent {
         text: &str,
         what: &str,
         into_sam_query: Option<&str>,
+        field_label: Option<&str>,
         state: &mut RunState,
         cancel: &CancellationToken,
         lang: Lang,
@@ -930,7 +957,7 @@ impl Agent {
         if let Some(q) = into_sam_query {
             // `what` is the words for the user ("deinen Namen"); the locator needs the field itself.
             let field = format!("the input box where {what} is typed (a text field, \"{q}\")");
-            let Some(target) = self.locate(state, q, &field, None).await? else {
+            let Some(target) = self.locate(state, q, &field, field_label.map(str::to_string)).await? else {
                 return Ok(ToolRun::out(Risk::Act, not_found(q)));
             };
             self.show_target(&target, what);
@@ -1423,9 +1450,12 @@ impl Agent {
         let _wait = WaitGuard::start(&state.user_wait);
         let qid = Uuid::new_v4();
         let rx = self.bus.pending.wait_answer(qid);
-        let fallback = [t("btn_resume", lang).to_string()];
-        let options = if options.is_empty() { &fallback[..] } else { options };
-        let buttons = options.iter().enumerate().map(|(i, o)| Button::new(o.clone(), o.clone(), i == 0)).collect();
+        // No options = an open question: the bubble gets a text field, its button sends what was typed.
+        let buttons = if options.is_empty() {
+            vec![Button::new(TEXT_ANSWER, t("onb_next", lang), true)]
+        } else {
+            options.iter().enumerate().map(|(i, o)| Button::new(o.clone(), o.clone(), i == 0)).collect()
+        };
         self.pip(PipState::Asking);
         self.emit(UiEvent::Speak { text: question.to_string() });
         self.emit(UiEvent::Bubble { text: question.to_string(), buttons, question_id: Some(qid) });
@@ -1579,8 +1609,12 @@ impl Agent {
                 })
                 .map(|(l, (e, r))| (l, e, r))
                 .collect();
-            let exact: Vec<&(String, UiElement, PhysRect)> =
+            let mut exact: Vec<&(String, UiElement, PhysRect)> =
                 visible.iter().filter(|(l, e, _)| e.name.trim().eq_ignore_ascii_case(l.trim())).collect();
+            // A field and its printed label share the name: prefer the control over the static text.
+            if exact.len() > 1 && exact.iter().any(|(_, e, _)| e.control != "Text") {
+                exact.retain(|(_, e, _)| e.control != "Text");
+            }
             let one = match (exact.as_slice(), visible.as_slice()) {
                 ([only], _) => Some(only.2),
                 ([], [only]) => Some(only.2),
@@ -1729,6 +1763,37 @@ impl Agent {
         Ok(args.and_then(|a| point_from_xy(&a, api.w, api.h)))
     }
 }
+
+/// 400/404 "referenced response not found or expired": the stored conversation is gone.
+fn lost_conversation(e: &anyhow::Error) -> bool {
+    match MetaError::find(e) {
+        Some(MetaError::Http { status: 400 | 404, body }) => {
+            let b = body.to_lowercase();
+            b.contains("previous_response") || (b.contains("response") && (b.contains("not found") || b.contains("expired")))
+        }
+        _ => false,
+    }
+}
+
+/// DEBUG_SHOTS=1: keep what the model saw in data_dir/shots (demo data only; for testing on Windows).
+fn save_debug_shot(api: &ApiImage) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static N: AtomicU32 = AtomicU32::new(0);
+    if !std::env::var("DEBUG_SHOTS").is_ok_and(|v| matches!(v.trim(), "1" | "true")) {
+        return;
+    }
+    let dir = crate::config::log_file().with_file_name("shots");
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("shot-{n:03}.png"));
+    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &api.png)) {
+        tracing::warn!(error = %e, "debug shot not saved");
+    } else {
+        tracing::info!(shot = %path.display(), "debug shot");
+    }
+}
+
+/// Button id that asks the page for a text field (open question); the answer is the typed text.
+pub const TEXT_ANSWER: &str = "__text__";
 
 fn risk_str(r: Risk) -> &'static str {
     match r {
