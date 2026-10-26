@@ -42,6 +42,53 @@ fn same_letter(a: &DocumentExtract, b: &DocumentExtract) -> bool {
         && reference(a) == reference(b)
 }
 
+/// Rules write German titles and reasons; for English users they are rewritten here by rule id.
+fn localize(mut p: DeadlineProposal, doc: &DocumentExtract, lang: Lang) -> DeadlineProposal {
+    if lang != Lang::En {
+        return p;
+    }
+    let en = |d: NaiveDate| d.format("%-d %b %Y").to_string();
+    const HINT: &str = "This is a hint, not legal advice.";
+    match p.rule_id {
+        "au_lueckenlos" => {
+            p.title = "New sick note, if you are still ill".into();
+            if let Some(au) = &doc.au {
+                p.why = format!(
+                    "Your sick note ends on {}. If you are still ill, the new one must be issued by {} at the latest \
+                     (the next working day; Saturdays do not count). Otherwise the health insurer cannot pay sick pay \
+                     for the gap. Rule: {}. {HINT}",
+                    en(au.until),
+                    en(p.due),
+                    p.source
+                );
+            }
+        }
+        "widerspruch_bescheid" => {
+            let sender = doc.sender.trim();
+            p.title = if sender.is_empty() {
+                "Objection (Widerspruch) to the decision".into()
+            } else {
+                format!("Objection (Widerspruch) to the decision from {sender}")
+            };
+            if let Some((known, _)) = doc.date.and_then(super::widerspruch::widerspruch_due) {
+                p.why = format!(
+                    "You can object to an official decision for one month. A letter by post counts as received on the \
+                     fourth day after its date, here on {}. If the end falls on a weekend or holiday, the deadline ends \
+                     on the next working day. Rule: {}. {HINT}",
+                    en(known),
+                    p.source
+                );
+            }
+        }
+        _ => {
+            if p.title == "Frist aus dem Brief" {
+                p.title = "Deadline from the letter".into();
+            }
+        }
+    }
+    p
+}
+
 fn rfc(t: DateTime<Local>) -> String {
     t.to_rfc3339_opts(SecondsFormat::Secs, false)
 }
@@ -49,6 +96,11 @@ fn rfc(t: DateTime<Local>) -> String {
 impl RuleEngine {
     pub fn new(memory: Arc<Memory>, clock: Arc<dyn Clock>) -> Self {
         Self { memory, clock }
+    }
+
+    /// The user's language from the profile (default English), for stored deadline titles and reasons.
+    fn lang(&self) -> Lang {
+        self.memory.profile_get("lang").ok().flatten().map(|s| Lang::from_code(&s)).unwrap_or_default()
     }
 
     /// Run all_rules, store deadlines + reminders (no duplicates for the same doc/due).
@@ -76,7 +128,7 @@ impl RuleEngine {
         let open_elsewhere: Vec<Deadline> =
             self.memory.open_deadlines()?.into_iter().filter(|d| d.doc_id != Some(doc_id)).collect();
         for rule in all_rules() {
-            for p in rule.apply(doc, today) {
+            for p in rule.apply(doc, today).into_iter().map(|p| localize(p, doc, self.lang())) {
                 if existing.iter().any(|d| d.due == p.due) {
                     continue;
                 }

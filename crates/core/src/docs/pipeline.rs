@@ -183,7 +183,10 @@ fn instructions(lang: Lang) -> String {
          - Write summary_simple, requests, deadline titles and consequences_if_ignored in {language}, \
            in short plain sentences without official jargon. In German say \"du\", never \"Sie\". \
            No legal or medical advice.\n\
-         - All dates as YYYY-MM-DD. Only dates that are printed in the letter. Never calculate a date \
+         - In summary_simple and other sentences for the reader, write dates the friendly way \
+           (English: \"1 Oct 2026\", German: \"1.10.2026\") and amounts like \"96 euros\". Name German terms \
+           in plain words with the German word in brackets once, e.g. \"housing benefit (Wohngeld)\".\n\
+         - In the date fields, all dates as YYYY-MM-DD. Only dates that are printed in the letter. Never calculate a date \
            (no \"one month after\"). If a date is unreadable, leave it out and lower confidence.\n\
          - deadlines: only dates by which the reader must do or pay something. source_text = exact quote.\n\
          - Sick note (Arbeitsunfähigkeitsbescheinigung): doc_type au_bescheinigung, sender = doctor's practice, \
@@ -316,7 +319,7 @@ pub(crate) fn bubble_text(extract: &DocumentExtract, deadlines: &[Deadline], lan
     let second = match (unsure, first_open) {
         (true, Some(d)) => Some(say("doc_unsure_date", lang, &[("due", &day_date(d.due, lang))])),
         (true, None) => Some(t("doc_unsure", lang).to_string()),
-        (false, d) => d.map(|d| say("doc_deadline_found", lang, &[("due", &day_date(d.due, lang))])),
+        (false, d) => d.map(|d| say("doc_deadline_found", lang, &[("title", &d.title), ("due", &day_date(d.due, lang))])),
     };
     match second {
         Some(s) => format!("{summary} {s}"),
@@ -600,8 +603,9 @@ mod tests {
     fn bubble_for_letter_with_deadline() {
         let e = extract(DocType::Bescheid);
         let b = bubble_text(&e, &[deadline("2026-11-18")], Lang::De);
-        let found = say("doc_deadline_found", Lang::De, &[("due", "Mittwoch, 18.11.")]);
-        assert_eq!(found, "Ich erinnere dich rechtzeitig an die Frist am Mittwoch, 18.11.");
+        let title = deadline("2026-11-18").title;
+        let found = say("doc_deadline_found", Lang::De, &[("title", &title), ("due", "Mittwoch, 18.11.")]);
+        assert_eq!(found, format!("Frist: {title}, bis Mittwoch, 18.11. Ich erinnere dich rechtzeitig."));
         assert_eq!(b, format!("Du bekommst 96 Euro Wohngeld im Monat. {found}"), "only the first summary sentence");
         assert_eq!(day_date(d("2026-11-18"), Lang::De), "Mittwoch, 18.11.");
         assert_eq!(day_date(d("2026-11-02"), Lang::En), "Monday, 2 Nov");

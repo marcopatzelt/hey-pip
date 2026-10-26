@@ -8,7 +8,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
-use copilot_core::agent::{Agent, Gate, PROFILE_LANG};
+use copilot_core::agent::{Agent, Gate, PROFILE_LANG, PROFILE_SERVICES};
 use copilot_core::clock::{Clock, SystemClock, clock_from_env};
 use copilot_core::config::{Config, file_url};
 use copilot_core::docs::DocPipeline;
@@ -34,8 +34,17 @@ pub struct Backend {
 /// Profile key with the demo insurer's contact form (file:// URL of fixtures/demo-kasse/index.html).
 pub const DEMO_FORM_KEY: &str = "krankenkasse_kontaktformular";
 
+/// Profile key with the demo insurer's "Services for you" page (after-task discovery looks there).
+pub const DEMO_SERVICES_KEY: &str = PROFILE_SERVICES;
+
 /// The invented insurer's form, built into the exe so a fresh download works without a `fixtures/` folder.
 const DEMO_FORM_HTML: &str = include_str!("../../../fixtures/demo-kasse/index.html");
+/// Its services page and the questionnaire behind it (written next to index.html).
+const DEMO_PAGES: &[(&str, &str)] = &[
+    ("index.html", DEMO_FORM_HTML),
+    ("services.html", include_str!("../../../fixtures/demo-kasse/services.html")),
+    ("fragebogen.html", include_str!("../../../fixtures/demo-kasse/fragebogen.html")),
+];
 
 pub fn env_flag(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
@@ -170,11 +179,17 @@ impl Backend {
     /// "Schick die Krankschreibung an meine Krankenkasse" has a target. Never overrides a stored value.
     /// True if the profile now has a form address.
     fn seed_demo_form(&self, fixtures_dir: &std::path::Path) -> bool {
-        let page = fixtures_dir.join("demo-kasse").join("index.html");
+        let dir = fixtures_dir.join("demo-kasse");
+        // The services page for after-task discovery, if this folder has one and none is stored yet.
+        if self.profile_get(DEMO_SERVICES_KEY).is_none()
+            && let Ok(services) = dir.join("services.html").canonicalize()
+        {
+            self.profile_set(DEMO_SERVICES_KEY, &file_url(&services));
+        }
         if self.profile_get(DEMO_FORM_KEY).is_some() {
             return true;
         }
-        let Ok(page) = page.canonicalize() else { return false };
+        let Ok(page) = dir.join("index.html").canonicalize() else { return false };
         self.profile_set(DEMO_FORM_KEY, &file_url(&page));
         true
     }
@@ -205,11 +220,11 @@ impl Backend {
     }
 }
 
-/// Write the built-in demo form to `<dir>/demo-kasse/index.html` (refreshed every start). Returns `dir`.
+/// Write the built-in demo pages to `<dir>/demo-kasse/` (refreshed every start). Returns `dir`.
 fn write_demo_form(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let page_dir = dir.join("demo-kasse");
-    let r =
-        std::fs::create_dir_all(&page_dir).and_then(|_| std::fs::write(page_dir.join("index.html"), DEMO_FORM_HTML));
+    let r = std::fs::create_dir_all(&page_dir)
+        .and_then(|_| DEMO_PAGES.iter().try_for_each(|(name, html)| std::fs::write(page_dir.join(name), html)));
     match r {
         Ok(()) => Some(dir.to_path_buf()),
         Err(e) => {
@@ -246,6 +261,9 @@ mod tests {
         assert!(b.seed_demo_form(&fixtures));
         let url = b.profile_get(DEMO_FORM_KEY).expect("seeded");
         assert!(url.starts_with("file:///") && url.ends_with("/fixtures/demo-kasse/index.html"), "{url}");
+        let services = b.profile_get(DEMO_SERVICES_KEY).expect("services seeded");
+        assert!(services.ends_with("/fixtures/demo-kasse/services.html"), "{services}");
+        assert!(Gate::new(true).with_fixtures(&[&fixtures]).url_allowed(&services));
         assert!(Gate::new(true).with_fixtures(&[&fixtures]).url_allowed(&url));
         b.profile_set(DEMO_FORM_KEY, "http://localhost:8080/form");
         b.seed_demo_form(&fixtures);
@@ -264,6 +282,16 @@ mod tests {
         assert!(Gate::new(true).with_fixtures(&[&fx]).url_allowed(&url), "{url}");
         let html = std::fs::read_to_string(fx.join("demo-kasse/index.html")).unwrap();
         assert!(html.contains("Gesundkasse") && html.contains("Submit"));
+        // The services page and the questionnaire come along, are seeded and allowed by the gate.
+        let services = b.profile_get(DEMO_SERVICES_KEY).expect("services seeded");
+        assert!(services.ends_with("/demo-kasse/services.html"), "{services}");
+        let gate = Gate::new(true).with_fixtures(&[&fx]);
+        assert!(gate.url_allowed(&services));
+        assert!(gate.url_allowed(&services.replace("services.html", "fragebogen.html")));
+        let page = std::fs::read_to_string(fx.join("demo-kasse/services.html")).unwrap();
+        assert!(page.contains("Return your questionnaire online") && page.contains("fragebogen.html"));
+        let form = std::fs::read_to_string(fx.join("demo-kasse/fragebogen.html")).unwrap();
+        assert!(form.contains("Still unable to work?") && form.contains("Thank you, received on"));
     }
 
     #[test]

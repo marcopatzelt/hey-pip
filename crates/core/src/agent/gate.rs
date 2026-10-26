@@ -303,7 +303,8 @@ impl Gate {
             | Tool::SearchMemory { .. }
             | Tool::AddDeadline { .. }
             | Tool::AskUser { .. }
-            | Tool::Done { .. } => Risk::Free,
+            | Tool::Done { .. }
+            | Tool::Suggest { .. } => Risk::Free,
         }
     }
 

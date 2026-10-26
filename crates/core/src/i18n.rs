@@ -37,17 +37,25 @@ static TABLE: &[(&str, &str, &str)] = &[
     // --- onboarding ---
     (
         "onb_hello",
-        "Hallo! Ich bin Pip. Ich helfe dir mit Briefen und Fristen.",
-        "Hi! I'm Pip. I help you with letters and deadlines.",
+        "Hallo! Ich bin Pip. Ich helfe dir mit Briefen, Formularen und allem am Computer.",
+        "Hi! I'm Pip. I help you with letters, forms and everyday things on your computer.",
     ),
     ("onb_ask_name", "Wie darf ich dich nennen?", "What should I call you?"),
     ("onb_next", "Weiter", "Next"),
     (
         "onb_privacy",
-        "Deine Briefe bleiben auf diesem Computer. Zum Lesen schicke ich den Brief an Meta, und wenn ich für dich klicke, auch Bilder von deinem Bildschirm.",
-        "Your letters stay on this computer. To read a letter, I send it to Meta, and when I click for you, also pictures of your screen.",
+        "Deine Dateien bleiben auf diesem Computer. Nur was du mir zeigst, schicke ich zum Verstehen an Metas KI.",
+        "Your files stay on this computer. Only what you show me goes to Meta's AI, so I can understand it.",
     ),
-    ("onb_drop_letter", "Zieh einen Brief auf mich. Oder drück hier:", "Drag a letter onto me. Or press here:"),
+    ("onb_drop_letter", "Wobei kann ich dir helfen?", "What can I help you with?"),
+    ("btn_look_screen", "Schau auf meinen Bildschirm", "Look at my screen"),
+    ("btn_read_letter", "Lies einen Brief für mich", "Read a letter for me"),
+    ("btn_type_or_say", "Oder sag mir einfach, was du brauchst", "Or just tell me what you need"),
+    (
+        "task_look_screen",
+        "Schau auf meinen Bildschirm. Sag mir in einem kurzen Satz, was offen ist, und biete mir 2 oder 3 konkrete Dinge an, die du hier für mich tun kannst.",
+        "Look at my screen. Tell me in one short sentence what is open, and offer me 2 or 3 concrete things you can do for me here.",
+    ),
     ("btn_pick_letter", "Brief auswählen", "Choose a letter"),
     ("onb_ask_state", "Wohnst du in Nordrhein-Westfalen?", "Do you live in North Rhine-Westphalia?"),
     ("btn_yes", "Ja", "Yes"),
@@ -425,8 +433,8 @@ static TABLE: &[(&str, &str, &str)] = &[
     // --- documents (pipeline) ---
     (
         "doc_deadline_found",
-        "Ich erinnere dich rechtzeitig an die Frist am {due}.",
-        "I'll remind you in time about the deadline on {due}.",
+        "Frist: {title}, bis {due}. Ich erinnere dich rechtzeitig.",
+        "Deadline: {title}, by {due}. I'll remind you in time.",
     ),
     ("doc_read_done", "Ich habe den Brief gelesen.", "I've read the letter."),
     (
@@ -457,6 +465,28 @@ static TABLE: &[(&str, &str, &str)] = &[
         "Hier darf ich in der Demo nichts abschicken. Nichts wurde abgeschickt.",
         "In the demo I can't send anything here. Nothing was sent.",
     ),
+    // --- after-task discovery (Pip offers one more thing that fits) ---
+    (
+        "discover_progress",
+        "Ich schaue kurz, ob deine Kasse noch etwas für dich hat.",
+        "Let me quickly check if your insurer has something else for you.",
+    ),
+    (
+        "sugg_text",
+        "{insurer} bietet auch „{quote}“ an. Das passt zu {reason}. Sollen wir das zusammen machen?",
+        "{insurer} also offers „{quote}“, which fits {reason}. Shall we do it together?",
+    ),
+    ("sugg_reason_letter", "ihrem Brief vom {date}", "their letter of {date}"),
+    ("sugg_reason_deadline", "deiner Frist am {date}", "your deadline on {date}"),
+    ("sugg_insurer", "Deine Krankenkasse", "Your health insurer"),
+    (
+        "sugg_why",
+        "Das habe ich auf der Seite gesehen, die ich gerade geöffnet habe. Es passt zu {reason}. Das ist ein Hinweis, keine Rechtsberatung. Nichts wird ohne dein Ja abgeschickt.",
+        "I saw this on the page I just opened. It fits {reason}. This is a hint, not legal advice. Nothing is sent without your yes.",
+    ),
+    ("btn_sugg_yes", "Ja, machen wir", "Yes, let's do it"),
+    ("btn_sugg_why", "Warum?", "Why?"),
+    ("sugg_declined", "Alles klar, ich frage nicht nochmal.", "Alright, I won't ask again."),
 ];
 
 /// Lookup. Unknown key -> the key itself (visible in tests, never panics).
@@ -498,5 +528,16 @@ mod tests {
     fn placeholders() {
         assert_eq!(tf("approve_to", Lang::De, &[("to", "Gesundkasse")]), "An: Gesundkasse");
         assert_eq!(t("no_such_key", Lang::En), "no_such_key");
+    }
+
+    #[test]
+    fn suggestion_texts_are_honest() {
+        assert!(t("sugg_why", Lang::En).contains("not legal advice"));
+        assert!(t("sugg_why", Lang::De).contains("keine Rechtsberatung"));
+        for lang in [Lang::De, Lang::En] {
+            let s = tf("sugg_text", lang, &[("insurer", "X"), ("quote", "Q"), ("reason", "R")]);
+            assert!(!s.contains('{'), "{s}");
+            assert!(t("sugg_why", lang).contains("{reason}"));
+        }
     }
 }

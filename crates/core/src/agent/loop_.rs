@@ -19,18 +19,19 @@ use super::gate::{
     ApprovalAnswer, ApprovalCard, Gate, Risk, is_attach_target, is_delete_target, is_send_target, label_hit,
     normalize_address, quoted_label, url_host, word_hit,
 };
-use super::tools::{ScrollDir, Tool, bad_call, normalize_combo, tool_defs, truncate};
+use super::tools::{DISCOVER_TOOLS, ScrollDir, Tool, bad_call, normalize_combo, tool_defs, truncate};
 use super::{APPROVAL_TIMEOUT, MAX_RUN, MAX_STEPS, prompt};
 use crate::clock::Clock;
 use crate::docs::DocType;
 use crate::events::{Bus, Button, PipState, UiEvent};
 use crate::i18n::{Lang, t, tf};
-use crate::memory::{ActionLog, Memory, NewDeadline};
+use crate::memory::{ActionLog, DeadlineStatus, Memory, NewDeadline};
 use crate::meta::{
     Content, Effort, FunctionCall, InputItem, MODEL_SPARK, MetaClient, MetaError, ResponseRequest, Role, SamBox,
     ToolDef,
 };
 use crate::platform::{ApiImage, PhysPoint, PhysRect, Platform, UiElement};
+use crate::rules::text::fmt_date;
 
 /// Long side of the screenshot sent to the model.
 pub const API_MAX_SIDE: u32 = 1600;
@@ -48,6 +49,17 @@ const NUDGE_AFTER: Duration = Duration::from_secs(30);
 const CHANGED_PIXELS: f32 = 40.0;
 /// Lines of "what I already did" kept for a resumed run.
 const HISTORY_MAX: usize = 24;
+/// Profile key with the insurer's "services" page that after-task discovery looks at.
+pub const PROFILE_SERVICES: &str = "krankenkasse_services";
+/// Looking around after a task: at most this many model steps and this much time, then a silent end.
+pub const DISCOVER_STEPS: u32 = 4;
+pub const DISCOVER_TIME: Duration = Duration::from_secs(40);
+/// After a "no" to any suggestion, Pip does not look around again for this long.
+const DECLINE_COOLDOWN_DAYS: i64 = 7;
+/// Event kinds of suggestions (the event text is the quoted heading).
+const EV_SUGGESTED: &str = "suggested";
+const EV_DECLINED: &str = "suggestion_declined";
+const EV_ACCEPTED: &str = "suggestion_accepted";
 
 #[derive(Debug, Clone)]
 pub enum Task {
@@ -58,6 +70,19 @@ pub enum Task {
     SendLatestDocument {
         doc_type: DocType,
     },
+    /// After a finished task: look once at the insurer's services page and maybe offer ONE thing that fits
+    /// a letter or an open deadline. `after` = the summary of the task that just finished.
+    Discover {
+        after: String,
+    },
+}
+
+/// What the model may do in a run. Discover: only look (open the services page, wait, scroll, say,
+/// suggest, done). Act: the normal tools. A "yes" to a suggestion switches Discover -> Act.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Act,
+    Discover,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,6 +170,11 @@ pub struct RunState {
     resumed: bool,
     /// Time spent waiting for the user (cards, questions); it does not count against MAX_RUN.
     user_wait: Arc<Mutex<UserWait>>,
+    pub phase: Phase,
+    /// A suggestion was made in this run (at most one per run).
+    suggested: bool,
+    /// The task text after the user said yes to a suggestion (replaces the Discover task).
+    accepted: Option<String>,
 }
 
 /// Time the run waited for the user: finished waits plus the one in progress.
@@ -181,6 +211,7 @@ impl Drop for WaitGuard {
 
 impl RunState {
     pub fn new(task: Task) -> Self {
+        let phase = if matches!(task, Task::Discover { .. }) { Phase::Discover } else { Phase::Act };
         Self {
             task,
             step: 0,
@@ -206,6 +237,17 @@ impl RunState {
             history: Vec::new(),
             resumed: false,
             user_wait: Arc::default(),
+            phase,
+            suggested: false,
+            accepted: None,
+        }
+    }
+
+    /// Step and time budget of the current phase.
+    fn budget(&self) -> (u32, Duration) {
+        match self.phase {
+            Phase::Act => (MAX_STEPS, MAX_RUN),
+            Phase::Discover => (DISCOVER_STEPS, DISCOVER_TIME),
         }
     }
 
@@ -436,14 +478,16 @@ impl Agent {
         let lang = self.lang();
         *self.stop_reason.lock().expect("reason lock") = StopReason::User;
         self.pip(PipState::Thinking);
-        self.progress(t("thinking", lang));
+        let looking = state.phase == Phase::Discover;
+        self.progress(t(if looking { "discover_progress" } else { "thinking" }, lang));
         let mut retries = 0u32;
         let mut relinks = 0u32;
         let outcome = loop {
             if cancel.is_cancelled() {
                 break AgentOutcome::Stopped;
             }
-            if state.step >= MAX_STEPS || state.active_time() >= MAX_RUN {
+            let (max_steps, max_time) = state.budget();
+            if state.step >= max_steps || state.active_time() >= max_time {
                 break AgentOutcome::Failed(too_long(&state, lang));
             }
             let res = tokio::select! {
@@ -478,6 +522,15 @@ impl Agent {
                 }
             }
         };
+        if state.phase == Phase::Discover {
+            // Pip only looked around and nobody asked him to: whatever happened, end without a word.
+            self.finish_quiet();
+            let summary = match outcome {
+                AgentOutcome::Done(s) => s,
+                _ => "nothing".to_string(),
+            };
+            return Ok(AgentOutcome::Done(summary));
+        }
         // Never say "nothing was sent" after something was.
         let outcome = match outcome {
             AgentOutcome::Stopped if !state.sent.is_empty() => AgentOutcome::StoppedAfterSend(state.sent.join(", ")),
@@ -495,10 +548,11 @@ impl Agent {
     async fn timed_step(&self, state: &mut RunState, cancel: &CancellationToken) -> Option<Result<StepResult>> {
         let started = state.started;
         let waits = state.user_wait.clone();
+        let (_, max_time) = state.budget();
         let fut = self.step(state, cancel);
         tokio::pin!(fut);
         loop {
-            let left = MAX_RUN.saturating_sub(active_time(started, &waits));
+            let left = max_time.saturating_sub(active_time(started, &waits));
             if left.is_zero() {
                 return None;
             }
@@ -507,6 +561,17 @@ impl Agent {
                 _ = tokio::time::sleep(left) => {} // re-check: a wait for the user may have moved the limit
             }
         }
+    }
+
+    /// End of a Discover run: no bubble, no happy pose, no event; Pip goes home.
+    fn finish_quiet(&self) {
+        if let Some(id) = self.open_card.lock().expect("card lock").take() {
+            self.emit(UiEvent::ApprovalClosed { id });
+        }
+        self.emit(UiEvent::PointClear);
+        self.progress("");
+        self.pip(PipState::Idle);
+        self.emit(UiEvent::FlyHome);
     }
 
     /// UI and memory after a run.
@@ -616,7 +681,7 @@ impl Agent {
             model: MODEL_SPARK.to_string(),
             instructions: prompt::instructions(lang, self.gate.demo_mode),
             input,
-            tools: tool_defs(),
+            tools: tools_for(state.phase),
             previous_response_id: state.previous_response_id.clone(),
             effort: Effort::Low,
             stream: false,
@@ -659,9 +724,21 @@ impl Agent {
             if cancel.is_cancelled() {
                 return Ok(StepResult::Finished(AgentOutcome::Stopped));
             }
+            let phase = state.phase;
             match self.execute(call, state, cancel, lang).await {
                 Ok(Exec::Output(output)) => {
-                    state.pending_input.push(InputItem::FunctionCallOutput { call_id: call.call_id.clone(), output })
+                    state.pending_input.push(InputItem::FunctionCallOutput { call_id: call.call_id.clone(), output });
+                    if state.phase != phase {
+                        // The user just said yes to a suggestion: the rest of this turn was planned for looking
+                        // around. Look at the screen again with the full tools.
+                        for c in &out.calls[i + 1..] {
+                            state.pending_input.push(InputItem::FunctionCallOutput {
+                                call_id: c.call_id.clone(),
+                                output: "not done: the user just answered. Look at the screen again.".into(),
+                            });
+                        }
+                        return Ok(StepResult::Continue);
+                    }
                 }
                 Ok(Exec::Finish(o)) => return Ok(StepResult::Finished(o)),
                 Err(e) => {
@@ -683,6 +760,9 @@ impl Agent {
     /// Date, memory context and the task. Inner Err = the run cannot start (shown to the user).
     fn first_message(&self, state: &mut RunState, lang: Lang) -> Result<std::result::Result<String, AgentOutcome>> {
         let now = self.clock.now();
+        if matches!(state.task, Task::Discover { .. }) && state.accepted.is_none() && self.declined_lately()? {
+            return Ok(Err(AgentOutcome::Done("nothing".into())));
+        }
         let mut s = format!("NOW: {} ({})\n\n", now.format("%Y-%m-%d %H:%M"), now.weekday());
         s.push_str(&prompt::context_block(&self.memory)?);
         s.push_str("\nTASK\n");
@@ -712,6 +792,21 @@ impl Agent {
                     doc_type.as_str(),
                     doc.id,
                     doc.path.display(),
+                ));
+            }
+            Task::Discover { .. } if state.accepted.is_some() => {
+                s.push_str(state.accepted.as_deref().unwrap_or_default());
+            }
+            Task::Discover { after } => {
+                let Some(services) = self.memory.profile_get(PROFILE_SERVICES)?.filter(|u| !u.trim().is_empty()) else {
+                    return Ok(Err(AgentOutcome::Done("nothing".into())));
+                };
+                s.push_str(&format!(
+                    "You just finished: {}. Look ONCE whether the user's insurer offers something else that fits the \
+                     user. Open {services}, wait, read the page. If ONE item clearly matches an open deadline or a \
+                     letter in WHAT YOU KNOW, call suggest. Otherwise call done with 'nothing'. In this phase you may \
+                     not click, type or send.\n",
+                    truncate(after, 300)
                 ));
             }
         }
@@ -757,6 +852,21 @@ impl Agent {
         cancel: &CancellationToken,
         lang: Lang,
     ) -> Result<Exec> {
+        let allowed = match state.phase {
+            Phase::Discover => DISCOVER_TOOLS.contains(&call.name.as_str()),
+            Phase::Act => call.name != "suggest",
+        };
+        if !allowed {
+            let msg = match state.phase {
+                Phase::Discover => {
+                    "error: not available while looking around. You may only open the page, wait, \
+                                    scroll, say, suggest or call done."
+                }
+                Phase::Act => "error: suggest is not available now.",
+            };
+            self.log(&call.name, truncate(&call.arguments.to_string(), 200), Risk::Free, None, msg, 0);
+            return Ok(Exec::Output(msg.to_string()));
+        }
         let tool = match Tool::from_call(call) {
             Ok(tool) => tool,
             Err(e) => {
@@ -892,6 +1002,9 @@ impl Agent {
                 Asked::Cancelled => Ok(ToolRun::finish(Risk::Free, AgentOutcome::Stopped)),
             },
             Tool::Done { summary } => Ok(ToolRun::finish(Risk::Free, AgentOutcome::Done(summary.clone()))),
+            Tool::Suggest { page_quote, reason_doc_id, reason_deadline_id } => {
+                self.suggest(page_quote, *reason_doc_id, *reason_deadline_id, state, cancel, lang).await
+            }
         }
     }
 
@@ -1183,6 +1296,15 @@ impl Agent {
         cancel: &CancellationToken,
         lang: Lang,
     ) -> Result<ToolRun> {
+        if state.phase == Phase::Discover {
+            let services = self.memory.profile_get(PROFILE_SERVICES)?.unwrap_or_default();
+            if services.is_empty() || url.trim() != services.trim() {
+                return Ok(ToolRun::out(
+                    Risk::Act,
+                    format!("blocked: while looking around you may only open {services}"),
+                ));
+            }
+        }
         if !self.gate.url_allowed(url) {
             let why = if self.gate.demo_mode {
                 "blocked: in demo mode only http://localhost, http://127.0.0.1 or the local demo pages are allowed"
@@ -1493,15 +1615,26 @@ impl Agent {
         cancel: &CancellationToken,
         lang: Lang,
     ) -> Asked {
-        let _wait = WaitGuard::start(&state.user_wait);
-        let qid = Uuid::new_v4();
-        let rx = self.bus.pending.wait_answer(qid);
         // No options = an open question: the bubble gets a text field, its button sends what was typed.
         let buttons = if options.is_empty() {
             vec![Button::new(TEXT_ANSWER, t("onb_next", lang), true)]
         } else {
             options.iter().enumerate().map(|(i, o)| Button::new(o.clone(), o.clone(), i == 0)).collect()
         };
+        self.ask_buttons(state, question, buttons, cancel).await
+    }
+
+    /// Bubble with these buttons; the answer is the id of the pressed button.
+    async fn ask_buttons(
+        &self,
+        state: &RunState,
+        question: &str,
+        buttons: Vec<Button>,
+        cancel: &CancellationToken,
+    ) -> Asked {
+        let _wait = WaitGuard::start(&state.user_wait);
+        let qid = Uuid::new_v4();
+        let rx = self.bus.pending.wait_answer(qid);
         self.pip(PipState::Asking);
         self.emit(UiEvent::Speak { text: question.to_string() });
         self.emit(UiEvent::Bubble { text: question.to_string(), buttons, question_id: Some(qid) });
@@ -1520,6 +1653,167 @@ impl Agent {
             self.pip(PipState::Thinking);
         }
         r
+    }
+
+    /// The `suggest` tool: check the quote against the page, the reason against memory and earlier
+    /// suggestions, then ask the user with a sentence the app writes itself (never the model's words).
+    #[allow(clippy::too_many_arguments)]
+    async fn suggest(
+        &self,
+        quote: &str,
+        doc_id: Option<i64>,
+        deadline_id: Option<i64>,
+        state: &mut RunState,
+        cancel: &CancellationToken,
+        lang: Lang,
+    ) -> Result<ToolRun> {
+        let out = |s: String| Ok(ToolRun::out(Risk::Free, s));
+        if state.phase != Phase::Discover {
+            return out("error: suggest is not available now.".into());
+        }
+        if state.suggested {
+            return out("error: you already made a suggestion in this run; call done.".into());
+        }
+        let quote = clean_quote(quote);
+        if !self.quote_on_page(state, &quote).await {
+            return out(format!(
+                "error: \"{quote}\" is not on the page. Quote a heading exactly as written on the page, or call done."
+            ));
+        }
+        let doc = match doc_id {
+            Some(id) => match self.memory.document_by_id(id)? {
+                Some(d) => Some(d),
+                None => {
+                    return out(format!("error: there is no letter #{id}. Use an id from WHAT YOU KNOW, or call done."));
+                }
+            },
+            None => None,
+        };
+        let deadline = match deadline_id {
+            Some(id) => match self.memory.deadline(id)? {
+                Some(d) if d.status == DeadlineStatus::Open => Some(d),
+                _ => {
+                    return out(format!(
+                        "error: there is no open deadline #{id}. Use an id from WHAT YOU KNOW, or call done."
+                    ));
+                }
+            },
+            None => None,
+        };
+        if doc.is_none() && deadline.is_none() {
+            return out("error: give the id of a letter or an open deadline, or call done.".into());
+        }
+        if self.already_suggested(&quote)? {
+            return out("already suggested; call done.".into());
+        }
+        state.suggested = true;
+        self.event(EV_SUGGESTED, &quote);
+        let reason = match (&doc, &deadline) {
+            (Some(d), _) => {
+                let date = d.extract.date.unwrap_or_else(|| d.created_at.date_naive());
+                tf("sugg_reason_letter", lang, &[("date", &fmt_date(date, lang))])
+            }
+            (None, Some(dl)) => tf("sugg_reason_deadline", lang, &[("date", &fmt_date(dl.due, lang))]),
+            (None, None) => unreachable!("checked above"),
+        };
+        let deadline_doc = match deadline.as_ref().and_then(|d| d.doc_id) {
+            Some(id) => self.memory.document_by_id(id)?,
+            None => None,
+        };
+        let insurer = self
+            .memory
+            .profile_get("krankenkasse")?
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| doc.as_ref().or(deadline_doc.as_ref()).map(|d| d.extract.sender.clone()))
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| truncate(v.trim(), 60))
+            .unwrap_or_else(|| t("sugg_insurer", lang).to_string());
+        let yes = Button::new("yes", t("btn_sugg_yes", lang), true);
+        let no = Button::new("no", t("btn_not_now", lang), false);
+        let mut text = tf("sugg_text", lang, &[("insurer", &insurer), ("quote", &quote), ("reason", &reason)]);
+        let mut buttons = vec![yes.clone(), no.clone(), Button::new("why", t("btn_sugg_why", lang), false)];
+        let answer = loop {
+            match self.ask_buttons(state, &text, buttons, cancel).await {
+                Asked::Answer(a) if a == "why" => {
+                    text = tf("sugg_why", lang, &[("reason", &reason)]);
+                    buttons = vec![yes.clone(), no.clone()];
+                }
+                other => break other,
+            }
+        };
+        match answer {
+            Asked::Answer(a) if a == "yes" => {
+                self.event(EV_ACCEPTED, &quote);
+                state.phase = Phase::Act;
+                state.step = 0;
+                state.header = None;
+                let ids = match (&doc, &deadline) {
+                    (Some(d), Some(dl)) => format!("letter #{} and deadline #{}", d.id, dl.id),
+                    (Some(d), None) => format!("letter #{}", d.id),
+                    (None, Some(dl)) => format!("deadline #{}", dl.id),
+                    (None, None) => String::new(),
+                };
+                state.accepted = Some(format!(
+                    "The user agreed to do „{quote}“ together (it fits {ids}). Click „{quote}“ (or its 'Open form' \
+                     link), fill the form with facts from WHAT YOU KNOW, ask_user for anything missing; attaching and \
+                     sending need approval (is_commit=true).\n"
+                ));
+                Ok(ToolRun::out(
+                    Risk::Free,
+                    format!(
+                        "The user said yes. Click „{quote}“ (or its 'Open form' link), fill the form with facts from \
+                         WHAT YOU KNOW, ask_user for anything missing; attaching and sending need approval."
+                    ),
+                ))
+            }
+            Asked::Answer(_) => {
+                self.event(EV_DECLINED, &quote);
+                self.bubble(t("sugg_declined", lang), true);
+                Ok(ToolRun::finish(Risk::Free, AgentOutcome::Done("declined".into())))
+            }
+            Asked::Timeout => {
+                // Nobody answered: same as "no", without a word.
+                self.event(EV_DECLINED, &quote);
+                Ok(ToolRun::finish(Risk::Free, AgentOutcome::Done("no answer".into())))
+            }
+            Asked::Cancelled => Ok(ToolRun::finish(Risk::Free, AgentOutcome::Stopped)),
+        }
+    }
+
+    fn event(&self, kind: &str, text: &str) {
+        if let Err(e) = self.memory.add_event(kind, text) {
+            tracing::warn!(error = %e, "events write failed");
+        }
+    }
+
+    /// The same heading was suggested before (any answer).
+    fn already_suggested(&self, quote: &str) -> Result<bool> {
+        let q = quote.to_lowercase();
+        Ok(self.memory.recent_events(200)?.iter().any(|e| {
+            matches!(e.kind.as_str(), EV_SUGGESTED | EV_DECLINED | EV_ACCEPTED) && e.text.trim().to_lowercase() == q
+        }))
+    }
+
+    /// The user said "no" to a suggestion in the last days: do not look around at all.
+    fn declined_lately(&self) -> Result<bool> {
+        let since = chrono::Local::now() - chrono::Duration::days(DECLINE_COOLDOWN_DAYS);
+        Ok(self.memory.recent_events(200)?.iter().any(|e| e.kind == EV_DECLINED && e.at >= since))
+    }
+
+    /// Is `quote` a heading on the page in front? A local page opened in this run: the text of its headings
+    /// (h1-h6, tags stripped), so a sentence in the page body cannot become a suggestion.
+    /// Anything else: the UI tree must have an element with that name.
+    async fn quote_on_page(&self, state: &RunState, quote: &str) -> bool {
+        let needle = squash(quote).to_lowercase();
+        let url = state.last_url.clone().or_else(|| self.initial_page.clone());
+        if let Some(path) = url.as_deref().and_then(file_url_path)
+            && let Ok(html) = std::fs::read_to_string(&path)
+        {
+            return page_headings(&html).iter().any(|h| h.to_lowercase().contains(&needle));
+        }
+        let ui = self.platform.ui.clone();
+        let q = quote.to_string();
+        tokio::task::spawn_blocking(move || !ui.find_by_name(&q).is_empty()).await.unwrap_or(false)
     }
 
     /// Password field: never type. Ask the user to do it and wait for "Weiter".
@@ -1842,7 +2136,8 @@ fn lost_conversation(e: &anyhow::Error) -> bool {
     match MetaError::find(e) {
         Some(MetaError::Http { status: 400 | 404, body }) => {
             let b = body.to_lowercase();
-            b.contains("previous_response") || (b.contains("response") && (b.contains("not found") || b.contains("expired")))
+            b.contains("previous_response")
+                || (b.contains("response") && (b.contains("not found") || b.contains("expired")))
         }
         _ => false,
     }
@@ -1863,6 +2158,93 @@ fn save_debug_shot(api: &ApiImage) {
     } else {
         tracing::info!(shot = %path.display(), "debug shot");
     }
+}
+
+/// The tool list the model gets in this phase (suggest only while looking around).
+fn tools_for(phase: Phase) -> Vec<ToolDef> {
+    tool_defs()
+        .into_iter()
+        .filter(|d| match phase {
+            Phase::Discover => DISCOVER_TOOLS.contains(&d.name.as_str()),
+            Phase::Act => d.name != "suggest",
+        })
+        .collect()
+}
+
+/// „Return your questionnaire online“ -> Return your questionnaire online (quotes and extra spaces gone).
+fn clean_quote(q: &str) -> String {
+    squash(q.trim().trim_matches(|c: char| matches!(c, '„' | '“' | '”' | '"' | '\'' | '‚' | '‘' | '’' | '«' | '»')))
+}
+
+/// Whitespace runs -> one space.
+fn squash(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// file:///C:/x/y%20z.html -> C:/x/y z.html; file:///home/x.html -> /home/x.html. None for other URLs.
+fn file_url_path(url: &str) -> Option<PathBuf> {
+    let url = url.trim();
+    if !url.get(..7)?.eq_ignore_ascii_case("file://") {
+        return None;
+    }
+    let rest = &url[7..];
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    let rest = rest.split(['?', '#']).next()?;
+    let path = percent_decode(rest);
+    let b = path.as_bytes();
+    let path = if b.len() >= 3 && b[0] == b'/' && b[2] == b':' { path[1..].to_string() } else { path };
+    Some(PathBuf::from(path))
+}
+
+/// Text of every <h1>..<h6> of an HTML page.
+fn page_headings(html: &str) -> Vec<String> {
+    let low = html.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(at) = low[from..].find("<h").map(|i| from + i) {
+        from = at + 2;
+        let Some(level) = low.as_bytes().get(at + 2).filter(|b| (b'1'..=b'6').contains(b)) else { continue };
+        let close = format!("</h{}", *level as char);
+        let Some(end) = low[at..].find(&close).map(|i| at + i) else { break };
+        out.push(page_text(&html[at..end]));
+        from = end;
+    }
+    out
+}
+
+/// Visible text of an HTML page: no scripts, styles or tags, entities decoded, whitespace squashed.
+fn page_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    // ASCII lowercase keeps every byte offset the same as in `html`.
+    let low = html.to_ascii_lowercase();
+    let mut i = 0;
+    while i < html.len() {
+        if html.as_bytes()[i] == b'<' {
+            // Skip the content of script/style blocks entirely.
+            let skip_to = ["script", "style"].iter().find_map(|tag| {
+                low[i + 1..].starts_with(tag).then(|| {
+                    let close = format!("</{tag}");
+                    low[i..].find(&close).map(|e| i + e + close.len()).unwrap_or(html.len())
+                })
+            });
+            let from = skip_to.unwrap_or(i);
+            i = low[from..].find('>').map(|e| from + e + 1).unwrap_or(html.len());
+            out.push(' ');
+            continue;
+        }
+        let ch = html[i..].chars().next().expect("in bounds");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    let out = out
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&rarr;", "→");
+    squash(&out)
 }
 
 /// Button id that asks the page for a text field (open question); the answer is the typed text.
@@ -2242,6 +2624,22 @@ mod tests {
         let e = anyhow::Error::new(MetaError::Http { status: 401, body: String::new() });
         assert_eq!(failure_key(&e), "err_setup");
         assert_eq!(failure_key(&anyhow::Error::new(MetaError::Parse("x".into()))), "err_generic");
+    }
+
+    #[test]
+    fn page_text_and_file_urls() {
+        let html = "<html><head><style>h2{color:red}</style><script>var x = \"Secret offer\";</script></head>\
+                    <body><h2>Return your&nbsp;questionnaire\n  online</h2><p>Fast &amp; easy</p></body></html>";
+        let text = page_text(html);
+        assert_eq!(text, "Return your questionnaire online Fast & easy");
+        assert!(!text.contains("Secret"));
+        assert_eq!(page_text("Ünïcödé <b>İstanbul</b> ok"), "Ünïcödé İstanbul ok");
+        let page = "<h1>Services</h1><header><h2 class=x>Return your <b>questionnaire</b></h2></header><p>Body</p>";
+        assert_eq!(page_headings(page), ["Services", "Return your questionnaire"]);
+        assert_eq!(file_url_path("file:///C:/demo/a%20b.html?x#y"), Some(PathBuf::from("C:/demo/a b.html")));
+        assert_eq!(file_url_path("file:///home/p/x.html"), Some(PathBuf::from("/home/p/x.html")));
+        assert_eq!(file_url_path("https://example.org/x"), None);
+        assert_eq!(clean_quote(" „Return your  questionnaire online“ "), "Return your questionnaire online");
     }
 
     #[test]

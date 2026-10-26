@@ -22,7 +22,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
 
-use crate::backend::{Backend, env_flag, guard, guard_async};
+use crate::backend::{Backend, DEMO_SERVICES_KEY, env_flag, guard, guard_async};
 use crate::overlay::{self, FocusKeeper, OverlayInfo};
 use crate::voice::{Recorder, Silent, Speaker, TooShort, TtsSpeaker};
 use crate::{mock, tray};
@@ -40,6 +40,10 @@ const UI_KEYS: &[&str] = &[
     "onb_next",
     "onb_privacy",
     "onb_drop_letter",
+    "btn_look_screen",
+    "btn_read_letter",
+    "btn_type_or_say",
+    "task_look_screen",
     "onb_name_placeholder",
     "onb_ask_state",
     "onb_state_pick",
@@ -669,7 +673,10 @@ impl Ctx {
                 *self.onboarding.lock().expect("onb lock") = OnboardingStep::Done;
                 self.bus.emit(UiEvent::Onboarding { step: OnboardingStep::Done });
                 self.release_focus();
-                self.say(t("later_hint", lang), vec![]);
+                // "look" / "letter": the user picked a first job; that job speaks next.
+                if !matches!(value.as_str(), "look" | "letter" | "later_quiet") {
+                    self.say(t("later_hint", lang), vec![]);
+                }
             }
         }
     }
@@ -884,9 +891,13 @@ impl Ctx {
             *run = Some(token.clone());
             token
         };
-        if let Job::Task(task) = &job {
+        if let Job::Task(task) = &job
+            && !matches!(task, Task::Discover { .. })
+        {
             *self.last_task.lock().expect("task lock") = Some(task.clone());
         }
+        // A finished normal task may be followed by one look at the insurer's services page.
+        let discover_after = matches!(&job, Job::Task(task) if !matches!(task, Task::Discover { .. }));
         // The ask box had the keyboard: give it back to the page before Pip presses keys.
         self.release_focus();
         self.set_acting(true);
@@ -920,6 +931,7 @@ impl Ctx {
                 }
                 Ok(AgentOutcome::NeedsUser(_)) => self.idle_later(5000),
                 Ok(o @ (AgentOutcome::Stopped | AgentOutcome::StoppedAfterSend(_))) => self.stopped_scene(&o),
+                Ok(AgentOutcome::Done(summary)) if discover_after && !self.backend.mock => self.discover_later(summary),
                 Ok(AgentOutcome::Done(_)) => {}
                 Err(_) if token.is_cancelled() => self.stopped_scene(&AgentOutcome::Stopped),
                 Err(e) => {
@@ -928,6 +940,26 @@ impl Ctx {
                     self.error(f.text, retry.filter(|_| f.retry), false);
                 }
             }
+        });
+    }
+
+    /// After-task discovery: 2 s after a finished task Pip looks once at the insurer's services page and may
+    /// offer one thing that fits a letter or a deadline. Off with PIP_DISCOVER=0 or without a services page.
+    fn discover_later(self: &Arc<Self>, after: String) {
+        if std::env::var("PIP_DISCOVER").is_ok_and(|v| matches!(v.trim(), "0" | "false" | "off" | "no")) {
+            return;
+        }
+        if self.backend.profile_get(DEMO_SERVICES_KEY).is_none_or(|v| v.trim().is_empty()) {
+            return;
+        }
+        let me = self.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            // The user started something else or paused Pip in the meantime: do not look around.
+            if me.paused.load(Ordering::SeqCst) || me.run.lock().expect("run lock").is_some() {
+                return;
+            }
+            me.start_job(Job::Task(Task::Discover { after }));
         });
     }
 

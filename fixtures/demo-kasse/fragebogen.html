@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Questionnaire: your sick leave – Gesundkasse</title>
+<!-- Demo page of an INVENTED health insurer. Nothing is sent anywhere: everything stays on this page.
+     Opened via file:// in DEMO_MODE. The questionnaire from the Gesundkasse letter (fixtures/letters/kasse_brief). Submit only shows a thank-you. -->
+<style>
+  :root {
+    --green: #0f7a5a; --green-dark: #0a5c44; --green-light: #e8f4ef;
+    --ink: #1d2a26; --muted: #5b6b66; --line: #cfdcd7; --bg: #f4f7f6; --error: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 18px/1.5 "Segoe UI", system-ui, -apple-system, Arial, sans-serif; color: var(--ink); background: var(--bg); }
+  .demo-bar { background: #fff4d6; color: #6b4e00; text-align: center; font-size: 15px; padding: 6px 16px; border-bottom: 1px solid #f0dca0; }
+  header { background: #fff; border-bottom: 1px solid var(--line); }
+  .top { max-width: 1080px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 32px; }
+  .logo { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--green); }
+  .logo-mark { width: 44px; height: 44px; border-radius: 50%; background: var(--green); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 24px; }
+  .logo-text b { display: block; font-size: 24px; line-height: 1.1; }
+  .logo-text span { font-size: 13px; color: var(--muted); }
+  nav { display: flex; gap: 24px; margin-left: auto; }
+  nav a { color: var(--ink); text-decoration: none; font-size: 16px; }
+  nav a.active { color: var(--green); font-weight: 600; border-bottom: 3px solid var(--green); padding-bottom: 4px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 12px 24px 48px; display: grid; grid-template-columns: 1fr 300px; gap: 28px; }
+  .crumbs { grid-column: 1 / -1; font-size: 14px; color: var(--muted); }
+  h1 { font-size: 32px; margin: 0 0 6px; }
+  .lead { margin: 0 0 22px; color: var(--muted); }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 26px 28px; }
+  .field { margin-bottom: 20px; }
+  .lbl { display: block; font-weight: 600; margin-bottom: 6px; }
+  .hint { font-size: 14px; color: var(--muted); margin-top: 4px; }
+  input[type=text], select, textarea {
+    width: 100%; font: inherit; padding: 12px 14px; border: 2px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink);
+  }
+  input[type=text]:focus, select:focus, textarea:focus { outline: none; border-color: var(--green); box-shadow: 0 0 0 3px var(--green-light); }
+  textarea { min-height: 84px; resize: vertical; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 18px; display: flex; align-items: center; gap: 18px; background: #fafcfb; }
+  .drop.over { border-color: var(--green); background: var(--green-light); }
+  .file-input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .btn-file {
+    display: inline-flex; align-items: center; gap: 10px; padding: 12px 22px; border-radius: 8px; cursor: pointer;
+    border: 2px solid var(--green); color: var(--green); background: #fff; font-weight: 600; white-space: nowrap;
+  }
+  .btn-file:hover { background: var(--green-light); }
+  .file-name { color: var(--muted); font-size: 16px; overflow-wrap: anywhere; }
+  .file-name.chosen { color: var(--ink); font-weight: 600; }
+  .check { display: flex; gap: 12px; align-items: flex-start; font-size: 16px; }
+  .check input { width: 24px; height: 24px; margin-top: 2px; accent-color: var(--green); }
+  .actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+  .btn-submit {
+    font: inherit; font-size: 20px; font-weight: 700; padding: 14px 44px; border-radius: 10px; border: 0; cursor: pointer;
+    background: var(--green); color: #fff; box-shadow: 0 3px 0 var(--green-dark);
+  }
+  .btn-submit:hover { background: var(--green-dark); }
+  .error { color: var(--error); font-size: 15px; margin-top: 6px; display: none; }
+  .invalid .error { display: block; }
+  .invalid input[type=text] { border-color: var(--error); }
+  aside .card { padding: 20px 22px; margin-bottom: 18px; }
+  aside h2 { font-size: 18px; margin: 0 0 8px; }
+  aside p { font-size: 15px; margin: 0 0 6px; color: var(--muted); }
+  aside .phone { font-size: 22px; font-weight: 700; color: var(--green); }
+  #thanks { display: none; }
+  .done #form-view { display: none; }
+  .done #thanks { display: block; }
+  .ok { width: 64px; height: 64px; border-radius: 50%; background: var(--green); color: #fff; display: grid; place-items: center; font-size: 36px; margin-bottom: 12px; }
+  .summary { margin: 18px 0 0; padding: 0; list-style: none; }
+  .summary li { padding: 8px 0; border-top: 1px solid var(--line); }
+  .summary b { display: inline-block; min-width: 230px; }
+  footer { text-align: center; font-size: 14px; color: var(--muted); padding: 0 24px 32px; }
+  main.single { display: block; max-width: 760px; }
+  input[type=date] { font: inherit; padding: 12px 14px; border: 2px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); }
+  .radios { display: flex; gap: 28px; font-size: 18px; }
+  .radios label { display: flex; gap: 10px; align-items: center; }
+  .radios input { width: 22px; height: 22px; accent-color: var(--green); }
+  .invalid input[type=date] { border-color: var(--error); }
+</style>
+</head>
+<body>
+<div class="demo-bar">Demo page of an invented health insurer. Nothing is sent.</div>
+<header>
+  <div class="top">
+    <a class="logo" href="index.html"><div class="logo-mark">G</div><div class="logo-text"><b>Gesundkasse</b><span>Your health insurer in Sampletown</span></div></a>
+    <nav>
+      <a href="#">Benefits</a><a href="#">Join</a><a class="active" href="services.html">Service</a><a href="index.html">Contact</a>
+    </nav>
+  </div>
+</header>
+
+<main class="single">
+  <div class="crumbs">Home › Service › Questionnaire</div>
+
+  <section id="form-view">
+    <h1>Questionnaire: your sick leave</h1>
+    <p class="lead">Please answer a few questions so we can check your sick pay. It takes two minutes.</p>
+    <form class="card" id="form" novalidate>
+      <div class="field" id="w-name">
+        <label class="lbl" for="f-name">Full name</label>
+        <input type="text" id="f-name" name="name" autocomplete="name" placeholder="e.g. Erika Beispiel">
+        <div class="error">Please enter your name.</div>
+      </div>
+      <div class="field" id="w-nr">
+        <label class="lbl" for="f-nr">Insurance number</label>
+        <input type="text" id="f-nr" name="nr" placeholder="e.g. G123456789" maxlength="12">
+        <div class="hint">You find it on your health insurance card and at the top of our letter.</div>
+        <div class="error">Please enter your insurance number.</div>
+      </div>
+      <div class="field" id="w-since">
+        <label class="lbl" for="f-since">Sick since</label>
+        <input type="date" id="f-since" name="since">
+        <div class="error">Please enter the first day of your sick leave.</div>
+      </div>
+      <div class="field">
+        <label class="lbl" for="f-employer">Employer</label>
+        <input type="text" id="f-employer" name="employer" placeholder="Name of your employer">
+      </div>
+      <div class="field" id="w-still">
+        <span class="lbl">Still unable to work?</span>
+        <div class="radios">
+          <label><input type="radio" name="still" value="yes" id="f-still-yes"> Yes</label>
+          <label><input type="radio" name="still" value="no" id="f-still-no"> No</label>
+        </div>
+        <div class="error">Please choose yes or no.</div>
+      </div>
+      <div class="actions">
+        <button type="submit" class="btn-submit" id="submit">Submit</button>
+      </div>
+    </form>
+  </section>
+
+  <section id="thanks" aria-live="polite">
+    <div class="card">
+      <div class="ok">✓</div>
+      <h1>Thank you, received on <span id="t-when"></span></h1>
+      <p class="lead">We have received your questionnaire. You do not need to do anything else.</p>
+      <ul class="summary">
+        <li><b>Name</b><span id="t-name"></span></li>
+        <li><b>Insurance number</b><span id="t-nr"></span></li>
+        <li><b>Sick since</b><span id="t-since"></span></li>
+        <li><b>Still unable to work</b><span id="t-still"></span></li>
+      </ul>
+    </div>
+  </section>
+</main>
+<footer>Gesundkasse is invented. This page is only an example; no data leaves the computer.</footer>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  $("form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const still = document.querySelector('input[name="still"]:checked');
+    const checks = [["w-name", $("f-name").value.trim()], ["w-nr", $("f-nr").value.trim()],
+                    ["w-since", $("f-since").value], ["w-still", still]];
+    let ok = true;
+    for (const [id, value] of checks) {
+      $(id).classList.toggle("invalid", !value);
+      if (!value) ok = false;
+    }
+    if (!ok) return;
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    $("t-when").textContent = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} at ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    $("t-name").textContent = $("f-name").value.trim();
+    $("t-nr").textContent = $("f-nr").value.trim();
+    $("t-since").textContent = $("f-since").value;
+    $("t-still").textContent = still.value === "yes" ? "Yes" : "No";
+    document.body.classList.add("done");
+    document.title = "Thank you – Gesundkasse";
+    location.hash = "danke";
+    window.scrollTo(0, 0);
+  });
+})();
+</script>
+</body>
+</html>

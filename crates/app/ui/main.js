@@ -565,8 +565,14 @@ el.askInput.addEventListener("keydown", (e) => {
 $("ask-letter").addEventListener("click", () => { closeAsk(); send({ type: "pick_file" }); });
 $("ask-deadlines").addEventListener("click", () => { closeAsk(); invoke("open_deadlines").catch(() => {}); });
 $("ask-pause").addEventListener("click", () => { closeAsk(); invoke("app_action", { action: "pause" }).catch(() => {}); });
+// "Look at my screen": Pip looks at what is open and offers concrete help (works for anything).
+function lookAtScreen() {
+  send({ type: "text", text: s("task_look_screen") });
+}
+
 function fillChips() {
   const chips = [
+    ["btn_look_screen", lookAtScreen],
     ["chip_send_au", () => send({ type: "text", text: s("chip_send_au") })],
     ["chip_last_letter", () => invoke("app_action", { action: "last_letter" }).catch(() => {})],
     ["chip_deadlines", () => invoke("open_deadlines").catch(() => {})],
@@ -662,12 +668,22 @@ function onboarding(step) {
     invoke("focus_window").catch(() => {});
     setTimeout(() => input.focus(), 120);
   } else if (step === "first_letter") {
+    const firstJob = (value, then) => () => {
+      hideBubble();
+      send({ type: "onboarding_answer", step: "first_letter", value });
+      then();
+    };
+    const typeIt = document.createElement("button");
+    typeIt.type = "button";
+    typeIt.className = "link";
+    typeIt.textContent = s("btn_type_or_say");
+    typeIt.addEventListener("click", firstJob("later_quiet", () => openAsk()));
     say(s("onb_drop_letter"), {
       kind: "onboarding", sticky: true, replace: true,
-      extra: [para(s("onb_privacy"), "privacy")],
+      extra: [typeIt, para(s("onb_privacy"), "privacy")],
       buttons: [
-        { label: s("btn_pick_letter"), primary: true, onClick: () => send({ type: "pick_file" }) },
-        { label: s("btn_onb_later"), primary: false, onClick: () => { hideBubble(); send({ type: "onboarding_answer", step: "first_letter", value: "later" }); } },
+        { label: `👀 ${s("btn_look_screen")}`, primary: true, onClick: firstJob("look", lookAtScreen) },
+        { label: `📄 ${s("btn_read_letter")}`, primary: false, onClick: firstJob("letter", () => send({ type: "pick_file" })) },
       ],
     });
   } else if (step === "ask_state") {
