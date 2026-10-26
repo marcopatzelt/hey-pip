@@ -266,11 +266,6 @@ the dates, and takes care of what it can while you're out. It runs on its own cl
 data, so it can fill in the form, draft the email or book the appointment without you sitting at a desk. When
 something needs your yes, it asks on your wrist, and when you get home the work is already done.
 
-Pip should also tell you what you didn't know to ask. If a rule applies to your situation, like a gap between two
-documents your insurer won't accept or a refund you're entitled to, Pip mentions it early, tells you where the rule
-comes from, and offers to help: set a reminder, or write a short question to the right office. It explains and helps,
-and you decide.
-
 ## Roadmap
 
 Next:
