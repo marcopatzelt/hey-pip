@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="design/readme/banner-dark.png">
-    <img src="design/readme/banner.png" alt="Pip, a small blue helper, points at a web form and asks: Ready to send this to your university? Headline: Everyone is a beginner at something. Pip makes sure it doesn't cost you." width="100%">
+    <img src="design/readme/banner.png" alt="Pip, a small blue helper, points at a claim form and asks: Your flight landed 4 hours late. You may be owed €400. Claim it now? Headline: Everyone is a beginner at something. Pip makes sure it doesn't cost you." width="100%">
   </picture>
 </p>
 
