@@ -1,0 +1,141 @@
+{
+ "note": "UI Automation outline of fixtures/screens/demo-uni.png (English demo form of an invented university, 1600x1000), as Windows would report it. Rects are physical pixels; form rects come from demo-uni.boxes.json (?mark), link rects are read off the PNG.",
+ "image": "demo-uni.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "Study",
+   "value": null,
+   "rect": {
+    "x": 964,
+    "y": 62,
+    "w": 43,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "Research",
+   "value": null,
+   "rect": {
+    "x": 1031,
+    "y": 62,
+    "w": 68,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "Library",
+   "value": null,
+   "rect": {
+    "x": 1123,
+    "y": 62,
+    "w": 53,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "link",
+   "name": "Student portal",
+   "value": null,
+   "rect": {
+    "x": 1200,
+    "y": 62,
+    "w": 116,
+    "h": 28
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "edit",
+   "name": "Full name",
+   "value": "",
+   "rect": {
+    "x": 313,
+    "y": 369,
+    "w": 314,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "edit",
+   "name": "Student number",
+   "value": "",
+   "rect": {
+    "x": 645,
+    "y": 369,
+    "w": 314,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "edit",
+   "name": "Programme",
+   "value": "Social Work (B.A.)",
+   "rect": {
+    "x": 313,
+    "y": 502,
+    "w": 646,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "checkbox",
+   "name": "I have paid the semester fee of 310.00 euros",
+   "value": "unchecked",
+   "rect": {
+    "x": 317,
+    "y": 604,
+    "w": 24,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "button",
+   "name": "Submit re-registration",
+   "value": null,
+   "rect": {
+    "x": 649,
+    "y": 676,
+    "w": 310,
+    "h": 58
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

@@ -7,7 +7,7 @@ use std::time::Duration;
 use pip_core::agent::{Agent, AgentOutcome, ApprovalAnswer, CancellationToken, Gate, Task};
 use pip_core::clock::SystemClock;
 use pip_core::events::{Bus, UiEvent};
-use pip_core::memory::Memory;
+use pip_core::memory::{DeadlineStatus, Memory, NewDeadline};
 use pip_core::meta::MetaClient;
 use pip_core::platform::{
     Frame, Input, OutlineItem, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo,
@@ -452,7 +452,13 @@ async fn fills_a_field_then_finishes() {
 
     let ev = h.drain();
     assert!(progress(&ev).contains(&"Ich trage deinen Namen ein.".to_string()), "{:?}", progress(&ev));
-    assert!(bubbles(&ev).contains(&"Erledigt. Ich merke mir: Dein Name steht im Formular.".to_string()));
+    // One typed field: "by hand about a minute" (45 s, rounded) after the done line.
+    assert!(
+        bubbles(&ev).iter().any(|t| t.starts_with("Erledigt. Ich merke mir: Dein Name steht im Formular. Fertig in ")
+            && t.ends_with(" s. Von Hand dauert das etwa eine Minute.")),
+        "{:?}",
+        bubbles(&ev)
+    );
     assert!(ev.iter().any(|e| matches!(e, UiEvent::PointAt { rect, .. } if rect.w == 200 && rect.h == 40)));
 
     let reqs = h.requests();
@@ -1654,13 +1660,13 @@ async fn discover_verified_quote_shows_bubble_with_three_buttons() {
     assert_eq!(q.len(), 2, "{q:?}");
     assert_eq!(
         q[0].0,
-        "Gesundkasse also offers „Return your questionnaire online“, which fits their letter of Tuesday, October 27. \
+        "Gesundkasse also offers \"Return your questionnaire online\", which fits their letter of Tuesday, October 27. \
          Shall we do it together?"
     );
     let ids: Vec<(&str, &str, bool)> = q[0].1.iter().map(|b| (b.id.as_str(), b.label.as_str(), b.primary)).collect();
     assert_eq!(ids, [("yes", "Yes, let's do it", true), ("no", "Not now", false), ("why", "Why?", false)]);
     // "Why?" explains, with the same reason, and says it is no legal advice.
-    assert!(q[1].0.starts_with("I saw this on the page I just opened. It fits their letter of"), "{}", q[1].0);
+    assert!(q[1].0.starts_with("I saw this on your insurer's services page. It fits their letter of"), "{}", q[1].0);
     assert!(q[1].0.contains("not legal advice"));
     assert_eq!(q[1].1.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), ["yes", "no"]);
     assert!(bubbles(&ev).contains(&"Alright, I won't ask again.".to_string()));
@@ -1943,7 +1949,7 @@ async fn the_second_run_on_the_same_form_starts_with_last_time() {
     let b = bubbles(&h.drain());
     assert!(
         b.iter().any(
-            |t| t.ends_with("Ich habe mir auch gemerkt, wie dieses Formular geht. Nächstes Mal geht es schneller.")
+            |t| t.contains("Ich habe mir auch gemerkt, wie dieses Formular geht. Nächstes Mal geht es schneller.")
         ),
         "{b:?}"
     );
@@ -2005,7 +2011,7 @@ async fn the_second_run_says_how_much_faster() {
     // The run itself takes a second or two (pauses between steps); the number is real, not made up.
     let line =
         b.iter().find_map(|t| t.split_once("Zum 2. Mal auf dieser Seite: ").map(|(_, r)| r)).expect("faster line");
-    let now: u64 = line.strip_suffix(" s statt 41 s beim letzten Mal.").expect(line).parse().expect(line);
+    let now: u64 = line.split_once(" s statt 41 s beim letzten Mal.").expect(line).0.parse().expect(line);
     assert!((1..41).contains(&now), "{line}");
     assert!(!b.iter().any(|t| t.contains("Nächstes Mal")), "{b:?}");
 }
@@ -2112,12 +2118,15 @@ async fn a_planned_turn_fills_three_fields_by_number_without_grounding() {
         [
             "click 250,120",
             "key ctrl+a",
+            "key backspace",
             "type Erika Beispiel",
             "click 250,220",
             "key ctrl+a",
+            "key backspace",
             "type G123456789",
             "click 250,340",
             "key ctrl+a",
+            "key backspace",
             "type Sick note attach", // typed in chunks (Stop is checked between them)
             "type ed.",
         ]
@@ -2288,4 +2297,148 @@ async fn the_page_elements_block_is_capped() {
     h2.agent_turns(vec![calls("r1", &[done("ok")])]);
     h2.run("Look").await;
     assert!(!h2.requests()[0]["input"].to_string().contains("PAGE ELEMENTS"));
+}
+
+// ---------- impact: time saved and the deadline ticked off ----------
+
+/// An open deadline in memory (the sick-note questionnaire); returns its id.
+fn open_deadline(h: &Harness) -> i64 {
+    h.memory
+        .add_deadline(&NewDeadline {
+            title: "Return the questionnaire".into(),
+            due: (chrono::Local::now() + chrono::Duration::days(10)).date_naive(),
+            rule_id: None,
+            doc_id: None,
+            remind_at: vec![],
+            why: "Otherwise sick pay may stop.".into(),
+            source: "test".into(),
+        })
+        .unwrap()
+}
+
+fn status(h: &Harness, id: i64) -> DeadlineStatus {
+    h.memory.deadline(id).unwrap().unwrap().status
+}
+
+fn saved_total(h: &Harness) -> u64 {
+    h.memory.profile_get("seconds_saved_total").unwrap().map(|v| v.parse().unwrap()).unwrap_or(0)
+}
+
+fn send_turns(h: &Harness, n: u32) {
+    h.agent_turns(vec![
+        calls(&format!("s{n}a"), &[("open_url", json!({"url": "https://www.gesundkasse.example/kontakt"}))]),
+        calls(&format!("s{n}b"), &[send_click()]),
+        calls(&format!("s{n}c"), &[done("questionnaire sent")]),
+    ]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+}
+
+#[tokio::test]
+async fn an_approved_send_for_a_deadline_ticks_it_off_and_says_the_time_saved() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    let id = open_deadline(&h);
+    let other = open_deadline(&h);
+    send_turns(&h, 1);
+    h.auto_answer(ApprovalAnswer::Yes, "");
+    let task = format!("Send the questionnaire to my insurer. This is for deadline #{id}.");
+    assert!(matches!(h.run(&task).await, AgentOutcome::Done(_)));
+    let b = bubbles(&h.drain());
+    let last = b.last().unwrap();
+    assert!(last.contains("Done in ") && last.contains("By hand this takes about"), "{b:?}");
+    assert!(last.contains("ticked off the deadline \"Return the questionnaire\""), "{last}");
+    assert!(!last.contains("1 minutes"), "{last}");
+    assert_eq!(status(&h, id), DeadlineStatus::Done);
+    assert_eq!(status(&h, other), DeadlineStatus::Open, "only the deadline the task names");
+    assert!(
+        event_kinds(&h.memory)
+            .iter()
+            .any(|e| e.starts_with("deadline_done: ") && e.contains("Return the questionnaire")),
+        "{:?}",
+        event_kinds(&h.memory)
+    );
+    let first = saved_total(&h);
+    assert!(first > 0);
+    assert!(!last.contains("saved since we met"), "under 10 minutes no total yet: {last}");
+
+    // A second run grows the total; the deadline is already done and is not ticked off again.
+    send_turns(&h, 2);
+    h.run(&task).await;
+    let b = bubbles(&h.drain());
+    let last = b.last().unwrap();
+    assert!(saved_total(&h) > first);
+    assert!(last.contains("Done in ") && !last.contains("ticked off"), "{last}");
+
+    // From 10 minutes on, the total is said too.
+    h.memory.profile_set("seconds_saved_total", "1400").unwrap();
+    send_turns(&h, 3);
+    h.run("Send it again").await;
+    let b = bubbles(&h.drain());
+    assert!(b.last().unwrap().contains("minutes saved since we met"), "{b:?}");
+}
+
+#[tokio::test]
+async fn a_run_that_only_talks_saves_no_time_and_closes_no_deadline() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    let id = open_deadline(&h);
+    h.agent_turns(vec![
+        calls("r1", &[("say", json!({"text": "The questionnaire is due soon."}))]),
+        calls("r2", &[done("told the user")]),
+    ]);
+    let out = h.run(&format!("What is this about? This is for deadline #{id}.")).await;
+    assert!(matches!(out, AgentOutcome::Done(_)));
+    let b = bubbles(&h.drain());
+    assert!(b.iter().all(|t| !t.contains("Done in") && !t.contains("ticked off")), "{b:?}");
+    assert_eq!(status(&h, id), DeadlineStatus::Open);
+    assert_eq!(saved_total(&h), 0);
+    assert!(!event_kinds(&h.memory).iter().any(|e| e.starts_with("deadline_done")));
+}
+
+#[tokio::test]
+async fn not_yet_on_the_card_leaves_the_deadline_open() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    let id = open_deadline(&h);
+    send_turns(&h, 1);
+    h.auto_answer(ApprovalAnswer::No, "");
+    assert_eq!(h.run(&format!("Send it. This is for deadline #{id}.")).await, AgentOutcome::Stopped);
+    assert!(h.platform.clicks().is_empty());
+    assert_eq!(status(&h, id), DeadlineStatus::Open);
+    let b = bubbles(&h.drain());
+    assert!(b.iter().all(|t| !t.contains("Done in") && !t.contains("ticked off")), "{b:?}");
+    assert_eq!(saved_total(&h), 0);
+}
+
+#[tokio::test]
+async fn a_plain_text_ending_after_a_send_shows_the_answer_once_and_the_time_line_after_it() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    let id = open_deadline(&h);
+    h.agent_turns(vec![
+        calls("p1", &[("open_url", json!({"url": "https://www.gesundkasse.example/kontakt"}))]),
+        calls("p2", &[send_click()]),
+        text_reply("p3", "The questionnaire is on its way."),
+    ]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+    h.auto_answer(ApprovalAnswer::Yes, "");
+    let out = h.run(&format!("Send the questionnaire. This is for deadline #{id}.")).await;
+    assert_eq!(out, AgentOutcome::Done("The questionnaire is on its way.".into()));
+    let b = bubbles(&h.drain());
+    assert_eq!(b.iter().filter(|t| t.contains("on its way")).count(), 1, "the answer is not repeated: {b:?}");
+    let last = b.last().unwrap();
+    assert!(last.starts_with("Done in ") && last.contains("ticked off the deadline"), "{b:?}");
+    assert_eq!(status(&h, id), DeadlineStatus::Done);
+}
+
+#[tokio::test]
+async fn the_saved_seconds_total_never_blocks_an_address() {
+    let h = Harness::new(false).await;
+    h.memory.profile_set("seconds_saved_total", "1400").unwrap();
+    h.agent_turns(vec![
+        calls("u1", &[("open_url", json!({"url": "https://www.gesundkasse.example/formular?id=1400"}))]),
+        calls("u2", &[done("ok")]),
+    ]);
+    h.run("Open the form").await;
+    assert_eq!(h.opened.lock().unwrap().len(), 1, "{:?}", outputs(&h.requests()[1]));
 }

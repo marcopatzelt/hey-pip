@@ -19,7 +19,7 @@ pub use crate::clock::{Clock, DemoClock, FixedClock, SystemClock};
 pub use au::AuLueckenlos;
 pub use brief::FristAusBrief;
 pub use calendar::Calendar;
-pub use daily::{Brief, BriefOffer, daily_brief};
+pub use daily::{AfterTaskOffer, Brief, BriefOffer, already_suggested, daily_brief, offer_after_task};
 pub use engine::RuleEngine;
 pub use widerspruch::WiderspruchBescheid;
 

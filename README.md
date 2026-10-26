@@ -29,6 +29,7 @@ who reads the letter, keeps an eye on the date, and helps with the form.
 | **Reads letters** | Drag a phone photo or PDF onto Pip. Pip cuts the sheet out of the photo, reads it, and says in two sentences what it is and what matters: *"Sick note from 20.10. to 30.10. I'll make sure there is no gap."* |
 | **Remembers and speaks up on its own** | Deadlines come from rules written in code, with their legal source, not invented by a model. On Thursday 18:00 Pip pops up with a notification and a voice: *"Your sick note ends tomorrow. If you're still sick, you need a new one by Monday, November 2."* Buttons: *Remind me Monday · I'm well again · Later*, and *Why?* shows the rule. |
 | **Acts on the screen** | *"Send the sick note to my health insurer."* Pip flies to each field, says what it types, and fills in the insurer's contact form. Before attaching the letter and before pressing *Submit* it shows a card: what, to whom, which file, and a picture of the exact button. Nothing happens until you press *Yes*. |
+| **Any form** | Open any online form (a university re-registration, an application) and click *Look at my screen*: Pip says what the page is, fills what it knows about you, asks only for what is missing and stops at the send button with one card. The second time it needs no question. |
 
 ### Made for people who are not technical
 
@@ -126,7 +127,9 @@ Pip uses Meta's colour world (blue to violet) but no Meta logo and no Meta chara
 - **Demo mode is on by default.** With `DEMO_MODE` on (the default; `DEMO_MODE=0` turns it off), Pip may open and
   submit only local demo pages: `localhost`, or pages inside Pip's own fixtures folders. The check looks at the page
   that is really in the browser's address bar when it can read it, else at the page opened in the same task. The demo
-  insurer "Gesundkasse" is invented; its form sends nothing. The form is built into the exe.
+  insurer "Gesundkasse" and the second demo site, the invented "Beispiel University" with its re-registration form,
+  send nothing. Both are built into the exe. Each demo folder counts as its own site, so "Don't ask again" and the
+  learned steps for the insurer never cover the university.
 - **The card shows the real recipient.** Next to the name the model gives, the card shows the web address of the
   page, and it lists what Pip typed into the form. Pip says the whole question aloud.
 - **Pip checks again after a slow "yes".** If the page under the button changed while the card was open, Pip does
@@ -160,8 +163,8 @@ cargo build --release -p pip-app -p pip-cli
 cargo xwin build --release --target x86_64-pc-windows-msvc -p pip-app -p pip-cli
 ```
 
-Run `pip-app.exe`. Pip appears in the bottom-right corner. The demo form is built into the exe (Pip writes it to
-`%APPDATA%\Pip\fixtures\`); the `fixtures/` folder next to the exe is only needed for the example
+Run `pip-app.exe`. Pip appears in the bottom-right corner. The demo pages are built into the exe (Pip writes them to
+`%APPDATA%\Pip\fixtures\demo-kasse\` and `…\demo-uni\`; open `demo-uni\index.html` in the browser for the second example); the `fixtures/` folder next to the exe is only needed for the example
 letters. Without a key, Pip shows a field to paste it (stored in `%APPDATA%\Pip\.env`).
 
 Switches for testing: `PIP_MOCK=1` (scripted demo without the API), `PIP_WINDOWED=1` (corner window instead of the
@@ -218,7 +221,7 @@ crates/core       OS-free core: Meta API client, agent loop + gate, letter pipel
 crates/platform   screen capture, input, UI Automation (Windows); best-effort Linux; fake platform for tests
 crates/app        Pip overlay (Tauri 2): bubble, pointer, approval card, tray, hotkeys, voice, notifications
 crates/cli        developer CLI and eval runner
-fixtures/         invented letters (PDF, PNG, phone photo) with expected results, demo insurer form, screenshots
+fixtures/         invented letters (PDF, PNG, phone photo) with expected results, demo insurer and university forms, screenshots
 eval/             eval tasks and results
 design/pip/       Pip's poses
 ```

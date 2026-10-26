@@ -527,6 +527,30 @@ impl UiTree for WinPlatform {
         .unwrap_or(false)
     }
 
+    fn set_value_at(&self, p: PhysPoint, text: &str) -> bool {
+        let text = text.to_string();
+        with_uia(|uia| {
+            if overlay_at(p) {
+                return Ok(false);
+            }
+            let el = uia.element_from_point(Point::new(p.x, p.y))?;
+            if el.get_process_id().ok() == Some(std::process::id()) {
+                return Ok(false);
+            }
+            let parent = uia.get_control_view_walker().and_then(|w| w.get_parent(&el)).ok();
+            for e in std::iter::once(&el).chain(parent.as_ref()) {
+                if e.is_password().unwrap_or(false) {
+                    return Ok(false);
+                }
+                if let Ok(v) = e.get_pattern::<UIValuePattern>() {
+                    return Ok(v.set_value(&text).is_ok());
+                }
+            }
+            Ok(false)
+        })
+        .unwrap_or(false)
+    }
+
     fn value_at(&self, p: PhysPoint) -> Option<String> {
         with_uia(|uia| {
             if overlay_at(p) {

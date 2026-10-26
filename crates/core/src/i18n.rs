@@ -535,19 +535,35 @@ static TABLE: &[(&str, &str, &str)] = &[
     (
         "sugg_text",
         "{insurer} bietet auch „{quote}“ an. Das passt zu {reason}. Sollen wir das zusammen machen?",
-        "{insurer} also offers „{quote}“, which fits {reason}. Shall we do it together?",
+        "{insurer} also offers \"{quote}\", which fits {reason}. Shall we do it together?",
     ),
     ("sugg_reason_letter", "ihrem Brief vom {date}", "their letter of {date}"),
     ("sugg_reason_deadline", "deiner Frist am {date}", "your deadline on {date}"),
     ("sugg_insurer", "Deine Krankenkasse", "Your health insurer"),
     (
         "sugg_why",
-        "Das habe ich auf der Seite gesehen, die ich gerade geöffnet habe. Es passt zu {reason}. Das ist ein Hinweis, keine Rechtsberatung. Nichts wird ohne dein Ja abgeschickt.",
-        "I saw this on the page I just opened. It fits {reason}. This is a hint, not legal advice. Nothing is sent without your yes.",
+        "Das habe ich auf der Service-Seite deiner Kasse gesehen. Es passt zu {reason}. Das ist ein Hinweis, keine Rechtsberatung. Nichts wird ohne dein Ja abgeschickt.",
+        "I saw this on your insurer's services page. It fits {reason}. This is a hint, not legal advice. Nothing is sent without your yes.",
     ),
     ("btn_sugg_yes", "Ja, machen wir", "Yes, let's do it"),
     ("btn_sugg_why", "Warum?", "Why?"),
     ("sugg_declined", "Alles klar, ich frage nicht nochmal.", "Alright, I won't ask again."),
+    (
+        "done_time",
+        "Fertig in {secs} s. Von Hand dauert das etwa {minutes} Minuten.",
+        "Done in {secs} s. By hand this takes about {minutes} minutes.",
+    ),
+    (
+        "done_total",
+        "Seit wir uns kennen, habe ich dir etwa {total} gespart.",
+        "That's about {total} saved since we met.",
+    ),
+    ("done_deadline_closed", "Die Frist „{title}“ habe ich abgehakt.", "I've ticked off the deadline \"{title}\"."),
+    (
+        "done_time_one",
+        "Fertig in {secs} s. Von Hand dauert das etwa eine Minute.",
+        "Done in {secs} s. By hand this takes about a minute.",
+    ),
 ];
 
 /// Lookup. Unknown key -> the key itself (visible in tests, never panics).

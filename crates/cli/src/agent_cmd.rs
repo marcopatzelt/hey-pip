@@ -278,7 +278,12 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             Some(l) if l.playbook_saved => println!("Memory: playbook updated."),
             _ => println!("Memory: no playbook saved (nothing typed or sent, or the run did not finish)."),
         }
-        println!("Measure: steps={} seconds={:.1} (run twice with the same --db to compare)", report.steps, secs);
+        let (by_hand, saved) = learned.as_ref().map_or((0, 0), |l| (l.by_hand_secs, l.saved_total_secs));
+        println!(
+            "Measure: steps={} seconds={:.1} by_hand={by_hand} saved_total={saved} (run twice with the same --db to \
+             compare)",
+            report.steps, secs
+        );
         println!("Calls per step: {:?}", report.calls_per_step);
         if report.gate_held_at_submit() {
             println!("Gate: the send card stopped the click on \"Absenden\". Nothing was clicked there, nothing sent.");

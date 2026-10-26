@@ -168,6 +168,17 @@ impl UiTree for FakePlatform {
     fn outline(&self, max: usize) -> Vec<OutlineItem> {
         self.outline.lock().map(|o| o.iter().take(max).cloned().collect()).unwrap_or_default()
     }
+    fn set_value_at(&self, p: PhysPoint, text: &str) -> bool {
+        let Ok(mut items) = self.outline.lock() else { return false };
+        match items.iter_mut().find(|i| !i.offscreen && i.rect.contains(p) && !i.is_password) {
+            Some(it) => {
+                it.value = Some(text.to_string());
+                true
+            }
+            None => false,
+        }
+    }
+
     fn value_at(&self, p: PhysPoint) -> Option<String> {
         let items = self.outline.lock().ok()?;
         let it = items.iter().find(|i| !i.offscreen && i.rect.contains(p) && !i.is_password)?;

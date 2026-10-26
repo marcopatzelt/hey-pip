@@ -1,0 +1,66 @@
+{
+ "note": "UI Automation outline of fixtures/screens/demo-uni-thanks.png (the university's confirmation after Submit, 1600x1000), as Windows would report it. Only the header links remain; the form is gone. Rects are physical pixels, read off the PNG (same header as demo-uni.png).",
+ "image": "demo-uni-thanks.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "Study",
+   "value": null,
+   "rect": {
+    "x": 964,
+    "y": 62,
+    "w": 43,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "Research",
+   "value": null,
+   "rect": {
+    "x": 1031,
+    "y": 62,
+    "w": 68,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "Library",
+   "value": null,
+   "rect": {
+    "x": 1123,
+    "y": 62,
+    "w": 53,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "link",
+   "name": "Student portal",
+   "value": null,
+   "rect": {
+    "x": 1200,
+    "y": 62,
+    "w": 116,
+    "h": 28
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

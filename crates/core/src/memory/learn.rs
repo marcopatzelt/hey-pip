@@ -14,6 +14,10 @@ use crate::docs::{DocType, DocumentExtract};
 /// Profile key: sites (hosts, or the demo fixtures folder) where the user said "Don't ask again" on a send card.
 pub const PROFILE_TRUSTED_SEND: &str = "trusted_send_hosts";
 
+/// Profile key: seconds Pip saved the user so far (sum of `by_hand_secs` over finished runs). Hidden from the
+/// model (recall) and from "What Pip knows".
+pub const PROFILE_SECONDS_SAVED: &str = "seconds_saved_total";
+
 /// What remember_fact answers for a password or a health detail.
 pub const SENSITIVE_REFUSAL: &str = "not saved: Pip does not keep passwords or health details";
 
@@ -50,6 +54,11 @@ pub struct Learned {
     pub used_keys: Vec<String>,
     /// The playbook as it was before this run updated it (only when an existing one was saved again).
     pub before: Option<PriorRun>,
+    /// What this task takes by hand (`by_hand_secs`); 0 for a failed run or one that typed, attached and sent
+    /// nothing.
+    pub by_hand_secs: u32,
+    /// Seconds saved over all finished runs, this one included (profile `seconds_saved_total`).
+    pub saved_total_secs: u64,
 }
 
 /// An earlier run on the same site and task: how often, how many steps, how many seconds (the last one).
@@ -112,6 +121,45 @@ pub fn is_protected_key(key: &str) -> bool {
     .any(|w| key.contains(w))
 }
 
+/// The honest estimate of what the same task takes a non-technical person by hand, in seconds. Fixed numbers,
+/// no model call, so the "By hand this takes about …" line is the same every time:
+/// - 120 s to find and open the right page (when Pip opened one: `run.url` is Some),
+/// - 45 s per typed field (look up the value, type it, check it),
+/// - 120 s when a file was attached (find the scan or photo, pick it in the file dialog),
+/// - 30 s when something was sent (find the button, check, confirm).
+///
+/// 0 when nothing was typed, attached or sent (an answer or a look is not counted as saved time).
+pub fn by_hand_secs(run: &RunSummary) -> u32 {
+    let attach = run.attach_label.is_some();
+    let send = run.send_label.is_some();
+    if run.typed.is_empty() && !attach && !send {
+        return 0;
+    }
+    let fields = u32::try_from(run.typed.len()).unwrap_or(u32::MAX);
+    let mut secs = fields.saturating_mul(45);
+    if run.url.is_some() {
+        secs = secs.saturating_add(120);
+    }
+    if attach {
+        secs = secs.saturating_add(120);
+    }
+    if send {
+        secs = secs.saturating_add(30);
+    }
+    secs
+}
+
+/// Adds `secs` to the running total in the profile; returns the new total.
+fn add_saved_secs(mem: &Memory, secs: u32) -> Result<u64> {
+    let old = mem.profile_get(PROFILE_SECONDS_SAVED)?.and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(0);
+    if secs == 0 {
+        return Ok(old);
+    }
+    let total = old.saturating_add(u64::from(secs));
+    mem.profile_set(PROFILE_SECONDS_SAVED, &total.to_string())?;
+    Ok(total)
+}
+
 /// Saves `key = value` from `source` unless the stored value came from a higher source (then false).
 /// The same value again only lifts the source when the new one is higher.
 pub fn set_fact(mem: &Memory, key: &str, value: &str, source: &str) -> Result<bool> {
@@ -134,6 +182,7 @@ pub fn set_fact(mem: &Memory, key: &str, value: &str, source: &str) -> Result<bo
 
 /// After a run. Writes a playbook only when the run went well and something was typed or sent; a failed run
 /// counts against an existing playbook (dropped after two failures in a row). Used profile keys are touched.
+/// A run that went well adds its `by_hand_secs` to the profile total `seconds_saved_total`.
 pub fn learn_from_run(mem: &Memory, run: &RunSummary) -> Result<Learned> {
     let mut learned = Learned::default();
     // Field label -> the profile key whose value Pip typed there (values themselves are not stored).
@@ -146,7 +195,9 @@ pub fn learn_from_run(mem: &Memory, run: &RunSummary) -> Result<Learned> {
             continue;
         }
         // The fact used most wins when two keys hold the same value ("name" vs "full_name" differ anyway).
-        if let Some(f) = profile.iter().find(|f| norm(&f.value) == v && !is_sensitive_key(&f.key)) {
+        if let Some(f) =
+            profile.iter().find(|f| norm(&f.value) == v && !is_sensitive_key(&f.key) && f.key != PROFILE_SECONDS_SAVED)
+        {
             fields.retain(|(l, _)| l != label);
             fields.push((label.trim().to_string(), f.key.clone()));
             if !learned.used_keys.contains(&f.key) {
@@ -156,6 +207,10 @@ pub fn learn_from_run(mem: &Memory, run: &RunSummary) -> Result<Learned> {
     }
     if !learned.used_keys.is_empty() {
         mem.profile_touch(&learned.used_keys)?;
+    }
+    if run.ok {
+        learned.by_hand_secs = by_hand_secs(run);
+        learned.saved_total_secs = add_saved_secs(mem, learned.by_hand_secs)?;
     }
     let Some(site) = run.site.as_deref().filter(|s| !s.trim().is_empty()) else { return Ok(learned) };
     let kind = if run.task_kind.trim().is_empty() { "text" } else { run.task_kind.as_str() };
@@ -419,6 +474,40 @@ mod tests {
             assert!(!is_sensitive_key(k), "{k}");
         }
         assert!(is_sensitive_value("Diagnose: Grippe") && !is_sensitive_value("Tan Nguyen"));
+    }
+
+    #[test]
+    fn by_hand_estimate_follows_the_documented_formula() {
+        let nothing = RunSummary { ok: true, ..Default::default() };
+        assert_eq!(by_hand_secs(&nothing), 0, "no page, nothing typed, attached or sent");
+        let only_page = RunSummary { url: Some("https://x.example".into()), ok: true, ..Default::default() };
+        assert_eq!(by_hand_secs(&only_page), 0, "opening a page alone saves nothing");
+        let mut r = run(true);
+        r.typed.truncate(2);
+        assert_eq!(by_hand_secs(&r), 120 + 90 + 120 + 30);
+        r.url = None;
+        r.attach_label = None;
+        assert_eq!(by_hand_secs(&r), 90 + 30);
+    }
+
+    #[test]
+    fn saved_time_adds_up_over_finished_runs_only() {
+        let m = mem();
+        let per_run = u64::from(by_hand_secs(&run(true)));
+        assert_eq!(per_run, 120 + 3 * 45 + 120 + 30);
+        let l = learn_from_run(&m, &run(true)).unwrap();
+        assert_eq!((u64::from(l.by_hand_secs), l.saved_total_secs), (per_run, per_run));
+        let l = learn_from_run(&m, &run(true)).unwrap();
+        assert_eq!(l.saved_total_secs, 2 * per_run);
+        let stored = || m.profile_get(PROFILE_SECONDS_SAVED).unwrap().unwrap().parse::<u64>().unwrap();
+        assert_eq!(stored(), 2 * per_run);
+        let l = learn_from_run(&m, &run(false)).unwrap();
+        assert_eq!((l.by_hand_secs, l.saved_total_secs), (0, 0), "a failed run claims nothing");
+        assert_eq!(stored(), 2 * per_run, "a failed run leaves the total alone");
+        // A finished run without a site (no playbook) still counts.
+        let mut no_site = run(true);
+        no_site.site = None;
+        assert_eq!(learn_from_run(&m, &no_site).unwrap().saved_total_secs, 3 * per_run);
     }
 
     #[test]

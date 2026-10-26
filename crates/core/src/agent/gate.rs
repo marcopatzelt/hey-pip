@@ -292,8 +292,10 @@ impl Gate {
         self
     }
 
-    /// The key of the site a page belongs to, for "Don't ask again for this site": the host of an http(s) page,
-    /// or (demo mode) the canonical fixtures folder of a local page. None = no key (other file:// pages, garbage).
+    /// The key of the site a page belongs to, for "Don't ask again for this site" and the per-site playbooks:
+    /// the host of an http(s) page, or (demo mode) the demo site folder of a local page: the first folder
+    /// below the fixtures root ("…/fixtures/demo-uni"), or the root itself for a file directly in it.
+    /// So the invented insurer and the invented university are two sites. None = no key (other file:// pages, garbage).
     pub fn site_key(&self, url: &str) -> Option<String> {
         let low = url.trim().to_lowercase();
         if low.starts_with("file:") {
@@ -303,7 +305,12 @@ impl Gate {
             let path = low.strip_prefix("file://")?;
             let path = path.strip_prefix("localhost").unwrap_or(path).replace('\\', "/");
             let full = format!("file://{path}");
-            return self.fixture_roots.iter().find(|root| full.starts_with(&format!("{root}/"))).cloned();
+            let root = self.fixture_roots.iter().find(|root| full.starts_with(&format!("{root}/")))?;
+            let rest = full[root.len() + 1..].split(['?', '#']).next().unwrap_or("");
+            return Some(match rest.split_once('/') {
+                Some((folder, _)) if !folder.is_empty() => format!("{root}/{folder}"),
+                _ => root.clone(),
+            });
         }
         url_host(url)
     }
@@ -654,11 +661,22 @@ mod tests {
         assert_eq!(live.site_key("https://WWW.Kasse.example:8443/form?x").as_deref(), Some("www.kasse.example"));
         assert_eq!(live.site_key("file:///C:/Pip/fixtures/demo-kasse/index.html"), None, "no local pages outside demo");
         let demo = Gate::new(true).with_fixtures(&["C:/Pip/fixtures"]);
-        assert_eq!(
-            demo.site_key("file:///C:/Pip/fixtures/demo-kasse/index.html").as_deref(),
-            Some("file:///c:/pip/fixtures")
-        );
+        // One key per demo site folder: the insurer's three pages share one, the university has its own.
+        let kasse = Some("file:///c:/pip/fixtures/demo-kasse");
+        for page in ["index.html", "services.html", "fragebogen.html?x=1#top"] {
+            assert_eq!(demo.site_key(&format!("file:///C:/Pip/fixtures/demo-kasse/{page}")).as_deref(), kasse, "{page}");
+        }
+        assert_eq!(demo.site_key("file://localhost/C:/Pip/fixtures/demo-kasse/index.html").as_deref(), kasse);
+        assert_eq!(demo.site_key("file:///C:\\Pip\\fixtures\\demo-kasse\\services.html").as_deref(), kasse);
+        let uni = demo.site_key("file:///C:/Pip/fixtures/demo-uni/index.html");
+        assert_eq!(uni.as_deref(), Some("file:///c:/pip/fixtures/demo-uni"));
+        assert_ne!(uni.as_deref(), kasse);
+        // A page directly in the root keeps the root as its key.
+        assert_eq!(demo.site_key("file:///C:/Pip/fixtures/page.html").as_deref(), Some("file:///c:/pip/fixtures"));
+        assert_eq!(demo.site_key("file:///C:/Pip/fixtures/page.html?a/b").as_deref(), Some("file:///c:/pip/fixtures"));
         assert_eq!(demo.site_key("file:///C:/Users/x/evil.html"), None);
+        assert_eq!(demo.site_key("file:///C:/Pip/fixtures-evil/demo-uni/index.html"), None);
+        assert_eq!(demo.site_key("file:///C:/Pip/fixtures/../demo-uni/index.html"), None);
         assert_eq!(demo.site_key("http://localhost:8000/"), Some("localhost".into()));
     }
 }

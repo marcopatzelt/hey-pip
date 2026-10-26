@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Screenshots of the demo form (fixtures/demo-kasse) + expected target boxes for grounding/eval.
+"""Screenshots of the demo forms (fixtures/demo-kasse, fixtures/demo-uni) + expected target boxes for grounding/eval.
 
-Run: python3 fixtures/screens/make_screens.py   (needs Firefox; uses a throwaway profile in target/)
+Run: python3 fixtures/screens/make_screens.py [kasse|uni]   (default kasse; needs Firefox; throwaway profile in target/)
 Boxes come from `?mark`, which paints each target in a solid colour; we take the bounding box of
 that colour. Coordinates are pixels of the PNG (1600x1000), xyxy.
 """
@@ -10,12 +10,16 @@ import json
 import pathlib
 import shutil
 import subprocess
+import sys
 
 from PIL import Image  # pymupdf depends on nothing here; Pillow ships with Ubuntu's python3-pil
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = pathlib.Path(__file__).resolve().parent
-PAGE = (ROOT / "fixtures/demo-kasse/index.html").as_uri()
+PAGES = {
+    "kasse": (ROOT / "fixtures/demo-kasse/index.html").as_uri(),
+    "uni": (ROOT / "fixtures/demo-uni/index.html").as_uri(),
+}
 PROFILE = ROOT / "target/ff-profile"
 SIZE = (1600, 1000)
 
@@ -27,14 +31,21 @@ TARGETS = {
     (255, 0, 255): ("file_button", "button", "Knopf Datei auswählen"),
     (0, 255, 255): ("submit_button", "button", "Knopf Absenden"),
 }
+UNI_TARGETS = {
+    (255, 0, 0): ("name_field", "text input field", "Text field Full name"),
+    (0, 255, 0): ("nr_field", "text input field", "Text field Student number"),
+    (0, 0, 255): ("programme_field", "text input field", "Text field Programme"),
+    (255, 0, 255): ("fee_checkbox", "checkbox", "Checkbox I have paid the semester fee"),
+    (0, 255, 255): ("submit_button", "button", "Button Submit re-registration"),
+}
 
 
-def shot(query: str, dst: pathlib.Path) -> None:
+def shot(query: str, dst: pathlib.Path, page: str = PAGES["kasse"]) -> None:
     PROFILE.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
             "firefox", "--headless", "--no-remote", "--profile", str(PROFILE),
-            f"--window-size={SIZE[0]},{SIZE[1]}", "--screenshot", str(dst), PAGE + query,
+            f"--window-size={SIZE[0]},{SIZE[1]}", "--screenshot", str(dst), page + query,
         ],
         check=True,
         capture_output=True,
@@ -45,7 +56,7 @@ def shot(query: str, dst: pathlib.Path) -> None:
             im.crop((0, 0, *SIZE)).save(dst)
 
 
-def boxes(marked: pathlib.Path) -> dict:
+def boxes(marked: pathlib.Path, targets: dict = TARGETS) -> dict:
     im = Image.open(marked).convert("RGB")
     w, h = im.size
     px = im.load()
@@ -53,17 +64,41 @@ def boxes(marked: pathlib.Path) -> dict:
     for y in range(h):
         for x in range(w):
             c = px[x, y]
-            if c in TARGETS:
+            if c in targets:
                 b = found.setdefault(c, [x, y, x, y])
                 b[0], b[1], b[2], b[3] = min(b[0], x), min(b[1], y), max(b[2], x), max(b[3], y)
     out = {}
-    for c, (tid, query, desc) in TARGETS.items():
+    for c, (tid, query, desc) in targets.items():
         if c in found:
             out[tid] = {"box": found[c], "sam_query": query, "description": desc}
     return out
 
 
+def main_uni() -> None:
+    page = PAGES["uni"]
+    tmp = OUT / "_marked.png"
+    shot("", OUT / "demo-uni.png", page)
+    shot("?fill", OUT / "demo-uni-filled.png", page)
+    shot("?thanks", OUT / "demo-uni-thanks.png", page)
+    shot("?mark", tmp, page)
+    targets = boxes(tmp, UNI_TARGETS)
+    tmp.unlink()
+    meta = {"note": "Pixel boxes (x1,y1,x2,y2) in the PNG. A click hits if it lands inside the box.", "w": SIZE[0], "h": SIZE[1]}
+    # Empty form, filled form (the dry run shows it after Pip typed) and the confirmation (after an approved Send),
+    # so a dry run with --approve all sees the end instead of the empty form again.
+    for name in ["demo-uni", "demo-uni-filled"]:
+        (OUT / f"{name}.boxes.json").write_text(json.dumps({**meta, "image": f"{name}.png", "targets": targets}, indent=2, ensure_ascii=False) + "\n")
+    (OUT / "demo-uni-thanks.boxes.json").write_text(json.dumps({**meta, "image": "demo-uni-thanks.png", "targets": {},
+        "expect_text": "Thank you, your re-registration was received on"}, indent=2, ensure_ascii=False) + "\n")
+    print(json.dumps(targets, indent=1))
+    shutil.rmtree(PROFILE, ignore_errors=True)
+
+
 def main() -> None:
+    if sys.argv[1:] == ["uni"]:
+        return main_uni()
+    if sys.argv[1:] not in ([], ["kasse"]):
+        sys.exit("usage: make_screens.py [kasse|uni]")
     tmp = OUT / "_marked.png"
     shot("", OUT / "kasse_form.png")
     shot("?fill", OUT / "kasse_form_filled.png")

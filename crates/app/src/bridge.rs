@@ -16,6 +16,7 @@ use pip_core::events::{Bus, Button, ForgetKind, OnboardingStep, PipState, UiEven
 use pip_core::i18n::{Lang, t, tf};
 use pip_core::memory::{DeadlineStatus, Knowledge, untrust_site};
 use pip_core::meta::MetaError;
+use pip_core::rules::daily::{EV_ACCEPTED, EV_DECLINED, EV_SUGGESTED};
 use pip_core::rules::text::fmt_date;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
@@ -99,7 +100,32 @@ const SETTING_KEYS: &[&str] = &[
     "krankenkasse_kontaktformular",
     "krankenkasse_services",
     "brief_shown_on",
+    "seconds_saved_total",
 ];
+
+/// After a finished task Pip waits this long before his offer, so the "Done." line can be read.
+const OFFER_AFTER_SECS: u64 = 4;
+
+/// An offer waiting for its button: the agent task behind "Yes", the heading (for the yes/no events) and the
+/// reason (for "Why?").
+#[derive(Debug, Clone, PartialEq)]
+struct PendingOffer {
+    task: String,
+    heading: String,
+    reason: String,
+}
+
+/// Buttons of the after-task offer; after "Why?" without a second "Why?".
+fn offer_buttons(lang: Lang, with_why: bool) -> Vec<Button> {
+    let mut b = vec![
+        Button::new("app:offer_go", t("btn_sugg_yes", lang), true),
+        Button::new("app:offer_no", t("btn_not_now", lang), false),
+    ];
+    if with_why {
+        b.push(Button::new("app:offer_why", t("btn_sugg_why", lang), false));
+    }
+    b
+}
 
 /// App-only events for the page (not part of the core bus).
 #[derive(Debug, Clone, Serialize)]
@@ -198,7 +224,9 @@ pub struct Ctx {
     ingest_lock: tokio::sync::Mutex<()>,
     started: Instant,
     /// The agent task behind "Yes, do it now" on the daily brief.
-    brief_task: Mutex<Option<String>>,
+    brief_task: Mutex<Option<PendingOffer>>,
+    /// The after-task offer behind [Yes, let's do it] [Not now] [Why?].
+    offer_task: Mutex<Option<PendingOffer>>,
 }
 
 type Shared = Arc<Ctx>;
@@ -359,6 +387,7 @@ pub fn run() -> Result<()> {
                 ingest_lock: tokio::sync::Mutex::new(()),
                 started: Instant::now(),
                 brief_task: Mutex::default(),
+                offer_task: Mutex::default(),
             });
             app.manage(ctx.clone());
             if let Some(win) = app.get_webview_window("pip") {
@@ -732,11 +761,14 @@ impl Ctx {
                 return false;
             }
         };
+        // A heading the user already said yes or "Not now" to comes back without an offer (no sentence, no
+        // button): daily_brief skips it (rules::daily::already_suggested).
         let mut buttons = Vec::new();
         if brief.offer.is_some() {
             buttons.push(Button::new("app:brief_go", t("btn_brief_go", lang), true));
         }
-        *self.brief_task.lock().expect("brief lock") = brief.offer.map(|o| o.task);
+        *self.brief_task.lock().expect("brief lock") =
+            brief.offer.map(|o| PendingOffer { task: o.task, heading: o.heading, reason: String::new() });
         buttons.push(Button::new("close", t("btn_onb_later", lang), false));
         self.backend.profile_set("brief_shown_on", &today);
         self.pip(PipState::Happy);
@@ -1068,8 +1100,9 @@ impl Ctx {
         });
     }
 
-    /// After-task discovery: 2 s after a finished task Pip looks once at the insurer's services page and may
-    /// offer one thing that fits a letter or a deadline. Off with PIP_DISCOVER=0 or without a services page.
+    /// After-task offer: OFFER_AFTER_SECS after a finished task Pip offers one thing on the insurer's services
+    /// page that fits an open deadline (`rules::offer_after_task`, Rust only, no model call). Only when nothing
+    /// fits does the model look around once (Task::Discover). Off with PIP_DISCOVER=0 or without a services page.
     fn discover_later(self: &Arc<Self>, after: String) {
         if std::env::var("PIP_DISCOVER").is_ok_and(|v| matches!(v.trim(), "0" | "false" | "off" | "no")) {
             return;
@@ -1079,13 +1112,56 @@ impl Ctx {
         }
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(OFFER_AFTER_SECS)).await;
             // The user started something else or paused Pip in the meantime: do not look around.
             if me.paused.load(Ordering::SeqCst) || me.run.lock().expect("run lock").is_some() {
                 return;
             }
+            if me.clone().show_offer() {
+                return;
+            }
             me.start_job(Job::Task(Task::Discover { after }));
         });
+    }
+
+    /// The deterministic after-task offer; false when nothing fits (or the page cannot be read).
+    fn show_offer(self: Arc<Self>) -> bool {
+        let Some(mem) = self.backend.memory.clone() else { return false };
+        let Some((url, html)) = self.backend.profile_get(DEMO_SERVICES_KEY).and_then(|url| {
+            let html = std::fs::read_to_string(file_url_path(&url)?).ok()?;
+            Some((url, html))
+        }) else {
+            return false;
+        };
+        let lang = self.lang();
+        // Events carry the real time, so the 7 quiet days after "Not now" count in real time too.
+        let found =
+            guard("offer", || pip_core::rules::offer_after_task(&mem, chrono::Local::now(), lang, (&url, &html)));
+        let o = match found {
+            Ok(Some(o)) => o,
+            Ok(None) => return false,
+            Err(e) => {
+                tracing::warn!("after-task offer failed: {e:#}");
+                return false;
+            }
+        };
+        self.offer_event(EV_SUGGESTED, &o.offer.heading);
+        let text =
+            tf("sugg_text", lang, &[("insurer", &o.insurer), ("quote", &o.offer.heading), ("reason", &o.reason)]);
+        *self.offer_task.lock().expect("offer lock") =
+            Some(PendingOffer { task: o.offer.task, heading: o.offer.heading, reason: o.reason });
+        self.pip(PipState::Asking);
+        self.bus.emit(UiEvent::Speak { text: text.clone() });
+        self.say(text, offer_buttons(lang, true));
+        true
+    }
+
+    fn offer_event(&self, kind: &str, heading: &str) {
+        if let Some(mem) = &self.backend.memory
+            && let Err(e) = mem.add_event(kind, heading)
+        {
+            tracing::warn!("events write failed: {e:#}");
+        }
     }
 
     fn release_focus(&self) {
@@ -1100,12 +1176,38 @@ impl Ctx {
             ("pause", _) => self.set_paused(true),
             ("last_letter", _) => self.last_letter(),
             ("brief_go", _) => {
-                let task = self.brief_task.lock().expect("brief lock").take();
-                if let Some(task) = task {
+                let offer = self.brief_task.lock().expect("brief lock").take();
+                if let Some(o) = offer {
+                    // Yes on the brief counts as an answer: the after-task offer will not ask again.
+                    self.offer_event(EV_ACCEPTED, &o.heading);
                     // Straight to Task::Text: the task always says "Sending needs approval", so the word
                     // heuristics of task_from_words could reroute it (e.g. a heading with "sick note").
-                    *self.last_text.lock().expect("text lock") = Some(task.clone());
-                    self.start_task(Task::Text(task));
+                    *self.last_text.lock().expect("text lock") = Some(o.task.clone());
+                    self.start_task(Task::Text(o.task));
+                }
+            }
+            ("offer_go", _) => {
+                let offer = self.offer_task.lock().expect("offer lock").take();
+                if let Some(o) = offer {
+                    self.offer_event(EV_ACCEPTED, &o.heading);
+                    // Like brief_go: straight to Task::Text.
+                    *self.last_text.lock().expect("text lock") = Some(o.task.clone());
+                    self.start_task(Task::Text(o.task));
+                }
+            }
+            ("offer_no", _) => {
+                let offer = self.offer_task.lock().expect("offer lock").take();
+                if let Some(o) = offer {
+                    self.offer_event(EV_DECLINED, &o.heading);
+                    self.pip(PipState::Idle);
+                    self.say(t("sugg_declined", lang), vec![]);
+                }
+            }
+            ("offer_why", _) => {
+                let reason = self.offer_task.lock().expect("offer lock").as_ref().map(|o| o.reason.clone());
+                if let Some(reason) = reason {
+                    // Only the bubble: the offer itself was already spoken.
+                    self.say(tf("sugg_why", lang, &[("reason", &reason)]), offer_buttons(lang, false));
                 }
             }
             ("undo", id) => {
@@ -1758,6 +1860,23 @@ pub fn format_due(d: NaiveDate, lang: Lang) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offer_buttons_yes_first_why_only_once() {
+        let b = offer_buttons(Lang::En, true);
+        let ids: Vec<&str> = b.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["app:offer_go", "app:offer_no", "app:offer_why"]);
+        assert!(b[0].primary && !b[1].primary && !b[2].primary);
+        assert_eq!(b[0].label, "Yes, let's do it");
+        assert_eq!(b[1].label, "Not now");
+        let after_why: Vec<String> = offer_buttons(Lang::En, false).into_iter().map(|b| b.id).collect();
+        assert_eq!(after_why, ["app:offer_go", "app:offer_no"]);
+    }
+
+    #[test]
+    fn seconds_saved_is_a_setting() {
+        assert!(SETTING_KEYS.contains(&"seconds_saved_total"));
+    }
 
     #[test]
     fn every_ui_key_has_text() {

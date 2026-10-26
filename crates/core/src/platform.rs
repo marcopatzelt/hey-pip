@@ -451,6 +451,11 @@ pub trait UiTree: Send + Sync {
     fn value_at(&self, _p: PhysPoint) -> Option<String> {
         None
     }
+    /// Set the text of the field at this point directly (Windows ValuePattern). False = not possible.
+    /// Used only to repair a field whose typed text came out wrong; never for password fields.
+    fn set_value_at(&self, _p: PhysPoint, _text: &str) -> bool {
+        false
+    }
 }
 
 #[derive(Clone)]

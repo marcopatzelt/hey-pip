@@ -8,13 +8,14 @@ use anyhow::Result;
 use chrono::Datelike;
 
 use super::db::{DocumentRow, Memory, PLAYBOOK_MAX_FAILS, Playbook, ProfileFact};
-use super::learn::{PROFILE_TRUSTED_SEND, is_protected_key};
+use super::learn::{PROFILE_SECONDS_SAVED, PROFILE_TRUSTED_SEND, is_protected_key};
 use crate::docs::DocType;
 
 /// Default size of the memory block (characters).
 pub const DEFAULT_BUDGET: usize = 4500;
 /// Profile keys the model never needs.
-const HIDDEN_KEYS: &[&str] = &["onboarded", "screen_notice_ok", PROFILE_TRUSTED_SEND, "brief_shown_on"];
+const HIDDEN_KEYS: &[&str] =
+    &["onboarded", "screen_notice_ok", PROFILE_TRUSTED_SEND, "brief_shown_on", PROFILE_SECONDS_SAVED];
 /// Task kinds that may borrow the newest playbook of another site (the same job somewhere else).
 const SPECIFIC_KINDS: &[&str] = &["send_au", "send_letter"];
 
@@ -307,6 +308,9 @@ mod tests {
         let other = recall(&m, &q(Some("x.example"), "text", 4500)).unwrap();
         assert!(!other.contains("LAST TIME") && other.contains("www.gesundkasse.example (send_au)"), "{other}");
         assert!(s.contains("- full_name: Erika Beispiel [user said]"), "{s}");
+        // The time-saved total is Pip's own bookkeeping, never a fact for the model.
+        assert!(m.profile_get(PROFILE_SECONDS_SAVED).unwrap().is_some());
+        assert!(!s.contains(PROFILE_SECONDS_SAVED), "{s}");
     }
 
     #[test]

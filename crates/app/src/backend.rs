@@ -37,13 +37,15 @@ pub const DEMO_FORM_KEY: &str = "krankenkasse_kontaktformular";
 /// Profile key with the demo insurer's "Services for you" page (after-task discovery looks there).
 pub const DEMO_SERVICES_KEY: &str = PROFILE_SERVICES;
 
-/// The invented insurer's form, built into the exe so a fresh download works without a `fixtures/` folder.
-const DEMO_FORM_HTML: &str = include_str!("../../../fixtures/demo-kasse/index.html");
-/// Its services page and the questionnaire behind it (written next to index.html).
+/// The demo pages, built into the exe so a fresh download works without a `fixtures/` folder:
+/// the invented insurer's form, its services page and the questionnaire behind it, and the invented
+/// university's re-registration form (a second site: its own playbook and its own "Don't ask again").
+/// Paths are relative to the fixtures folder.
 const DEMO_PAGES: &[(&str, &str)] = &[
-    ("index.html", DEMO_FORM_HTML),
-    ("services.html", include_str!("../../../fixtures/demo-kasse/services.html")),
-    ("fragebogen.html", include_str!("../../../fixtures/demo-kasse/fragebogen.html")),
+    ("demo-kasse/index.html", include_str!("../../../fixtures/demo-kasse/index.html")),
+    ("demo-kasse/services.html", include_str!("../../../fixtures/demo-kasse/services.html")),
+    ("demo-kasse/fragebogen.html", include_str!("../../../fixtures/demo-kasse/fragebogen.html")),
+    ("demo-uni/index.html", include_str!("../../../fixtures/demo-uni/index.html")),
 ];
 
 /// The invented letters of the demo profile (`PIP_DEMO_PROFILE=1`), written to `<data_dir>/demo-letters/`.
@@ -248,11 +250,13 @@ fn write_demo_letters(dir: &std::path::Path) -> std::io::Result<()> {
     DEMO_LETTERS.iter().try_for_each(|(name, bytes)| std::fs::write(dir.join(name), bytes))
 }
 
-/// Write the built-in demo pages to `<dir>/demo-kasse/` (refreshed every start). Returns `dir`.
+/// Write the built-in demo pages to `<dir>/demo-kasse/` and `<dir>/demo-uni/` (refreshed every start). Returns `dir`.
 fn write_demo_form(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    let page_dir = dir.join("demo-kasse");
-    let r = std::fs::create_dir_all(&page_dir)
-        .and_then(|_| DEMO_PAGES.iter().try_for_each(|(name, html)| std::fs::write(page_dir.join(name), html)));
+    let r = DEMO_PAGES.iter().try_for_each(|(rel, html)| {
+        let path = dir.join(rel);
+        path.parent().map_or(Ok(()), std::fs::create_dir_all)?;
+        std::fs::write(path, html)
+    });
     match r {
         Ok(()) => Some(dir.to_path_buf()),
         Err(e) => {
@@ -320,6 +324,45 @@ mod tests {
         assert!(page.contains("Return your questionnaire online") && page.contains("fragebogen.html"));
         let form = std::fs::read_to_string(fx.join("demo-kasse/fragebogen.html")).unwrap();
         assert!(form.contains("Still unable to work?") && form.contains("Thank you, received on"));
+    }
+
+    #[test]
+    fn built_in_uni_page_is_written_and_is_its_own_site() {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = write_demo_form(&dir.path().join("fixtures")).expect("written");
+        for rel in ["demo-kasse/index.html", "demo-kasse/services.html", "demo-kasse/fragebogen.html", "demo-uni/index.html"] {
+            assert!(fx.join(rel).is_file(), "{rel}");
+        }
+        let gate = Gate::new(true).with_fixtures(&[&fx]);
+        let uni = file_url(&fx.join("demo-uni/index.html").canonicalize().unwrap());
+        assert!(gate.url_allowed(&uni), "{uni}");
+        let kasse = file_url(&fx.join("demo-kasse/index.html").canonicalize().unwrap());
+        let (uni_site, kasse_site) = (gate.site_key(&uni).unwrap(), gate.site_key(&kasse).unwrap());
+        assert!(uni_site.ends_with("/demo-uni") && kasse_site.ends_with("/demo-kasse"), "{uni_site} {kasse_site}");
+        // Seeding still points the insurer's form and services page at demo-kasse/, never at the university.
+        let mut b = Backend::mock();
+        b.memory = Some(Arc::new(Memory::open_in_memory().unwrap()));
+        assert!(b.seed_demo_form(&fx));
+        let services = b.profile_get(DEMO_SERVICES_KEY).expect("services seeded");
+        assert!(services.ends_with("/demo-kasse/services.html"), "{services}");
+        assert!(b.profile_get(DEMO_FORM_KEY).unwrap().ends_with("/demo-kasse/index.html"));
+    }
+
+    #[test]
+    fn built_in_uni_page_has_the_form_and_nothing_of_the_insurer() {
+        let (_, html) = DEMO_PAGES.iter().find(|(rel, _)| *rel == "demo-uni/index.html").expect("uni page built in");
+        for label in [
+            "Full name",
+            "Student number",
+            "Programme",
+            "I have paid the semester fee of 310.00 euros",
+            "Submit re-registration",
+            "Nothing is sent.",
+            "Thank you, your re-registration was received on",
+        ] {
+            assert!(html.contains(label), "{label}");
+        }
+        assert!(!html.to_lowercase().contains("gesundkasse"));
     }
 
     #[test]

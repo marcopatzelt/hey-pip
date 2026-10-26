@@ -31,3 +31,53 @@ each with a suggested `sam_query`. Boxes come from the page's `?mark` mode, so t
 Versichertennummer, Nachricht, Krankschreibung (file, button "Datei auswählen", also drag and drop), big "Absenden".
 Absenden checks the fields and shows "Danke, eingegangen am …". Nothing leaves the page. Open via `file://`
 (allowed in DEMO_MODE). Query switches for screenshots only: `?fill`, `?thanks`, `?mark`.
+
+## demo-uni/
+`index.html`: re-registration form of the invented "Beispiel University" (second demo site: "And it is not just
+paperwork"). Fields: Full name, Student number (7 digits), Programme (already shows "Social Work (B.A.)", as a real
+student portal would), checkbox "I have paid the semester fee of 310.00 euros" (the page's own record line says the
+fee was received), big "Submit re-registration". Submit checks name and student number and shows "Thank you, your
+re-registration was received on …". Nothing leaves the page. Same query switches as demo-kasse: `?fill`, `?thanks`,
+`?mark` (name red, student number green, programme blue, fee checkbox magenta outline, submit cyan).
+The app writes it next to the insurer pages (`<fixtures>/demo-uni/index.html`). The gate gives every demo folder its
+own site key (`…/fixtures/demo-kasse`, `…/fixtures/demo-uni`), so playbooks and "Don't ask again" stay per site.
+
+Screens: `python3 fixtures/screens/make_screens.py uni` (headless Firefox, 1600x1000) writes `screens/demo-uni.png`
+(empty form), `screens/demo-uni-filled.png` (`?fill`), `screens/demo-uni-thanks.png` (`?thanks`) and their
+`.boxes.json`. `screens/demo-uni.outline.json` (9 elements) and `screens/demo-uni-thanks.outline.json` (only the
+four header links: the form is gone) are written by hand in the shape of `demo-kasse.outline.json`: form rects from
+the boxes, link rects read off the PNG.
+
+Dry run (live API, a few cents), the app's own "Look at my screen" text (i18n `task_look_screen`, English), one
+database for both runs. The dry run swaps to the next `--screen` after Pip typed, and again after an approved Send,
+so three screens show the whole story (empty, filled, confirmation); with one screen only, Pip sees the empty form
+again after Send and starts over.
+
+```
+DB=/tmp/uni.db
+TASK="Look at my screen. Say ONE short sentence: what is open and what you will do about it. Then do it right away: fill every field you can from WHAT YOU KNOW, attach the letter that fits, and stop only at the send button (is_commit). Ask me only if a value is missing from memory AND the screen, or if two different tasks are equally likely. If there is nothing here for you to do, offer 2 or 3 concrete things you can do instead."
+cargo run -p pip-cli -- --db $DB --lang en agent "$TASK" \
+  --page file://$PWD/fixtures/demo-uni/index.html --outline fixtures/screens/demo-uni.outline.json \
+  --screen fixtures/screens/demo-uni.png --screen fixtures/screens/demo-uni-filled.png \
+  --screen fixtures/screens/demo-uni-thanks.png --approve none      # run 1: Pip asks
+sqlite3 $DB "insert into profile(key,value,updated_at,source) values('student_number','7654321',strftime('%Y-%m-%dT%H:%M:%SZ','now'),'user')"
+cargo run -p pip-cli -- ... --approve all                           # run 2: same flags, Send approved
+```
+
+Results (26.10.2026):
+- Run 1 (fresh database, `--approve none`): "I see your winter re-registration is open and I will fill it in for
+  you." Typed Full name (Erika Beispiel) from memory, ticked the fee box, then asked ONE question: "What is your
+  student number? You find it on your student ID card." No insurer field and no insurance number was typed. The dry
+  run cannot type an answer (an open question gets the placeholder `__text__`, which Pip did not type anywhere), so
+  Pip asked again and the run ended at the step limit: `Measure: steps=10 seconds=55.2`. Before the `ask_user` fix
+  (the model sends `"options": ""` for an open question; `Tool::from_call` now reads that as no buttons) the
+  question never reached the user and the same steps were lost to tool errors.
+- Between the runs, the answer was stored the way Pip stores it after the user answers (profile `student_number`
+  = `7654321`, source `user`, see the `sqlite3` line above; `updated_at` must be RFC 3339, else the run fails
+  with "premature end of input").
+- Run 2 (same database, `--approve all`): no question. Step 2 typed Full name and Student number in one turn, step 4
+  clicked "Submit re-registration" and got the send card: "Ready to send to Beispiel University (re-registration)? |
+  What: your re-registration for winter semester 2026/27 | To: Beispiel University (re-registration) (page on this
+  computer)". After the approved Send Pip saw the confirmation, remembered the reference and finished:
+  `Measure: steps=8 seconds=38.2`, playbook saved. Half of the steps are a lone `say` that repeats the opening
+  sentence (loop/prompt, not this page).

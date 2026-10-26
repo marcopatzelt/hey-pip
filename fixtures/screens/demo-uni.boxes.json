@@ -1,0 +1,58 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-uni.png",
+  "targets": {
+    "name_field": {
+      "box": [
+        313,
+        369,
+        626,
+        423
+      ],
+      "sam_query": "text input field",
+      "description": "Text field Full name"
+    },
+    "nr_field": {
+      "box": [
+        645,
+        369,
+        958,
+        423
+      ],
+      "sam_query": "text input field",
+      "description": "Text field Student number"
+    },
+    "programme_field": {
+      "box": [
+        313,
+        502,
+        958,
+        556
+      ],
+      "sam_query": "text input field",
+      "description": "Text field Programme"
+    },
+    "fee_checkbox": {
+      "box": [
+        313,
+        600,
+        344,
+        631
+      ],
+      "sam_query": "checkbox",
+      "description": "Checkbox I have paid the semester fee"
+    },
+    "submit_button": {
+      "box": [
+        649,
+        676,
+        958,
+        733
+      ],
+      "sam_query": "button",
+      "description": "Button Submit re-registration"
+    }
+  }
+}

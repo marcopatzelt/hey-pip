@@ -26,6 +26,7 @@ use crate::docs::DocType;
 use crate::events::{Bus, Button, PipState, UiEvent};
 use crate::i18n::{Lang, t, tf};
 use crate::memory::db::PLAYBOOK_MAX_FAILS;
+use crate::memory::learn::PROFILE_SECONDS_SAVED;
 use crate::memory::{
     ActionLog, DeadlineStatus, Learned, Memory, NewDeadline, RecallQuery, RunSummary, SENSITIVE_REFUSAL,
     is_protected_key, is_sensitive_key, is_sensitive_value, learn_from_run, recall, set_fact,
@@ -733,8 +734,21 @@ impl Agent {
         };
         match outcome {
             AgentOutcome::Done(summary) => {
+                // Impact lines: time against by hand, the running total, and the deadline this run handled.
+                let mut extra = learned.map(|l| saved_time_lines(l, state, lang)).unwrap_or_default();
+                if let Some(title) = self.close_task_deadline(state) {
+                    event("deadline_done", &tf("ev_deadline_done", lang, &[("title", &title)]));
+                    extra.push(tf("done_deadline_closed", lang, &[("title", &title)]));
+                }
                 let line = if state.answered {
-                    summary.clone()
+                    // The model's answer is already on screen (plain text ends the run); only the impact
+                    // lines follow in a bubble of their own, so the answer is not shown or spoken twice.
+                    if extra.is_empty() {
+                        summary.clone()
+                    } else {
+                        self.bubble(extra.join(" "), true);
+                        format!("{summary} {}", extra.join(" "))
+                    }
                 } else {
                     let mut line = tf("done_remember", lang, &[("fact", summary)]);
                     if let Some(l) = learned {
@@ -743,6 +757,9 @@ impl Agent {
                         } else if let Some(faster) = faster_than_before(l, state, lang) {
                             line = format!("{line} {faster}");
                         }
+                    }
+                    for e in &extra {
+                        line = format!("{line} {e}");
                     }
                     self.bubble(line.clone(), true);
                     line
@@ -1617,8 +1634,10 @@ impl Agent {
         self.blocking(move |pl| pl.input.click(p)).await?;
         state.last_point = Some(p);
         state.focus_by_key = false;
-        // Replace what the field holds (a remembered old value, a half-typed try).
+        // Replace what the field holds (a remembered old value, a half-typed try): select all and delete,
+        // so the new text never lands behind the old one even if the selection is lost.
         self.blocking(|pl| pl.input.key("ctrl+a")).await?;
+        self.blocking(|pl| pl.input.key("backspace")).await?;
         self.progress(tf("progress_type", lang, &[("what", a.what)]));
         let chars: Vec<char> = a.text.chars().collect();
         for chunk in chars.chunks(TYPE_CHUNK) {
@@ -1629,7 +1648,18 @@ impl Agent {
             self.blocking(move |pl| pl.input.type_text(&s)).await?;
         }
         let ui = self.platform.ui.clone();
-        let shows = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
+        let mut shows = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
+        // Typed text came out wrong (appended, cut, autocorrected): set the value directly once.
+        if shows.as_ref().is_some_and(|v| squash(v) != squash(a.text)) {
+            let ui = self.platform.ui.clone();
+            let text = a.text.to_string();
+            let fixed = tokio::task::spawn_blocking(move || ui.set_value_at(p, &text)).await.unwrap_or(false);
+            if fixed {
+                tracing::info!(element = id, "field value repaired directly");
+                let ui = self.platform.ui.clone();
+                shows = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
+            }
+        }
         let label = a.field_label.map(str::trim).filter(|l| !l.is_empty() && *l != "null");
         let label = label.map(str::to_string).unwrap_or_else(|| {
             if item.name.trim().is_empty() { field_label(a.what) } else { truncate(item.name.trim(), 60) }
@@ -1957,7 +1987,14 @@ impl Agent {
         let Some(tail_at) = url.find(['?', '#']) else { return false };
         let tail = url[tail_at..].to_lowercase().replace("%20", " ").replace('+', " ");
         let tail = percent_decode(&tail);
-        let profile = self.memory.profile_all().unwrap_or_default().into_iter().map(|(_, v)| v);
+        // Pip's own bookkeeping (the seconds-saved total) is a number, not a personal value.
+        let profile = self
+            .memory
+            .profile_all()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(k, _)| k != PROFILE_SECONDS_SAVED)
+            .map(|(_, v)| v);
         let typed = state.typed.iter().map(|(_, v)| v.clone());
         profile.chain(typed).any(|v| {
             let v = v.trim().to_lowercase();
@@ -2417,6 +2454,34 @@ impl Agent {
             }
             Asked::Cancelled => Ok(ToolRun::finish(Risk::Free, AgentOutcome::Stopped)),
         }
+    }
+
+    /// A run that really sent something for "deadline #N" (the user's words, or the accepted suggestion) marks
+    /// that deadline Done. Returns its title. No model call; nothing sent = nothing closed.
+    fn close_task_deadline(&self, state: &RunState) -> Option<String> {
+        if state.sent.is_empty() {
+            return None;
+        }
+        let text = match (&state.task, &state.accepted) {
+            (Task::Text(t) | Task::Voice(t), _) => t.as_str(),
+            (_, Some(a)) => a.as_str(),
+            _ => return None,
+        };
+        let id = deadline_in_task(text)?;
+        let d = match self.memory.deadline(id) {
+            Ok(Some(d)) if d.status == DeadlineStatus::Open => d,
+            Ok(_) => return None,
+            Err(e) => {
+                tracing::warn!(error = %e, id, "deadline read failed");
+                return None;
+            }
+        };
+        if let Err(e) = self.memory.set_deadline_status(id, DeadlineStatus::Done) {
+            tracing::warn!(error = %e, id, "closing the deadline failed");
+            return None;
+        }
+        tracing::info!(id, "deadline done by this run");
+        Some(d.title)
     }
 
     fn event(&self, kind: &str, text: &str) {
@@ -3068,6 +3133,59 @@ fn faster_than_before(learned: &Learned, state: &RunState, lang: Lang) -> Option
     (now < u64::try_from(before.seconds).unwrap_or(0)).then(|| faster_line(before.runs + 1, now, before.seconds, lang))
 }
 
+/// "Done in 14 s. By hand this takes about 8 minutes." plus, from 10 minutes on, the total saved since the
+/// start. Nothing when the run typed, attached and sent nothing (by_hand_secs = 0).
+fn saved_time_lines(learned: &Learned, state: &RunState, lang: Lang) -> Vec<String> {
+    if learned.by_hand_secs == 0 {
+        return Vec::new();
+    }
+    let secs = state.active_time().as_secs().max(1).to_string();
+    let minutes = by_hand_minutes(learned.by_hand_secs);
+    let mut lines = vec![if minutes == 1 {
+        tf("done_time_one", lang, &[("secs", &secs)])
+    } else {
+        tf("done_time", lang, &[("secs", &secs), ("minutes", &minutes.to_string())])
+    }];
+    if learned.saved_total_secs >= 600 {
+        lines.push(tf("done_total", lang, &[("total", &saved_total_words(learned.saved_total_secs, lang))]));
+    }
+    lines
+}
+
+/// Seconds by hand -> whole minutes, rounded, at least 1.
+fn by_hand_minutes(secs: u32) -> u32 {
+    (secs.saturating_add(30) / 60).max(1)
+}
+
+/// 1500 -> "25 minutes"; 4500 -> "1 h 15 min" (whole minutes, rounded down: never claim more).
+fn saved_total_words(secs: u64, lang: Lang) -> String {
+    let minutes = secs / 60;
+    if minutes >= 60 {
+        let (h, m) = (minutes / 60, minutes % 60);
+        return if m == 0 { format!("{h} h") } else { format!("{h} h {m} min") };
+    }
+    match (lang, minutes) {
+        (Lang::De, 1) => "1 Minute".into(),
+        (Lang::De, m) => format!("{m} Minuten"),
+        (Lang::En, 1) => "1 minute".into(),
+        (Lang::En, m) => format!("{m} minutes"),
+    }
+}
+
+/// The first "deadline #N" in the task text (any case): the deadline this task is for.
+fn deadline_in_task(task_text: &str) -> Option<i64> {
+    let low = task_text.to_lowercase();
+    let mut rest = low.as_str();
+    while let Some(at) = rest.find("deadline #") {
+        rest = &rest[at + "deadline #".len()..];
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if let Ok(id) = digits.parse() {
+            return Some(id);
+        }
+    }
+    None
+}
+
 fn too_long(state: &RunState, lang: Lang) -> String {
     if state.sent.is_empty() {
         t("err_too_long", lang).to_string()
@@ -3442,5 +3560,28 @@ mod tests {
         assert_eq!(key_label("enter", Lang::En), "Enter");
         assert_eq!(url_host("http://localhost:8000/x?y"), Some("localhost".into()));
         assert_eq!(first_json_object("ok {\"choice\": 2} done"), Some(json!({"choice": 2})));
+    }
+
+    #[test]
+    fn deadline_id_from_the_task_text() {
+        assert_eq!(deadline_in_task("Send the questionnaire. This is for deadline #12."), Some(12));
+        assert_eq!(deadline_in_task("Deadline #7 and letter #3"), Some(7));
+        assert_eq!(deadline_in_task("It fits letter #3 and DEADLINE #5"), Some(5));
+        assert_eq!(deadline_in_task("deadline # and then deadline #9"), Some(9));
+        assert_eq!(deadline_in_task("no number"), None);
+        assert_eq!(deadline_in_task("deadline #"), None);
+    }
+
+    #[test]
+    fn time_saved_in_words() {
+        assert_eq!(by_hand_minutes(30), 1);
+        assert_eq!(by_hand_minutes(89), 1);
+        assert_eq!(by_hand_minutes(90), 2);
+        assert_eq!(by_hand_minutes(120 + 90 + 120 + 30), 6);
+        assert_eq!(saved_total_words(1500, Lang::En), "25 minutes");
+        assert_eq!(saved_total_words(1559, Lang::De), "25 Minuten");
+        assert_eq!(saved_total_words(3600, Lang::En), "1 h");
+        assert_eq!(saved_total_words(4530, Lang::En), "1 h 15 min");
+        assert_eq!(tf("done_time_one", Lang::En, &[("secs", "9")]), "Done in 9 s. By hand this takes about a minute.");
     }
 }

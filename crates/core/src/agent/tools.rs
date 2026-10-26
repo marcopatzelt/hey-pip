@@ -78,6 +78,8 @@ pub enum Tool {
     },
     AskUser {
         question: String,
+        /// Missing, null or "" = open question (the model often sends `"options": ""`; see `lenient`).
+        #[serde(default)]
         options: Vec<String>,
     },
     Done {
@@ -285,9 +287,15 @@ impl Tool {
 fn lenient(mut args: Value) -> Value {
     if let Some(o) = args.as_object_mut() {
         for (k, v) in o.iter_mut() {
+            if k == "options" && v.is_null() {
+                *v = json!([]);
+                continue;
+            }
             let Value::String(s) = v else { continue };
             let t = s.trim();
             match k.as_str() {
+                // An open question: the model sends "" or "null" instead of [] (seen in most dry runs).
+                "options" if t.is_empty() || t.eq_ignore_ascii_case("null") => *v = json!([]),
                 "into_sam_query" | "commit_what" | "commit_to" | "reason_doc_id" | "reason_deadline_id" | "element"
                     if t.is_empty() || t.eq_ignore_ascii_case("null") =>
                 {
@@ -608,6 +616,17 @@ mod tests {
         assert!(Tool::from_call(&call("add_deadline", json!({"title": "t", "due": "30.11.2026", "why": ""}))).is_err());
         let opts = json!({"question": "q", "options": ["1", "2", "3", "4", "5"]});
         assert!(Tool::from_call(&call("ask_user", opts)).is_err());
+        // An open question: "", "null", null or no options at all all mean "no buttons".
+        for args in [
+            json!({"question": "q", "options": ""}),
+            json!({"question": "q", "options": " null "}),
+            json!({"question": "q", "options": null}),
+            json!({"question": "q"}),
+        ] {
+            let t = Tool::from_call(&call("ask_user", args.clone())).unwrap_or_else(|e| panic!("{args}: {e}"));
+            assert_eq!(t, Tool::AskUser { question: "q".into(), options: vec![] }, "{args}");
+        }
+        assert!(Tool::from_call(&call("ask_user", json!({"question": "q", "options": "A"}))).is_err());
     }
 
     #[test]
