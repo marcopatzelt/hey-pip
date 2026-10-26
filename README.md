@@ -1,16 +1,16 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="design/readme/banner-dark.png">
-    <img src="design/readme/banner.png" alt="Pip, a small blue helper, points at a claim form and asks: Your flight landed 4 hours late. You may be owed €400. Claim it now? Headline: Everyone is a beginner at something. Pip makes sure it doesn't cost you." width="100%">
+    <img src="design/readme/banner.png" alt="Pip, a small blue helper, points at a claim form and asks: Your flight landed 4 hours late. You may be owed €400. Claim it now? Headline: Your personal AI assistant. It knows you, sees what's coming, and gets things done with you." width="100%">
   </picture>
 </p>
 
 <h1 align="center">Pip</h1>
 
 <p align="center">
-  <b>Everyone is a beginner at something. Pip makes sure it doesn't cost you.</b><br>
-  Pip is a personal assistant that knows you, notices what's coming, and gets things done with you:<br>
-  letters, claims, forms, deadlines, on any screen. It asks only once, before anything leaves your computer.<br>
+  <b>Your personal AI assistant. It knows you, sees what's coming, and gets things done with you.</b><br>
+  Money you're owed, a letter you don't understand, a form you keep putting off, a date you'd forget.<br>
+  Pip handles it on your own screen and asks you before anything gets sent.<br>
   <sub>Powered by Meta's models: <b>Muse Spark</b>, <b>SAM 3.1</b>, <b>Muse Voice</b>, <b>Muse Image</b> and the open-weights <b>Muse Glimmer</b>.</sub>
 </p>
 
@@ -36,92 +36,90 @@
 
 ## Why Pip exists
 
-Life is full of things nobody ever taught you how to do. Claiming money you are owed. Answering a letter from an
-office. Insurance, taxes, a move, an application, a deadline hidden on page two. Each one needs knowledge you don't
-have and time you don't want to spend, so you put it off, or you get it wrong, or you give up.
+Most of us have a list of things we keep putting off. Claiming the refund for a late train. Answering a letter we only
+half understand. Changing the address on six accounts after a move. Each of these needs knowledge we don't have and
+time we'd rather spend on something else, so we wait, guess, or give up, and it costs money and chances.
 
-Everyone is a beginner at something. A software engineer can be lost with a tax form. A nurse can be lost with a
-university portal. Someone new to a country can be lost with all of it. And people who are ill, tired or older lose
-the most, because they have the least strength left. The cost is real: money nobody claims, deadlines nobody
-notices, chances that quietly pass.
+Everyone is a beginner at something. A software engineer can be lost with a tax form, and a nurse with a university
+portal. Someone new to a country can be lost with all of it. People who are ill, tired or older lose the most,
+because they have the least energy left for any of it.
 
-**Pip is the helper who knows you and knows how.** It remembers what matters about you, notices what's coming before
-you do, and does the work with you on your own screen. You stay in charge: Pip asks once, before anything leaves
-your computer.
+Pip is a helper who knows you and knows how these things work. It remembers what matters about you, tells you what's
+coming before you have to ask, and does the work with you. You stay in charge, and nothing gets sent without your yes.
 
-It started with my mom. She once lost money because a document was issued two days late. It was a deadline from her
-health insurer, and nobody told her. She was ill, tired, and nobody was watching the date for her.
-**Pip is the helper I wish she had had, and the one I want for myself.**
+I started building Pip because of my mom. She once lost money because a document was issued two days late. The
+deadline came from her health insurer, nobody told her, and she was ill and tired at the time. I wanted her to have a
+helper who watches those dates, and I wanted one for myself too.
 
 ## Meet Pip
 
-Pip is not another app you have to learn. It is a small buddy in the corner of your screen. You click it, and it
-helps. It works with the programs and websites you already use, on your real screen.
+Pip lives in the corner of your screen as a small blue character. Click it and tell it what you need, or let it tell
+you. It works with the websites and programs you already use.
 
 <table>
   <tr>
     <td width="50%" valign="top">
       <img src="design/readme/poses/think.png" alt="" width="64" align="right">
-      <h3>🧠 It remembers you</h3>
-      Your name, your insurer, your student number, and how each website worked last time. Every fact shows where
-      it came from: "from your letter of 14 October" or "you told me". Open <b>What Pip knows</b> and press
-      <b>Forget</b> on any line.
+      <h3>It remembers you</h3>
+      Your name, your insurer, your student number, and how each website worked last time. Every fact shows where it
+      came from, like "from your letter of 14 October" or "you told me". You can open <b>What Pip knows</b> at any
+      time and forget a line with one click.
     </td>
     <td width="50%" valign="top">
       <img src="design/readme/poses/listen.png" alt="" width="64" align="right">
-      <h3>🔔 It speaks up first</h3>
-      Show Pip a letter (a phone photo is enough). Pip says in two plain sentences what it is and what matters, and
-      keeps the dates. Each morning Pip says what is due and offers to do it: <i>"I can do this for you right now."</i>
+      <h3>It speaks up first</h3>
+      Show Pip a letter (a phone photo is enough) and it tells you in two plain sentences what the letter wants and by
+      when. Each morning it says what's due and offers to take care of it: <i>"I can do this for you right now."</i>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
       <img src="design/readme/poses/point.png" alt="" width="64" align="right">
-      <h3>🖱️ It does the work</h3>
-      Press <b>Look at my screen</b> on any page. Pip says what is open, then fills the whole form with what it
-      knows. It asks only for what it doesn't know. You watch Pip fly to each field, and you can stop it any time.
+      <h3>It does the work</h3>
+      Press <b>Look at my screen</b> on any page. Pip tells you what it sees and fills in the whole form with what it
+      knows, asking only for what it doesn't. You can watch it move from field to field and stop it whenever you like.
     </td>
     <td width="50%" valign="top">
       <img src="design/readme/poses/ask.png" alt="" width="64" align="right">
-      <h3>✋ It asks only once</h3>
-      Looking, typing and opening pages need no permission. Before anything leaves your computer, Pip shows
-      <b>one clear card</b>: what, to whom, and which button. Nothing is sent without your yes. Tick
-      <b>Don't ask again</b> for a site you trust.
+      <h3>It asks before sending</h3>
+      Pip can look, type and open pages on its own. Before anything leaves your computer, it shows one card with what
+      it's sending, to whom, and which button it will press. For a site you trust, you can tick <b>Don't ask again</b>.
     </td>
   </tr>
 </table>
 
-**Pip is for you if**
+Pip is for you if:
 
-- ✅ letters and online forms make you tired before you even start
-- ✅ you have missed a date or a claim before, because nobody reminded you
-- ✅ you are great at your job, but insurance, taxes and claims are not your thing
-- ✅ you help a parent or a friend with their paperwork, and you can't always be there
-- ✅ you are new to a country and the forms are not in your language
+- letters and online forms tire you out before you start
+- you've missed a date or a refund because nobody reminded you
+- you're good at your job, and insurance, taxes and claims just aren't your thing
+- you help a parent or a friend with their paperwork and can't always be there
+- you're new to a country and the forms aren't in your language
 
-> **Pip helps, you decide.** Pip explains letters in plain words, keeps every date, finds the right form and fills it
-> in, and names the source of every rule it uses. It does not replace a doctor, a lawyer or a financial adviser.
-> Decisions about your health, your rights and your money stay yours.
+> Pip helps, you decide. It explains letters in plain words, keeps track of dates, finds the right form, fills it in,
+> and tells you where each rule comes from. It doesn't replace a doctor, a lawyer or a financial adviser, and the
+> decisions about your health, your rights and your money stay with you.
 
 ## See Pip at work
 
-**Any form, one button.** Open any online form and press **Look at my screen**. Pip says in one sentence what the
-page is and what it will do. Then it fills in everything it knows about you, asks only for what is missing, and stops
-at the send button with one card. If there is nothing to do, Pip offers two or three things it can do instead.
+**Any form.** Open an online form and press Look at my screen. Pip says in one sentence what the page is, fills in what
+it knows about you, asks for what's missing, and stops at the send button. If there's nothing to fill in, it suggests
+a few things it could do instead.
 
 **A university re-registration.** A student opens the (invented) Beispiel University page. Pip fills in the name from
-memory, ticks the fee box and asks once: *"What is your student number?"* Pip keeps the answer and learns how the
-page works. **The second time there is no question at all.**
+memory, ticks the fee box and asks once for the student number. It keeps the answer and remembers how the page works,
+so the next time it doesn't need to ask.
 
-**A deadline from the insurer.** Erika (an invented person) gets a letter from her health insurer: they need a
-questionnaire back by a date. She shows Pip the photo. The next morning Pip says hi, names what is due, and offers to
-do it. One click: Pip opens the insurer's page, fills the questionnaire from what it knows and stops at one card.
+**A letter from the insurer.** Erika, an invented person, gets a letter: her insurer needs a questionnaire back by a
+certain date. She shows Pip a photo of it. The next morning Pip greets her, mentions the date, and offers to fill in
+the questionnaire. One click later Pip has opened the insurer's page, filled it in from what it knows, and is waiting
+at the send card.
 
-**One step ahead.** When you finish a task yourself, Pip checks the website for a service that fits your letters and
-deadlines. It offers one only when that heading is really on the page, and never twice.
+**The next step.** After you finish a task, Pip looks at the website for another service that fits your letters and
+dates. It only suggests one if that service is really listed on the page, and it never suggests the same one twice.
 
-Every finished task ends with the time it took and an honest estimate by hand, for example *"Done in 17 s. By hand
-this takes about 4 minutes."*
+At the end of each task Pip tells you how long it took and how long it would take by hand, for example *"Done in 17 s.
+By hand this takes about 4 minutes."*
 
 ## How Pip works
 
@@ -147,15 +145,15 @@ Dates come from rules in code (weekends and public holidays included), never fro
 
 ### Built on Meta's models
 
-Pip would not be possible without Meta's model family. A personal assistant that can act for you needs three things at once:
-a model that can **see** a screen and **reason** about it, a model that knows **exactly where** a button is, and a
-way to keep personal letters **private**. Meta offers all three, from one API and as open weights:
+Pip runs on Meta's models. An assistant that acts for you has to see a screen and reason about it, know where a
+button is down to the pixel, and keep personal letters private. Meta covers all of that, through one API and as open
+weights.
 
-- **Muse Spark** reads a screenshot and a letter the way a person does, and plans what to do next with tool calls.
-  One model is the brain for the whole agent, so Pip stays simple and fast.
-- **SAM 3.1** gives pixel-exact boxes. Pip's clicks land in the middle of the real button, not next to it.
-- **Open weights** (Muse Glimmer, Muse Spark Open) let the same kind of model run on your own computer, so a private
-  letter never has to leave it.
+- Muse Spark reads a screenshot or a letter and plans the next steps with tool calls. One model drives the whole
+  agent, which keeps Pip simple and fast.
+- SAM 3.1 returns exact boxes for buttons and fields, so Pip's clicks land in the middle of the right one.
+- The open-weights models (Muse Glimmer, Muse Spark Open) can run on your own computer, so a private letter can stay
+  there.
 
 | Model | Its job in Pip | Status |
 |---|---|---|
@@ -251,13 +249,12 @@ Architecture, target finding, the gate in detail and the full eval: **[docs/TECH
 ## Built for the Meta Global AI Developer Hackathon
 
 Pip was built from October 26 to November 4, 2026, in the **Indie track**, theme **"Build for your world"**. My
-world is a family where everyone is a beginner at something, and nobody should lose out because of it.
+world is my family, where everyone is a beginner at something.
 
-- **Impact:** a helper for everyone the digital world leaves behind.
-- **Meta AI at the core:** Muse Spark thinks and sees, SAM 3.1 finds the buttons, Muse Voice Transcribe listens,
-  Muse Image drew Pip, and Muse Glimmer / Muse Spark Open keep letters private.
-- **Technical depth:** all Rust, a real computer-use agent with an approval gate, a learning memory with per-site
-  playbooks, and proactive offers that are checked in code before Pip says a word.
+Pip is meant for anyone who loses money, time or chances to tasks nobody taught them. Inside, Muse Spark sees and
+plans, SAM 3.1 finds the buttons, Muse Voice Transcribe listens, Muse Image drew Pip, and Muse Glimmer / Muse Spark
+Open keep letters private. It's written in Rust, with an approval gate in front of every send, a memory that learns
+each website, and suggestions that are checked in code before Pip says anything.
 
 ## Roadmap
 
@@ -269,8 +266,8 @@ world is a family where everyone is a beginner at something, and nobody should l
 
 ## License
 
-Apache-2.0. Made by Marco Patzelt, for his mom and for everyone like her. All people, insurers, universities and
-numbers in this repository are invented.
+Apache-2.0. Made by Marco Patzelt for his mom, and for the rest of us. All people, insurers, universities and numbers
+in this repository are invented.
 
 <p align="center">
   <img src="design/readme/poses/happy.png" alt="Pip, happy, with both arms up" width="90">
