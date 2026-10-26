@@ -516,6 +516,12 @@ impl Memory {
         Ok(())
     }
 
+    /// Same as add_event with a given time (demo profile: events of earlier days).
+    pub fn add_event_at(&self, at: DateTime<Local>, kind: &str, text: &str) -> Result<()> {
+        self.conn().execute("INSERT INTO events(at, kind, text) VALUES (?1, ?2, ?3)", params![ts(at), kind, text])?;
+        Ok(())
+    }
+
     /// Newest first.
     pub fn recent_events(&self, n: u32) -> Result<Vec<Event>> {
         let c = self.conn();

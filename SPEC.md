@@ -22,6 +22,16 @@ Zielgruppe: alle, die nicht technisch sind oder keine Kraft für Bürokratie hab
 
 Auslöser (echte Geschichte, im Video erzählt): Die Folge-Krankschreibung von Marcos Mutter kam zwei Tage zu spät. Die Krankenkasse zahlte diese zwei Tage nicht, obwohl sie krank war.
 
+## 1b. Entscheidungen vom 26.10.2026 (Abend, nach den ersten Windows-Tests)
+
+- **Nur Englisch.** Die Jury bewertet auf Englisch. Pip zeigt und spricht nur Englisch (`Lang::En` ist Standard). Deutsche Briefe bleiben als Eingabe: Pip erklärt deutschen Papierkram auf Englisch („housing benefit (Wohngeld)“).
+- **Einstieg universell und sofort klar.** Statt „Drag a letter onto me“ fragt Pip: „What can I help you with?“ mit drei Knöpfen: **👀 Look at my screen**, **📄 Read a letter for me**, **💬 Or just tell me what you need**. „Look at my screen“ funktioniert für alles (Uni, Formulare, Bewerbungen): Pip sagt einen Satz, was offen ist, und handelt sofort.
+- **Autonom statt Nachfragen.** Ohne Karte: schauen, zeigen, scrollen, Seiten öffnen, Felder aus dem Gedächtnis füllen, Dateiauswahl öffnen, eigenen gespeicherten Brief anhängen, merken. **Genau eine Karte pro Aufgabe:** der Klick, der etwas vom Computer wegschickt („Ready to send to …?“). Häkchen „Don't ask again for <site>“ macht Pip auf dieser Seite ganz autonom. Keine zweite Bildschirm-Frage (der Knopfdruck ist die Zustimmung).
+- **Proaktiv ist der Kern.** Nach einer erledigten Aufgabe liest Pip einmal die Service-Seite der Kasse und schlägt genau ein passendes Formular vor („… also offers ‚Return your questionnaire online‘, which fits their letter. Shall we do it together?“). Der Rust-Code prüft: Überschrift steht wirklich auf der Seite, Brief/Frist steht wirklich im Gedächtnis. Beim Umsehen kann Pip nichts klicken oder senden.
+- **Demo mit vollem Gedächtnis.** `PIP_DEMO_PROFILE=1` legt ein erfundenes Profil an (Erika Beispiel: Adresse, Kasse, Versichertennummer, Arbeitgeber, Briefe, Fristen, Ereignisse), damit Pip in der Demo schon viel weiß.
+- **Tempo.** Jeder Agentenschritt ist eine frische Anfrage mit nur dem neuesten Bild (~3 s statt ~15 s). Pip wartet auf Dateifenster, statt doppelt zu klicken. Pip schließt nie Fenster des Nutzers (Klick und Tastenkürzel gesperrt).
+- **Berater:** Im Optimier-Loop berät Fable 5.1.
+
 ## 2. Umfang
 
 ### Muss (MVP, für die Demo)

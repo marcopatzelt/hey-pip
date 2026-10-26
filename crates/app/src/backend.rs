@@ -14,7 +14,7 @@ use copilot_core::config::{Config, file_url};
 use copilot_core::docs::DocPipeline;
 use copilot_core::events::Bus;
 use copilot_core::i18n::Lang;
-use copilot_core::memory::{Memory, default_db_path};
+use copilot_core::memory::{Memory, default_db_path, seed_demo_profile};
 use copilot_core::meta::MetaClient;
 use copilot_core::rules::RuleEngine;
 
@@ -44,6 +44,13 @@ const DEMO_PAGES: &[(&str, &str)] = &[
     ("index.html", DEMO_FORM_HTML),
     ("services.html", include_str!("../../../fixtures/demo-kasse/services.html")),
     ("fragebogen.html", include_str!("../../../fixtures/demo-kasse/fragebogen.html")),
+];
+
+/// The invented letters of the demo profile (`PIP_DEMO_PROFILE=1`), written to `<data_dir>/demo-letters/`.
+const DEMO_LETTERS: &[(&str, &[u8])] = &[
+    ("bescheid_wohngeld.pdf", include_bytes!("../../../fixtures/letters/bescheid_wohngeld.pdf")),
+    ("au_erika_erst_foto.jpg", include_bytes!("../../../fixtures/letters/au_erika_erst_foto.jpg")),
+    ("kasse_brief.pdf", include_bytes!("../../../fixtures/letters/kasse_brief.pdf")),
 ];
 
 pub fn env_flag(name: &str) -> bool {
@@ -156,6 +163,21 @@ impl Backend {
             clock: shared_clock,
             profile_fallback: Mutex::default(),
         };
+        // Before PIP_LANG below, so PIP_LANG still wins over the demo profile's language.
+        if env_flag("PIP_DEMO_PROFILE")
+            && let (Some(cfg), Some(mem), Some(rules)) = (&config, &backend.memory, &backend.rules)
+        {
+            let dir = cfg.data_dir.join("demo-letters");
+            if let Err(e) = write_demo_letters(&dir) {
+                tracing::warn!("cannot write the demo letters: {e}");
+            }
+            let now = backend.clock.now();
+            match guard("demo profile", || seed_demo_profile(mem, rules, &dir, now)) {
+                Ok(true) => tracing::info!("seeded demo profile"),
+                Ok(false) => tracing::info!("demo profile not seeded: the profile already has a name"),
+                Err(e) => tracing::warn!("demo profile failed: {e:#}"),
+            }
+        }
         // The agent reads the language from the profile; PIP_LANG wins so app and agent always agree.
         if let Ok(code) = std::env::var("PIP_LANG") {
             backend.profile_set(PROFILE_LANG, Lang::from_code(&code).code());
@@ -218,6 +240,12 @@ impl Backend {
             .map(|s| Lang::from_code(&s))
             .unwrap_or_default()
     }
+}
+
+/// Write the built-in demo letters to `dir` (refreshed every start).
+fn write_demo_letters(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    DEMO_LETTERS.iter().try_for_each(|(name, bytes)| std::fs::write(dir.join(name), bytes))
 }
 
 /// Write the built-in demo pages to `<dir>/demo-kasse/` (refreshed every start). Returns `dir`.
@@ -292,6 +320,23 @@ mod tests {
         assert!(page.contains("Return your questionnaire online") && page.contains("fragebogen.html"));
         let form = std::fs::read_to_string(fx.join("demo-kasse/fragebogen.html")).unwrap();
         assert!(form.contains("Still unable to work?") && form.contains("Thank you, received on"));
+    }
+
+    #[test]
+    fn demo_profile_from_built_in_letters() {
+        let names: Vec<&str> = DEMO_LETTERS.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, copilot_core::memory::DEMO_LETTER_FILES);
+        let dir = tempfile::tempdir().unwrap();
+        let letters = dir.path().join("demo-letters");
+        write_demo_letters(&letters).unwrap();
+        let mem = Arc::new(Memory::open_in_memory().unwrap());
+        let now = chrono::Local::now();
+        let rules = RuleEngine::new(mem.clone(), Arc::new(copilot_core::clock::FixedClock::new(now)));
+        assert!(seed_demo_profile(&mem, &rules, &letters, now).unwrap());
+        assert_eq!(mem.profile_get("name").unwrap().as_deref(), Some("Erika"));
+        let wohngeld = mem.search_documents("Wohngeld", 5).unwrap();
+        assert!(wohngeld.iter().any(|d| d.path == letters.join("bescheid_wohngeld.pdf") && d.path.exists()));
+        assert!(!seed_demo_profile(&mem, &rules, &letters, now).unwrap());
     }
 
     #[test]
