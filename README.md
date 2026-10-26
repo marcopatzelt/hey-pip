@@ -10,7 +10,8 @@
 <p align="center">
   <b>No one should have to be good at computers to live their life.</b><br>
   Pip is a personal assistant that lives on your screen. It knows you, notices what's coming,<br>
-  and does the computer work for you. It asks only once, before anything leaves your computer.
+  and does the computer work for you. It asks only once, before anything leaves your computer.<br>
+  <sub>Powered by Meta's models: <b>Muse Spark</b>, <b>SAM 3.1</b>, <b>Muse Voice</b>, <b>Muse Image</b> and the open-weights <b>Muse Glimmer</b>.</sub>
 </p>
 
 <p align="center">
@@ -143,7 +144,17 @@ agent loop, the approval gate, the letter reader, a rule engine for dates and a 
 
 Dates come from rules in code (weekends and public holidays included), never from a model's guess.
 
-### Meta models inside Pip
+### Built on Meta's models
+
+Pip would not be possible without Meta's model family. Computer use for everyday people needs three things at once:
+a model that can **see** a screen and **reason** about it, a model that knows **exactly where** a button is, and a
+way to keep personal letters **private**. Meta offers all three, from one API and as open weights:
+
+- **Muse Spark** reads a screenshot and a letter the way a person does, and plans what to do next with tool calls.
+  One model is the brain for the whole agent, so Pip stays simple and fast.
+- **SAM 3.1** gives pixel-exact boxes. Pip's clicks land in the middle of the real button, not next to it.
+- **Open weights** (Muse Glimmer, Muse Spark Open) let the same kind of model run on your own computer, so a private
+  letter never has to leave it.
 
 | Model | Its job in Pip | Status |
 |---|---|---|
