@@ -16,8 +16,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::gate::{
-    ApprovalAnswer, ApprovalCard, Gate, Risk, is_attach_target, is_delete_target, is_send_target, label_hit,
-    normalize_address, quoted_label, url_host, word_hit,
+    ApprovalAnswer, ApprovalCard, Gate, Risk, is_attach_target, is_cancel_target, is_delete_target, is_money_target,
+    is_send_target, label_hit, normalize_address, quoted_label, url_host, word_hit,
 };
 use super::tools::{DISCOVER_TOOLS, ScrollDir, Tool, bad_call, normalize_combo, tool_defs, truncate};
 use super::{APPROVAL_TIMEOUT, MAX_RUN, MAX_STEPS, prompt};
@@ -60,6 +60,16 @@ const DECLINE_COOLDOWN_DAYS: i64 = 7;
 const EV_SUGGESTED: &str = "suggested";
 const EV_DECLINED: &str = "suggestion_declined";
 const EV_ACCEPTED: &str = "suggestion_accepted";
+/// Event kind of a fact Pip saved (the text is "key: value").
+const EV_REMEMBERED: &str = "remembered";
+/// Profile key: sites (hosts, or the demo fixtures folder) where the user said "Don't ask again" on a send card.
+pub const PROFILE_TRUSTED_SEND: &str = "trusted_send_hosts";
+/// A yes for a button whose page changed under it still counts this long for the same button.
+const PREAPPROVAL_TTL: Duration = Duration::from_secs(90);
+/// After open_url: wait at most this long for the browser window to show the new page.
+const PAGE_CHANGE_MAX: Duration = Duration::from_secs(2);
+/// After open_url when the platform cannot tell which window is in front.
+const PAGE_CHANGE_BLIND: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
 pub enum Task {
@@ -175,6 +185,25 @@ pub struct RunState {
     suggested: bool,
     /// The task text after the user said yes to a suggestion (replaces the Discover task).
     accepted: Option<String>,
+    /// Facts that could redirect where things go (addresses, a changed insurer) and did not come from the
+    /// user's own words: held back and saved only when the user presses Send on the next card.
+    pending_facts: Vec<(String, String)>,
+    /// "key: value" of every fact remembered in this run, listed on the send card ("I'll remember: …").
+    remembered: Vec<String>,
+    /// "The page just changed" was said in this run (said once, then Pip just looks again).
+    said_page_changed: bool,
+    /// The user said yes to this button, but the page changed before the click: the same button on the same
+    /// site may be clicked without a second card.
+    preapproved: Option<Preapproval>,
+}
+
+/// A yes that could not be used because the page changed under the button.
+#[derive(Debug, Clone)]
+struct Preapproval {
+    label: String,
+    site: Option<String>,
+    what: String,
+    at: Instant,
 }
 
 /// Time the run waited for the user: finished waits plus the one in progress.
@@ -240,6 +269,10 @@ impl RunState {
             phase,
             suggested: false,
             accepted: None,
+            pending_facts: Vec::new(),
+            remembered: Vec::new(),
+            said_page_changed: false,
+            preapproved: None,
         }
     }
 
@@ -264,6 +297,7 @@ impl RunState {
         self.focus_by_key = false;
         self.resumed = true;
         self.user_wait = Arc::default();
+        self.preapproved = None;
     }
 
     /// Run time without the time spent waiting for the user.
@@ -340,8 +374,6 @@ pub struct Agent {
     stop_reason: Mutex<StopReason>,
     /// A run that was stopped or waited too long, for "Weiter" (never one that already sent something).
     paused_run: Mutex<Option<RunState>>,
-    /// Hosts the user allowed to open in this session (open_url card answered "Ja").
-    approved_hosts: Mutex<Vec<String>>,
 }
 
 impl Agent {
@@ -367,7 +399,6 @@ impl Agent {
             open_card: Mutex::new(None),
             stop_reason: Mutex::default(),
             paused_run: Mutex::new(None),
-            approved_hosts: Mutex::default(),
         }
     }
 
@@ -376,10 +407,16 @@ impl Agent {
         self.approval_timeout = d;
         self
     }
-    /// Pause before acting so the user can follow (default 600 ms; tests use zero).
+    /// The pause after a click or a page open (default 600 ms; tests use zero). Typing and keys wait a quarter
+    /// of it (150 ms) first.
     pub fn with_pace(mut self, d: Duration) -> Self {
         self.pace = d;
         self
+    }
+
+    /// The short pause before typing or a key (and between steps).
+    fn short_pace(&self) -> Duration {
+        self.pace / 4
     }
     /// Replace how URLs are opened (tests, or a platform-specific opener).
     pub fn with_url_opener(mut self, opener: UrlOpener) -> Self {
@@ -668,7 +705,7 @@ impl Agent {
 
         self.pip(PipState::Thinking);
         // Let the last action land (a window coming to the front, a page loading) before the next picture.
-        if state.step > 0 && !self.pause(self.pace, cancel).await {
+        if state.step > 0 && !self.pause(self.short_pace(), cancel).await {
             return Ok(StepResult::Finished(AgentOutcome::Stopped));
         }
         state.last_masks = self.bus.hit_rects();
@@ -954,7 +991,7 @@ impl Agent {
                 }
                 Ok(ToolRun::out(Risk::Free, "waited"))
             }
-            Tool::RememberFact { key, value } => self.remember(key, value, state, cancel, lang).await,
+            Tool::RememberFact { key, value } => self.remember(key, value, state),
             Tool::SearchMemory { query } => {
                 self.progress(t("progress_search", lang));
                 let rows = self.memory.search_documents(query, 5)?;
@@ -1019,7 +1056,7 @@ impl Agent {
     ) -> Result<ToolRun> {
         self.pip(PipState::Acting);
         let base_risk = self.gate.classify(tool, None);
-        let Some(target) = self.locate(state, sam_query, description, quoted_label(description)).await? else {
+        let Some(mut target) = self.locate(state, sam_query, description, quoted_label(description)).await? else {
             return Ok(ToolRun::out(base_risk, not_found(sam_query)));
         };
         let ui = self.ui_at(target.point).await;
@@ -1038,44 +1075,70 @@ impl Agent {
         if risk == Risk::Act && ui.as_ref().is_none_or(|u| u.name.trim().is_empty()) {
             // No name from the UI tree (Linux, icon buttons, our overlay on top): read the label from the
             // picture alone, without the task, so text on the page cannot talk the gate out of a card.
-            match self.read_label(state, &target).await {
-                Some((label, is_final)) => {
-                    if is_final || label_hit(&label) {
-                        risk = Risk::Commit;
-                    }
-                    ui_name = label;
+            // No label either: the model's words decide (classify already checked them for send words).
+            if let Some((label, is_final)) = self.read_label(state, &target).await {
+                if is_final || label_hit(&label) {
+                    risk = Risk::Commit;
                 }
-                None if looks_like_button(&format!("{sam_query} {description}")) => risk = Risk::Commit,
-                None => {}
+                ui_name = label;
             }
         }
         state.focus_by_key = false;
         let mut approved = None;
         let mut sent = None;
+        let mut trusted = None;
+        // Opening the file picker sends nothing: no card. Only the user's own stored letters can go into the
+        // dialog (approved_file), and the final send button still needs a yes.
+        let target_text = format!("{description} {ui_name}");
+        if risk == Risk::Commit && is_attach_target(&target_text) && !is_send_target(&target_text) {
+            risk = Risk::Act;
+            state.enter_after_attach = true;
+        }
         if risk == Risk::Commit {
             let card = match self.commit_check(tool, state, Some(&target), &ui_name, cancel, lang).await? {
                 Ok(card) => card,
                 Err(run) => return Ok(run),
             };
             approved = Some(true);
-            if self.target_changed(state, &target, ui.as_ref()).await {
-                self.bubble(t("page_changed", lang), true);
-                return Ok(ToolRun {
-                    exec: Exec::Output(
-                        "not clicked: the page changed while the user was deciding. Look at the screen again; if \
-                         the button is still there, click it again (the user will be asked again)."
-                            .into(),
-                    ),
-                    risk,
-                    approved: Some(false),
-                });
+            if card.asked && self.target_changed(state, &target, ui.as_ref()).await {
+                match self.relocate_same(state, sam_query, description, &ui_name).await {
+                    Some(t) => {
+                        tracing::info!("the page moved while the card was open; the same button is clicked");
+                        self.show_target(&t, description);
+                        target = t;
+                    }
+                    None => {
+                        if !std::mem::replace(&mut state.said_page_changed, true) {
+                            self.bubble(t("page_changed", lang), true);
+                        }
+                        if !ui_name.trim().is_empty() {
+                            state.preapproved = Some(Preapproval {
+                                label: ui_name.clone(),
+                                site: self.current_site(state).await,
+                                what: card.what.clone(),
+                                at: Instant::now(),
+                            });
+                        }
+                        return Ok(ToolRun {
+                            exec: Exec::Output(
+                                "not clicked: the page changed while the user was deciding. Look at the screen \
+                                 again; if the same button is still there, click it again (the user already said \
+                                 yes to it)."
+                                    .into(),
+                            ),
+                            risk,
+                            approved: Some(false),
+                        });
+                    }
+                }
             }
             state.enter_after_attach = card.attach;
             if !card.attach {
                 sent = Some(card.what);
             }
+            trusted = card.trusted;
         }
-        if !self.pause(self.pace, cancel).await {
+        if !self.pause(self.short_pace(), cancel).await {
             return Ok(ToolRun::finish(risk, AgentOutcome::Stopped));
         }
         let p = target.point;
@@ -1085,6 +1148,10 @@ impl Agent {
             state.sent.push(what);
         }
         let mut out = format!("clicked {description}");
+        if let Some(to) = &trusted {
+            self.bubble(tf("sent_trusted", lang, &[("to", to)]), true);
+            out.push_str(" (trusted site: the user said not to ask again for it)");
+        }
         if state.enter_after_attach {
             // The file dialog can take a few seconds to open (slow PCs). Wait for it, so the next picture
             // shows it and the model does not click the button again.
@@ -1093,8 +1160,44 @@ impl Agent {
                 Some(false) => out.push_str(". No file dialog has opened yet."),
                 None => {}
             }
+        } else if !self.pause(self.pace, cancel).await {
+            // Let the click land (a page loading, a field opening) before the next picture.
+            return Ok(ToolRun::finish(risk, AgentOutcome::Stopped));
         }
         Ok(ToolRun { exec: Exec::Output(out), risk, approved })
+    }
+
+    /// The page changed while the card was open: look again and find the same button. Some(target) only if the
+    /// element there has the same label the user approved (UI tree name, or read from the picture).
+    async fn relocate_same(
+        &self,
+        state: &mut RunState,
+        sam_query: &str,
+        description: &str,
+        approved_label: &str,
+    ) -> Option<Target> {
+        if approved_label.trim().is_empty() {
+            return None;
+        }
+        state.last_masks = self.bus.hit_rects();
+        state.last_api = Some(self.capture().await.ok()?);
+        let target = self.locate(state, sam_query, description, quoted_label(description)).await.ok()??;
+        let name = match self.ui_at(target.point).await.map(|u| u.name).filter(|n| !n.trim().is_empty()) {
+            Some(n) => n,
+            None => self.read_label(state, &target).await?.0,
+        };
+        same_button(approved_label, &name).then_some(target)
+    }
+
+    /// Site key of the page in front (see Gate::site_key).
+    async fn current_site(&self, state: &RunState) -> Option<String> {
+        self.current_url(state).await.and_then(|u| self.gate.site_key(&u))
+    }
+
+    /// The page really in front (browser address bar) wins over what this run opened.
+    async fn current_url(&self, state: &RunState) -> Option<String> {
+        let shown = self.foreground().await.and_then(|w| w.address).and_then(|a| normalize_address(&a));
+        shown.or_else(|| state.last_url.clone()).or_else(|| self.initial_page.clone())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1132,7 +1235,7 @@ impl Agent {
                      field. Use click with is_commit=true for buttons.",
                 ));
             }
-            if !self.pause(self.pace, cancel).await {
+            if !self.pause(self.short_pace(), cancel).await {
                 return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped));
             }
             let p = target.point;
@@ -1203,6 +1306,9 @@ impl Agent {
             if looks_secret {
                 return self.password_wait(state, cancel, lang).await;
             }
+            if !self.pause(self.short_pace(), cancel).await {
+                return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped));
+            }
         }
         self.progress(tf("progress_type", lang, &[("what", what)]));
         let chars: Vec<char> = text.chars().collect();
@@ -1216,6 +1322,8 @@ impl Agent {
         if !is_path {
             state.typed.retain(|(w, _)| w != what);
             state.typed.push((what.to_string(), truncate(&text, 60)));
+            // The viewer sees the form fill up: "Name ✓ · Insurance number ✓".
+            self.progress(filled_line(&state.typed));
         }
         Ok(ToolRun::out(Risk::Act, format!("typed {what}{note}")))
     }
@@ -1253,6 +1361,12 @@ impl Agent {
         };
         let ui_name = ui.as_ref().map(|u| u.name.clone()).filter(|n| !n.trim().is_empty());
         let mut risk = self.gate.classify(tool, ui_name.as_deref());
+        let model_commit = matches!(tool, Tool::Key { is_commit: true, .. });
+        if combo == "space" && ui_name.is_none() && !state.focus_by_key && !model_commit {
+            // Nobody can tell what has the focus, but Tab has not moved it since the last click: Space ticks the
+            // box or presses the thing Pip just clicked. After Tab it stays a card (it may sit on "Absenden").
+            risk = Risk::Act;
+        }
         if combo == "space" && focused.as_ref().is_some_and(UiElement::is_pressable) {
             risk = Risk::Commit; // Space presses the focused button
         }
@@ -1269,6 +1383,7 @@ impl Agent {
         }
         let mut approved = None;
         let mut sent = None;
+        let mut trusted = None;
         if risk == Risk::Commit {
             match self.commit_check(tool, state, None, ui_name.as_deref().unwrap_or(""), cancel, lang).await? {
                 Ok(card) => {
@@ -1276,17 +1391,26 @@ impl Agent {
                     if !card.attach {
                         sent = Some(card.what);
                     }
+                    trusted = card.trusted;
                 }
                 Err(run) => return Ok(run),
             }
         }
         self.progress(tf("progress_key", lang, &[("key", &key_label(&combo, lang))]));
+        if !self.pause(self.short_pace(), cancel).await {
+            return Ok(ToolRun::finish(risk, AgentOutcome::Stopped));
+        }
         let c = combo.clone();
         self.blocking(move |pl| pl.input.key(&c)).await?;
         if let Some(what) = sent {
             state.sent.push(what);
         }
-        Ok(ToolRun { exec: Exec::Output(format!("pressed {combo}")), risk, approved })
+        let mut out = format!("pressed {combo}");
+        if let Some(to) = &trusted {
+            self.bubble(tf("sent_trusted", lang, &[("to", to)]), true);
+            out.push_str(" (trusted site: the user said not to ask again for it)");
+        }
+        Ok(ToolRun { exec: Exec::Output(out), risk, approved })
     }
 
     async fn open_url(
@@ -1313,98 +1437,69 @@ impl Agent {
             };
             return Ok(ToolRun::out(Risk::Act, why));
         }
-        let mut approved = None;
-        if !self.gate.demo_mode {
-            if self.url_leaks_profile(url) {
-                return Ok(ToolRun::out(
-                    Risk::Commit,
-                    "refused: this address contains the user's personal data. Open the page without it and fill \
-                     the form instead (the user approves sending).",
-                ));
-            }
-            let host = url_host(url).unwrap_or_default();
-            if !self.host_trusted(&host) {
-                let card = ApprovalCard {
-                    id: Uuid::new_v4(),
-                    title: t("approve_title_open", lang).to_string(),
-                    what: tf("approve_page", lang, &[("host", &host)]),
-                    to: tf("approve_to", lang, &[("to", &host)]),
-                    attachments: Vec::new(),
-                    filled: Vec::new(),
-                    crop_png_b64: None,
-                    yes_label: t("btn_yes_open", lang).to_string(),
-                    no_label: t("btn_not_yet", lang).to_string(),
-                };
-                let speak = format!("{} {host}", card.title);
-                match self.approve(state, card, &speak, cancel).await {
-                    ApprovalAnswer::Yes => {
-                        approved = Some(true);
-                        self.approved_hosts.lock().expect("hosts lock").push(host);
-                    }
-                    ApprovalAnswer::No => {
-                        return Ok(ToolRun {
-                            exec: Exec::Finish(AgentOutcome::Stopped),
-                            risk: Risk::Commit,
-                            approved: Some(false),
-                        });
-                    }
-                    ApprovalAnswer::Timeout => {
-                        self.away_bubble("approve_timeout", "btn_continue_now", Some("btn_dont_send"), lang);
-                        let text = t("approve_timeout", lang).to_string();
-                        return Ok(ToolRun {
-                            exec: Exec::Finish(AgentOutcome::NeedsUser(text)),
-                            risk: Risk::Commit,
-                            approved: Some(false),
-                        });
-                    }
-                }
-            }
+        // No card for opening a page: the page only shows things. What leaves the computer is the send click,
+        // and that is checked. Personal data inside the address itself would leave right now: refused.
+        if !self.gate.demo_mode && self.url_leaks_personal(url, state) {
+            return Ok(ToolRun::out(
+                Risk::Commit,
+                "refused: this address contains the user's personal data. Open the page without it and fill \
+                 the form instead (the user approves sending).",
+            ));
         }
         self.pip(PipState::Acting);
         self.progress(t("progress_open_page", lang));
+        let before = if self.pace.is_zero() { None } else { self.foreground().await };
         (self.opener)(url)?;
         state.last_url = Some(url.to_string());
-        if !self.pause(self.pace * 3, cancel).await {
+        if !self.wait_page_change(before, cancel).await {
             return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped));
         }
-        let risk = if approved.is_some() { Risk::Commit } else { Risk::Act };
-        Ok(ToolRun { exec: Exec::Output(format!("opened {url}; wait for it to load if needed")), risk, approved })
+        Ok(ToolRun::out(Risk::Act, format!("opened {url}; wait for it to load if needed")))
     }
 
-    /// Localhost, hosts the user allowed before, and hosts of addresses stored in the profile.
-    fn host_trusted(&self, host: &str) -> bool {
-        if host.is_empty() {
-            return false;
+    /// After open_url: until the window in front shows another title or address (max 2 s), or 1 s when the
+    /// platform cannot tell. False = cancelled.
+    async fn wait_page_change(&self, before: Option<crate::platform::WindowInfo>, cancel: &CancellationToken) -> bool {
+        if self.pace.is_zero() {
+            return !cancel.is_cancelled();
         }
-        if matches!(host, "localhost" | "127.0.0.1" | "[::1]")
-            || self.approved_hosts.lock().expect("hosts lock").iter().any(|h| h == host)
-        {
-            return true;
+        let Some(before) = before else { return self.pause(PAGE_CHANGE_BLIND, cancel).await };
+        let deadline = Instant::now() + PAGE_CHANGE_MAX;
+        loop {
+            if !self.pause(Duration::from_millis(100), cancel).await {
+                return false;
+            }
+            match self.foreground().await {
+                Some(w) if w.title != before.title || w.address != before.address => {
+                    // The new page is there; give it a moment to draw.
+                    return self.pause(self.short_pace(), cancel).await;
+                }
+                None => return self.pause(deadline.saturating_duration_since(Instant::now()), cancel).await,
+                Some(_) if Instant::now() >= deadline => return true,
+                Some(_) => {}
+            }
         }
-        self.memory.profile_all().unwrap_or_default().iter().any(|(_, v)| url_host(v).as_deref() == Some(host))
     }
 
-    /// True if the query or fragment of `url` carries a value from the profile (name, insurance number, …).
-    fn url_leaks_profile(&self, url: &str) -> bool {
+    /// True if the query or fragment of `url` carries a value from the profile (name, insurance number, …) or
+    /// something Pip typed into a form in this run.
+    fn url_leaks_personal(&self, url: &str, state: &RunState) -> bool {
         let Some(tail_at) = url.find(['?', '#']) else { return false };
         let tail = url[tail_at..].to_lowercase().replace("%20", " ").replace('+', " ");
         let tail = percent_decode(&tail);
-        self.memory.profile_all().unwrap_or_default().iter().any(|(_, v)| {
+        let profile = self.memory.profile_all().unwrap_or_default().into_iter().map(|(_, v)| v);
+        let typed = state.typed.iter().map(|(_, v)| v.clone());
+        profile.chain(typed).any(|v| {
             let v = v.trim().to_lowercase();
             v.chars().count() >= 4 && !v.contains("://") && tail.contains(&v)
         })
     }
 
-    /// remember_fact. Addresses, e-mails and links, and changes to keys like the insurer's form, need a "Ja":
-    /// text from a letter or a web page must not be able to redirect where Pip sends things.
-    async fn remember(
-        &self,
-        key: &str,
-        value: &str,
-        state: &RunState,
-        cancel: &CancellationToken,
-        lang: Lang,
-    ) -> Result<ToolRun> {
+    /// remember_fact, without a card. Plain facts are saved at once. Addresses, e-mails and links, and changes
+    /// to keys like the insurer's form, are saved at once only when the user said them; otherwise (text from a
+    /// letter or a web page could redirect where Pip sends things) they wait for the user's Send on the next
+    /// card, which lists them ("I'll remember: …").
+    fn remember(&self, key: &str, value: &str, state: &mut RunState) -> Result<ToolRun> {
         let old = self.memory.profile_get(key)?;
         if old.as_deref() == Some(value) {
             return Ok(ToolRun::out(Risk::Free, format!("remembered {key}")));
@@ -1415,58 +1510,60 @@ impl Agent {
             !o.is_empty() && (v.contains(&o) || o.contains(&v))
         });
         let risky = looks_like_address(value) || (is_protected_key(key) && old.is_some() && !refines);
-        if !risky {
-            self.memory.profile_set(key, value)?;
-            return Ok(ToolRun::out(Risk::Free, format!("remembered {key}")));
+        let line = format!("{}: {}", key.replace('_', " "), truncate(value, 120));
+        state.remembered.retain(|l| !l.starts_with(&format!("{}: ", key.replace('_', " "))));
+        state.remembered.push(line);
+        if risky && !user_said(&state.task, value) {
+            state.pending_facts.retain(|(k, _)| k != key);
+            state.pending_facts.push((key.to_string(), value.to_string()));
+            return Ok(ToolRun::out(
+                Risk::Free,
+                format!("noted {key}; it is saved when the user approves the next send (the card lists it)"),
+            ));
         }
-        let label = key.replace('_', " ");
-        let card = ApprovalCard {
-            id: Uuid::new_v4(),
-            title: t("approve_title_remember", lang).to_string(),
-            what: format!("{label}: {}", truncate(value, 120)),
-            to: tf(
-                "approve_before",
-                lang,
-                &[("old", &old.as_deref().map(|o| truncate(o, 120)).unwrap_or_else(|| "–".into()))],
-            ),
-            attachments: Vec::new(),
-            filled: Vec::new(),
-            crop_png_b64: None,
-            yes_label: t("btn_yes_remember", lang).to_string(),
-            no_label: t("btn_no", lang).to_string(),
-        };
-        let speak = card.title.clone();
-        match self.approve(state, card, &speak, cancel).await {
-            ApprovalAnswer::Yes => {
-                self.memory.profile_set(key, value)?;
-                Ok(ToolRun {
-                    exec: Exec::Output(format!("remembered {key}")),
-                    risk: Risk::Commit,
-                    approved: Some(true),
-                })
-            }
-            _ => Ok(ToolRun {
-                exec: Exec::Output(format!("not saved: the user did not agree to remember {key}")),
-                risk: Risk::Commit,
-                approved: Some(false),
-            }),
+        self.save_fact(key, value)?;
+        Ok(ToolRun::out(Risk::Free, format!("remembered {key}")))
+    }
+
+    fn save_fact(&self, key: &str, value: &str) -> Result<()> {
+        self.memory.profile_set(key, value)?;
+        self.event(EV_REMEMBERED, &format!("{}: {}", key.replace('_', " "), truncate(value, 120)));
+        Ok(())
+    }
+
+    /// Sites where the user ticked "Don't ask again".
+    fn trusted_sites(&self) -> Vec<String> {
+        let list = self.memory.profile_get(PROFILE_TRUSTED_SEND).ok().flatten().unwrap_or_default();
+        list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    }
+
+    fn trust_site(&self, site: &str) {
+        let mut list = self.trusted_sites();
+        if list.iter().any(|s| s == site) || site.contains(',') {
+            return;
         }
+        list.push(site.to_string());
+        if let Err(e) = self.memory.profile_set(PROFILE_TRUSTED_SEND, &list.join(",")) {
+            tracing::warn!(error = %e, "trusted site not saved");
+        }
+        self.event("trusted_site", site);
     }
 
     /// DEMO_MODE page check + approval card. Ok(card facts) = approved; Err(run) = what to return instead.
+    /// No card when the user ticked "Don't ask again" for this site and the target is a plain send (never a
+    /// delete, payment, order or cancellation), or when the user already said yes to this very button and only
+    /// the page moved under it.
     async fn commit_check(
         &self,
         tool: &Tool,
-        state: &RunState,
+        state: &mut RunState,
         target: Option<&Target>,
         ui_name: &str,
         cancel: &CancellationToken,
         lang: Lang,
     ) -> Result<std::result::Result<Approved, ToolRun>> {
         let refuse = |exec: Exec| ToolRun { exec, risk: Risk::Commit, approved: Some(false) };
-        // The page really in front (browser address bar) wins over what this run opened.
-        let shown = self.foreground().await.and_then(|w| w.address).and_then(|a| normalize_address(&a));
-        let url = shown.or_else(|| state.last_url.clone()).or_else(|| self.initial_page.clone());
+        let url = self.current_url(state).await;
         if self.gate.demo_mode && !url.as_deref().is_some_and(|u| self.gate.url_allowed(u)) {
             self.bubble(t("demo_blocked", lang), true);
             return Ok(Err(refuse(Exec::Output(
@@ -1498,7 +1595,14 @@ impl Agent {
         // Only the target decides attach vs send: `what` often names the file ("… (Datei au.pdf)").
         let attach = is_attach_target(&target_text);
         let delete = !attach && is_delete_target(&target_text) && !is_send_target(&target_text);
+        // A plain send: says "send/submit" and does not pay, order, delete or cancel anything.
+        let plain_send = !attach
+            && is_send_target(&target_text)
+            && !is_delete_target(&target_text)
+            && !is_money_target(&target_text)
+            && !is_cancel_target(&target_text);
         let what = what.or_else(|| state.doc_label.clone()).unwrap_or_else(|| description.clone());
+        let site = url.as_deref().and_then(|u| self.gate.site_key(u));
         // The recipient is never only the model's word: the real host goes next to it.
         let host = url.as_deref().and_then(|u| {
             url_host(u).or_else(|| u.to_lowercase().starts_with("file:").then(|| t("page_local", lang).to_string()))
@@ -1508,20 +1612,41 @@ impl Agent {
             (Some(name), Some(h)) if !name.to_lowercase().contains(h.as_str()) => format!("{name} ({h})"),
             _ => to_name.clone(),
         };
+        let site_label = host.clone().unwrap_or_else(|| to_name.clone());
+
+        // Yes already given to this button; the page moved under it before the click.
+        if let Some(pre) = state.preapproved.take() {
+            let label = if ui_name.trim().is_empty() {
+                quoted_label(&description).unwrap_or_default()
+            } else {
+                ui_name.to_string()
+            };
+            if pre.at.elapsed() < PREAPPROVAL_TTL && pre.site == site && same_button(&pre.label, &label) {
+                return Ok(Ok(Approved { what: pre.what, attach, asked: false, trusted: None }));
+            }
+        }
+        // "Don't ask again for this site". Held-back facts still need the card (the user must see them).
+        if plain_send
+            && state.pending_facts.is_empty()
+            && site.as_ref().is_some_and(|s| self.trusted_sites().contains(s))
+        {
+            return Ok(Ok(Approved { what, attach: false, asked: false, trusted: Some(site_label) }));
+        }
+
         let crop = match (target, state.last_api.as_ref()) {
             (Some(tg), Some(api)) => api.crop_png(&tg.api_box, 16).ok().map(|png| STANDARD.encode(png)),
             _ => None,
         };
         let (title, yes) = if attach {
-            ("approve_title_attach", "btn_yes_attach")
+            (t("approve_title_attach", lang).to_string(), "btn_yes_attach")
         } else if delete {
-            ("approve_title_delete", "btn_yes_delete")
+            (t("approve_title_delete", lang).to_string(), "btn_yes_delete")
         } else {
-            ("approve_title_send", "btn_yes_send")
+            (tf("approve_title_send", lang, &[("to", &to_name)]), "btn_yes_send")
         };
         let card = ApprovalCard {
             id: Uuid::new_v4(),
-            title: t(title, lang).to_string(),
+            title,
             what: tf("approve_what", lang, &[("what", &what)]),
             to: tf("approve_to", lang, &[("to", &to_line)]),
             attachments: state.doc_file.iter().cloned().collect(),
@@ -1529,6 +1654,9 @@ impl Agent {
             crop_png_b64: crop,
             yes_label: t(yes, lang).to_string(),
             no_label: t("btn_not_yet", lang).to_string(),
+            remember_label: (plain_send && site.is_some())
+                .then(|| tf("approve_remember_site", lang, &[("to", &site_label)])),
+            remembered: state.remembered.iter().map(|l| tf("approve_remembered", lang, &[("fact", l)])).collect(),
         };
         // Say the whole question: someone on the sofa must not have to walk over to read it.
         let speak = if attach {
@@ -1538,8 +1666,21 @@ impl Agent {
         } else {
             tf("approve_speak_send", lang, &[("what", &what), ("to", &to_name)])
         };
-        match self.approve(state, card, &speak, cancel).await {
-            ApprovalAnswer::Yes => Ok(Ok(Approved { what, attach })),
+        let (answer, remember_site) = self.approve(state, card, &speak, cancel).await;
+        match answer {
+            ApprovalAnswer::Yes => {
+                // The user saw the held-back facts on the card and said Send.
+                for (k, v) in std::mem::take(&mut state.pending_facts) {
+                    self.save_fact(&k, &v)?;
+                }
+                if remember_site
+                    && plain_send
+                    && let Some(site) = &site
+                {
+                    self.trust_site(site);
+                }
+                Ok(Ok(Approved { what, attach, asked: true, trusted: None }))
+            }
             // "Noch nicht" and Stop both end the run: "Ich habe aufgehört. Nichts wurde abgeschickt."
             ApprovalAnswer::No => Ok(Err(refuse(Exec::Finish(AgentOutcome::Stopped)))),
             ApprovalAnswer::Timeout => {
@@ -1562,7 +1703,8 @@ impl Agent {
         self.emit(UiEvent::Bubble { text, buttons, question_id: None });
     }
 
-    /// Show the card and wait. Timeout = Timeout, cancel / dropped sender = No.
+    /// Show the card and wait. Timeout = Timeout, cancel / dropped sender = No. The bool: "Don't ask again for
+    /// this site" was ticked (only with Yes).
     /// Nobody reacts for NUDGE_AFTER: a Windows notification repeats the question.
     async fn approve(
         &self,
@@ -1570,7 +1712,7 @@ impl Agent {
         card: ApprovalCard,
         speak: &str,
         cancel: &CancellationToken,
-    ) -> ApprovalAnswer {
+    ) -> (ApprovalAnswer, bool) {
         let _wait = WaitGuard::start(&state.user_wait);
         let id = card.id;
         let rx = self.bus.pending.wait_approval(id);
@@ -1590,10 +1732,11 @@ impl Agent {
             _ = &mut nudge => unreachable!("nudge never ends"),
         };
         self.bus.pending.resolve_approval(id, ApprovalAnswer::Timeout); // drop a stale waiter
+        let remember_site = self.bus.pending.take_remember_site(id) && answer == ApprovalAnswer::Yes;
         self.open_card.lock().expect("card lock").take();
         self.emit(UiEvent::ApprovalClosed { id });
         self.pip(PipState::Acting);
-        answer
+        (answer, remember_site)
     }
 
     /// Waits NUDGE_AFTER (only when the wait is longer than that), sends one notification, then waits forever.
@@ -1617,7 +1760,7 @@ impl Agent {
     ) -> Asked {
         // No options = an open question: the bubble gets a text field, its button sends what was typed.
         let buttons = if options.is_empty() {
-            vec![Button::new(TEXT_ANSWER, t("onb_next", lang), true)]
+            vec![Button::new(TEXT_ANSWER, t("btn_answer_ok", lang), true)]
         } else {
             options.iter().enumerate().map(|(i, o)| Button::new(o.clone(), o.clone(), i == 0)).collect()
         };
@@ -1684,7 +1827,9 @@ impl Agent {
             Some(id) => match self.memory.document_by_id(id)? {
                 Some(d) => Some(d),
                 None => {
-                    return out(format!("error: there is no letter #{id}. Use an id from WHAT YOU KNOW, or call done."));
+                    return out(format!(
+                        "error: there is no letter #{id}. Use an id from WHAT YOU KNOW, or call done."
+                    ));
                 }
             },
             None => None,
@@ -2405,6 +2550,37 @@ fn failure_key(e: &anyhow::Error) -> &'static str {
 struct Approved {
     what: String,
     attach: bool,
+    /// A card was really shown (and the user may have taken a while): check the target again.
+    asked: bool,
+    /// Sent without a card because the user trusts this site (its name, for "Sent. You told me …").
+    trusted: Option<String>,
+}
+
+/// Two labels name the same button (the approved one and the one found after the page moved). A delete or
+/// payment label never matches a label without that meaning.
+fn same_button(approved: &str, now: &str) -> bool {
+    let (a, n) = (approved.trim(), now.trim());
+    !a.is_empty()
+        && !n.is_empty()
+        && !names_differ(a, n)
+        && is_delete_target(a) == is_delete_target(n)
+        && is_money_target(a) == is_money_target(n)
+        && is_cancel_target(a) == is_cancel_target(n)
+}
+
+/// The user's own words in this task contain `value` (then a new address is theirs, not from a page).
+fn user_said(task: &Task, value: &str) -> bool {
+    let words = match task {
+        Task::Text(t) | Task::Voice(t) => t,
+        _ => return false,
+    };
+    let v = squash(value).to_lowercase();
+    !v.is_empty() && squash(words).to_lowercase().contains(&v)
+}
+
+/// "Name ✓ · Insurance number ✓" for the progress line.
+fn filled_line(typed: &[(String, String)]) -> String {
+    typed.iter().map(|(w, _)| format!("{} ✓", field_label(w))).collect::<Vec<_>>().join(" · ")
 }
 
 fn rect_target(api: &ApiImage, r: PhysRect) -> Target {
@@ -2413,12 +2589,6 @@ fn rect_target(api: &ApiImage, r: PhysRect) -> Target {
 
 fn overlaps(a: &PhysRect, b: &PhysRect) -> bool {
     a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
-}
-
-/// Shape words for a pressable element (an unnamed one of these may be a send button).
-fn looks_like_button(text: &str) -> bool {
-    let low = text.to_lowercase();
-    ["button", "knopf", "schaltfläche", "icon", "symbol"].iter().any(|w| low.contains(w))
 }
 
 /// Links, e-mail addresses and web addresses: storing one can redirect where Pip sends things.

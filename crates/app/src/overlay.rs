@@ -1,7 +1,8 @@
 //! Full-screen transparent overlay with click-through: every 33 ms we compare the cursor with the
 //! rects the UI reports (Pip, bubble, card) and let clicks pass everywhere else.
 //! Fallback (`PIP_WINDOWED=1`): a 420x360 corner window that is always clickable.
-//! The same poll also notices a person moving the mouse while Pip acts (SPEC §0: move = stop).
+//! The same poll also notices a person moving the mouse on purpose while Pip acts (SPEC §0: move = stop):
+//! more than 120 px within 300 ms, or moving again at least 1 s after an earlier motion. A nudge is not a stop.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -151,24 +152,41 @@ pub fn setup(win: &WebviewWindow, bus: Bus, windowed: bool, mouse_stop: MouseSto
     Ok(())
 }
 
-/// Ticks of continuous motion that count as a person (the agent jumps the cursor in one tick).
-const MOVE_TICKS: u32 = 3;
-/// Minimum path of that motion in physical px (a resting hand jitters a few px).
-const MOVE_PATH: f64 = 60.0;
+/// A deliberate move, not a nudge: more than this path (physical px) …
+const FAST_PATH: f64 = 120.0;
+/// … within this time, in one continuous motion of at least FAST_TICKS polls (the agent jumps the cursor in
+/// one poll and then it rests).
+const FAST_WINDOW: Duration = Duration::from_millis(300);
+const FAST_TICKS: u32 = 3;
+/// Or: two separate motions that start at least this far apart (a hand that keeps moving) …
+const SLOW_GAP: Duration = Duration::from_secs(1);
+/// … but not further apart than this (two nudges a minute apart are not a decision).
+const SLOW_SPAN: Duration = Duration::from_secs(5);
+/// A motion: at least two polls in a row with a few px each (a resting hand jitters 1 px; the agent jumps once).
+const MOTION_TICKS: u32 = 2;
+const MOTION_PATH: f64 = 6.0;
+/// Less than this per poll is no motion.
+const JITTER: f64 = 2.0;
 /// After arming (Pip starts, or the user just clicked "Ja"), the hand is still on the mouse.
 const MOVE_GRACE: Duration = Duration::from_millis(2000);
 
-/// Tells a person moving the mouse from the agent's own single cursor jumps.
+/// Tells a person moving the mouse on purpose from the agent's own cursor jumps and from a small nudge.
 #[derive(Debug, Default)]
 pub struct MouseWatch {
     last: Option<PhysPoint>,
     armed_at: Option<Instant>,
+    /// Polls in a row with motion, and (time, px) of each of them.
     streak: u32,
-    path: f64,
+    recent: std::collections::VecDeque<(Instant, f64)>,
+    /// The current streak already counted as a motion.
+    counted: bool,
+    /// Start of the last motion that did not fire yet.
+    last_motion: Option<Instant>,
 }
 
 impl MouseWatch {
-    /// Feed one cursor sample (every ~33 ms). True once when a person moved the mouse while armed.
+    /// Feed one cursor sample (every ~33 ms). True once when a person moved the mouse on purpose while armed:
+    /// more than 120 px within 300 ms, or moving again at least 1 s after an earlier motion.
     pub fn feed(&mut self, p: PhysPoint, armed: bool, now: Instant) -> bool {
         if !armed {
             *self = Self { last: Some(p), ..Self::default() };
@@ -177,19 +195,49 @@ impl MouseWatch {
         let since = *self.armed_at.get_or_insert(now);
         let Some(last) = self.last.replace(p) else { return false };
         let d = f64::from(p.x - last.x).hypot(f64::from(p.y - last.y));
-        if d < 2.0 || now.duration_since(since) < MOVE_GRACE {
-            self.streak = 0;
-            self.path = 0.0;
+        if now.duration_since(since) < MOVE_GRACE {
+            self.end_streak();
+            self.last_motion = None;
+            return false;
+        }
+        if d < JITTER {
+            self.end_streak();
             return false;
         }
         self.streak += 1;
-        self.path += d;
-        if self.streak >= MOVE_TICKS && self.path >= MOVE_PATH {
-            self.streak = 0;
-            self.path = 0.0;
+        self.recent.push_back((now, d));
+        while self.recent.front().is_some_and(|(t, _)| now.duration_since(*t) > FAST_WINDOW) {
+            self.recent.pop_front();
+        }
+        let path: f64 = self.recent.iter().map(|(_, d)| d).sum();
+        if self.recent.len() as u32 >= FAST_TICKS && path > FAST_PATH {
+            self.reset_after_fire();
             return true;
         }
+        if !self.counted && self.streak >= MOTION_TICKS && path >= MOTION_PATH {
+            self.counted = true;
+            let start = self.recent.front().map(|(t, _)| *t).unwrap_or(now);
+            match self.last_motion {
+                Some(prev) if start.duration_since(prev) >= SLOW_GAP && start.duration_since(prev) <= SLOW_SPAN => {
+                    self.reset_after_fire();
+                    return true;
+                }
+                Some(prev) if start.duration_since(prev) < SLOW_GAP => {} // same gesture: keep the first start
+                _ => self.last_motion = Some(start),
+            }
+        }
         false
+    }
+
+    fn end_streak(&mut self) {
+        self.streak = 0;
+        self.recent.clear();
+        self.counted = false;
+    }
+
+    fn reset_after_fire(&mut self) {
+        self.end_streak();
+        self.last_motion = None;
     }
 }
 
@@ -231,12 +279,35 @@ mod tests {
     }
 
     #[test]
-    fn person_moving_the_mouse_is_noticed() {
+    fn a_deliberate_fast_move_is_noticed() {
         let t0 = Instant::now();
         let mut w = MouseWatch::default();
         assert!(!w.feed(PhysPoint { x: 500, y: 500 }, true, t0));
-        // a hand gliding across the screen after the grace time
-        assert!(feed_path(&mut w, t0, 2100, &[(500, 500), (520, 505), (545, 512), (575, 520), (610, 530)]));
+        // a hand gliding across the screen after the grace time: 150 px in about 130 ms
+        assert!(feed_path(&mut w, t0, 2100, &[(500, 500), (530, 505), (570, 512), (610, 520), (650, 530)]));
+    }
+
+    #[test]
+    fn a_small_nudge_is_not_a_stop() {
+        let t0 = Instant::now();
+        let mut w = MouseWatch::default();
+        w.feed(PhysPoint { x: 500, y: 500 }, true, t0);
+        // the old threshold (60 px) stopped Pip here: a short slide of ~70 px
+        assert!(!feed_path(&mut w, t0, 2100, &[(500, 500), (520, 505), (545, 512), (570, 520)]));
+        // the hand rests afterwards, then nudges again only much later: still no stop
+        assert!(!feed_path(&mut w, t0, 2300, &[(570, 520), (570, 520), (570, 520)]));
+        assert!(!feed_path(&mut w, t0, 9000, &[(570, 520), (580, 524), (590, 528)]));
+    }
+
+    #[test]
+    fn moving_again_a_second_later_is_noticed() {
+        let t0 = Instant::now();
+        let mut w = MouseWatch::default();
+        w.feed(PhysPoint { x: 500, y: 500 }, true, t0);
+        // two slow motions (~20 px each), 1.2 s apart
+        assert!(!feed_path(&mut w, t0, 2100, &[(500, 500), (507, 500), (514, 500), (520, 500)]));
+        assert!(!feed_path(&mut w, t0, 2300, &[(520, 500), (520, 500)]));
+        assert!(feed_path(&mut w, t0, 3300, &[(520, 500), (527, 500), (534, 500), (540, 500)]));
     }
 
     #[test]
@@ -244,10 +315,12 @@ mod tests {
         let t0 = Instant::now();
         let mut w = MouseWatch::default();
         w.feed(PhysPoint { x: 100, y: 100 }, true, t0);
-        // the agent clicks: one jump, then the cursor rests (repeatedly)
+        // the agent clicks: one jump, then the cursor rests (repeatedly, more than a second apart)
         assert!(!feed_path(&mut w, t0, 2100, &[(900, 700), (900, 700), (900, 700), (300, 200), (300, 200)]));
+        assert!(!feed_path(&mut w, t0, 3500, &[(800, 100), (800, 100), (800, 100)]));
+        assert!(!feed_path(&mut w, t0, 5000, &[(100, 600), (100, 600), (100, 600)]));
         // a resting hand: 1 px jitter
-        assert!(!feed_path(&mut w, t0, 3000, &[(300, 201), (301, 201), (301, 200), (300, 200), (301, 201)]));
+        assert!(!feed_path(&mut w, t0, 6000, &[(100, 601), (101, 601), (101, 600), (100, 600), (101, 601)]));
     }
 
     #[test]

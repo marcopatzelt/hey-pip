@@ -58,6 +58,12 @@ pub struct ApprovalCard {
     pub yes_label: String,
     /// Secondary button label ("Noch nicht").
     pub no_label: String,
+    /// Send cards on a known site: the checkbox text "Don't ask again for www.example.org". None = no checkbox.
+    #[serde(default)]
+    pub remember_label: Option<String>,
+    /// Facts Pip learned in this run ("I'll remember: insurer e-mail: …"); a Send confirms the held-back ones.
+    #[serde(default)]
+    pub remembered: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +231,37 @@ pub(crate) fn is_delete_target(target: &str) -> bool {
         .any(|w| low.contains(w))
 }
 
+/// True if the target pays, buys, orders, books or subscribes (never sent without a card, even on a trusted site).
+pub(crate) fn is_money_target(target: &str) -> bool {
+    let low = target.to_lowercase();
+    let stems = [
+        "bezahl",
+        "zahlung",
+        "zahlen",
+        "kauf",
+        "bestell",
+        "überweis",
+        "buch",
+        "abonnier",
+        "kostenpflichtig",
+        "pay",
+        "buy",
+        "purchase",
+        "checkout",
+        "order",
+        "transfer",
+        "book",
+        "subscri",
+    ];
+    stems.iter().any(|w| low.contains(w))
+}
+
+/// True if the target cancels a contract or booking (never sent without a card, even on a trusted site).
+pub(crate) fn is_cancel_target(target: &str) -> bool {
+    let low = target.to_lowercase();
+    ["kündig", "stornier", "widerruf", "cancel", "terminate", "unsubscri", "abmeld"].iter().any(|w| low.contains(w))
+}
+
 /// Key combos that send, confirm or delete in common software: Enter, Ctrl+Enter; Alt (+Shift) + a letter or
 /// digit (HTML accesskey, Outlook Alt+S, dialog mnemonics &Ja); Delete, Shift+Delete, Ctrl+D.
 fn key_commits(combo: &str) -> bool {
@@ -255,6 +292,22 @@ impl Gate {
         self
     }
 
+    /// The key of the site a page belongs to, for "Don't ask again for this site": the host of an http(s) page,
+    /// or (demo mode) the canonical fixtures folder of a local page. None = no key (other file:// pages, garbage).
+    pub fn site_key(&self, url: &str) -> Option<String> {
+        let low = url.trim().to_lowercase();
+        if low.starts_with("file:") {
+            if !self.url_allowed(url) {
+                return None;
+            }
+            let path = low.strip_prefix("file://")?;
+            let path = path.strip_prefix("localhost").unwrap_or(path).replace('\\', "/");
+            let full = format!("file://{path}");
+            return self.fixture_roots.iter().find(|root| full.starts_with(&format!("{root}/"))).cloned();
+        }
+        url_host(url)
+    }
+
     /// Commit if is_commit || COMMIT_WORDS hit (case-insensitive, word-ish) in description/sam_query,
     /// or the UI name / quoted label looks final (`label_hit`). Keys: see `key_commits`; Space when the
     /// focused element looks like a send button or is unknown (ui_name None).
@@ -270,7 +323,8 @@ impl Gate {
         let window = ["fenster", "window", "programm", "app ", "anwendung", "powershell", "terminal"]
             .iter()
             .any(|w| text.contains(w));
-        let closing = ["schließ", "schliess", "close", "minimi", "beend", "quit", "exit"].iter().any(|w| text.contains(w));
+        let closing =
+            ["schließ", "schliess", "close", "minimi", "beend", "quit", "exit"].iter().any(|w| text.contains(w));
         let ui_close = matches!(ui.as_str(), "schließen" | "close" | "minimieren" | "minimize" | "fenster schließen");
         !popup && ((window && closing) || (ui_close && window))
     }
@@ -573,6 +627,26 @@ mod tests {
         assert!(!is_send_target("Datei auswählen"));
         assert!(is_delete_target("Konto löschen"));
         assert!(!is_delete_target("Absenden"));
+        for m in ["Jetzt bezahlen", "Zahlungspflichtig bestellen", "Buy now", "Place order", "Book now", "Checkout"] {
+            assert!(is_money_target(m), "{m}");
+        }
+        assert!(!is_money_target("Absenden") && !is_money_target("Send message"));
+        assert!(is_cancel_target("Vertrag kündigen") && is_cancel_target("Cancel subscription"));
+        assert!(!is_cancel_target("Absenden"));
+    }
+
+    #[test]
+    fn site_keys() {
+        let live = Gate::new(false);
+        assert_eq!(live.site_key("https://WWW.Kasse.example:8443/form?x").as_deref(), Some("www.kasse.example"));
+        assert_eq!(live.site_key("file:///C:/Pip/fixtures/demo-kasse/index.html"), None, "no local pages outside demo");
+        let demo = Gate::new(true).with_fixtures(&["C:/Pip/fixtures"]);
+        assert_eq!(
+            demo.site_key("file:///C:/Pip/fixtures/demo-kasse/index.html").as_deref(),
+            Some("file:///c:/pip/fixtures")
+        );
+        assert_eq!(demo.site_key("file:///C:/Users/x/evil.html"), None);
+        assert_eq!(demo.site_key("http://localhost:8000/"), Some("localhost".into()));
     }
 }
 
@@ -582,7 +656,11 @@ mod close_tests {
 
     #[test]
     fn window_close_is_refused_popup_close_is_not() {
-        assert!(Gate::closes_window("das Schließen-Kreuz oben rechts im PowerShell-Fenster", "close button X", "Schließen"));
+        assert!(Gate::closes_window(
+            "das Schließen-Kreuz oben rechts im PowerShell-Fenster",
+            "close button X",
+            "Schließen"
+        ));
         assert!(Gate::closes_window("das X zum Schließen oben rechts am schwarzen Fenster", "close button X", ""));
         assert!(Gate::closes_window("Fenster minimieren", "minimize button", ""));
         assert!(!Gate::closes_window("das X zum Schließen vom Hinweis oben rechts", "close button X", "Schließen"));

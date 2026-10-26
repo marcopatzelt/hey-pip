@@ -48,7 +48,7 @@ const el = {
   pip: $("pip"), body: $("pip-body"), img: $("pip-img"),
   hl: $("highlight"), hlLabel: $("hl-label"), arrow: $("arrow"),
   col: $("column"), dock: $("dock"),
-  bubble: $("bubble"), bText: $("bubble-text"), bExtra: $("bubble-extra"), bButtons: $("bubble-buttons"),
+  bubble: $("bubble"), bText: $("bubble-text"), bExtra: $("bubble-extra"), bButtons: $("bubble-buttons"), bAfter: $("bubble-after"),
   bClose: $("bubble-close"), bCount: $("bubble-count"), note: $("note"),
   progress: $("progress"), pText: $("progress-text"), stop: $("stop"),
   ask: $("ask"), askInput: $("ask-input"), askMic: $("ask-mic"),
@@ -380,6 +380,7 @@ function showBubble(text, opts = {}) {
   el.bText.textContent = text;
   el.bExtra.replaceChildren(...(opts.extra || []));
   el.bButtons.replaceChildren(...(opts.buttons || []).map((b) => makeButton(b.label, b.primary, b.onClick)));
+  el.bAfter.replaceChildren(...(opts.after || []));
   el.bClose.hidden = !opts.closeX;
   el.bubble.classList.toggle("has-x", !!opts.closeX);
   el.bubble.hidden = false;
@@ -492,6 +493,17 @@ function showCard(card) {
     $("card-crop-cap").textContent = s("approve_button_preview");
     crop.hidden = false;
   } else crop.hidden = true;
+  const remembered = card.remembered || [];
+  $("card-remembered").hidden = !remembered.length;
+  $("card-remembered").replaceChildren(...remembered.map((line) => {
+    const li = document.createElement("li");
+    li.textContent = line;
+    return li;
+  }));
+  // "Don't ask again for <site>": only on plain send cards on a known site.
+  $("card-remember").hidden = !card.remember_label;
+  $("card-remember-text").textContent = card.remember_label || "";
+  $("card-remember-box").checked = false;
   $("card-yes").textContent = card.yes_label;
   $("card-no").textContent = card.no_label;
   el.card.hidden = false;
@@ -509,7 +521,8 @@ function hideCard() {
 }
 function answerCard(answer) {
   if (!st.card) return;
-  send({ type: "approve", id: st.card, answer });
+  const remember = answer === "yes" && !$("card-remember").hidden && $("card-remember-box").checked;
+  send({ type: "approve", id: st.card, answer, remember_site: remember });
   hideCard();
 }
 $("card-yes").addEventListener("click", () => answerCard("yes"));
@@ -673,18 +686,14 @@ function onboarding(step) {
       send({ type: "onboarding_answer", step: "first_letter", value });
       then();
     };
-    const typeIt = document.createElement("button");
-    typeIt.type = "button";
-    typeIt.className = "link";
-    typeIt.textContent = s("btn_type_or_say");
-    typeIt.addEventListener("click", firstJob("later_quiet", () => openAsk()));
     say(s("onb_drop_letter"), {
       kind: "onboarding", sticky: true, replace: true,
-      extra: [typeIt, para(s("onb_privacy"), "privacy")],
       buttons: [
         { label: `👀 ${s("btn_look_screen")}`, primary: true, onClick: firstJob("look", lookAtScreen) },
         { label: `📄 ${s("btn_read_letter")}`, primary: false, onClick: firstJob("letter", () => send({ type: "pick_file" })) },
+        { label: `💬 ${s("btn_type_or_say")}`, primary: false, onClick: firstJob("later_quiet", () => openAsk()) },
       ],
+      after: [para(s("onb_privacy"), "privacy")],
     });
   } else if (step === "ask_state") {
     const answer = (v) => { hideBubble(); send({ type: "onboarding_answer", step: "ask_state", value: v }); };
@@ -830,6 +839,10 @@ el.pip.addEventListener("click", () => {
   if (el.ask.hidden) openAsk(); else closeAsk();
 });
 window.addEventListener("keydown", (e) => {
+  // Enter on the card = the primary button (only when Pip's window has the keyboard: an Enter typed into
+  // another program never answers a card).
+  const otherButton = document.activeElement instanceof HTMLButtonElement && document.activeElement.id !== "card-yes";
+  if (e.key === "Enter" && st.card && !e.repeat && !otherButton) { e.preventDefault(); answerCard("yes"); return; }
   if (e.key !== "Escape") return;
   if (st.acting) { stopNow(); return; }
   if (st.card) answerCard("no");

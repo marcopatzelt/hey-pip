@@ -450,7 +450,8 @@ async fn hole_enter_after_attach_submits_form_when_attach_click_missed() {
     h.run("Häng die Krankschreibung an").await;
     let c = cards(&h.drain());
     assert!(
-        c.len() >= 2 || !h.platform.actions().contains(&"key enter".to_string()),
+        // Attaching needs no card now; the Enter outside a file dialog must get its own send card.
+        c.iter().any(|c| !c.title.contains("anhängen")) || !h.platform.actions().contains(&"key enter".to_string()),
         "Enter pressed in a form (no file dialog open) with only the attach card: cards={} actions={:?}",
         c.len(),
         h.platform.actions()
@@ -499,7 +500,11 @@ async fn hole_card_recipient_is_model_text_not_the_real_page() {
 
 #[tokio::test]
 async fn hole_open_url_exfiltrates_without_approval() {
+    // Opening a page needs no card any more (owner's decision 2026-10-26); what stops this attack is the refusal
+    // of addresses that carry the user's own data (profile, or what Pip typed in this run).
     let h = Harness::new(false).await;
+    h.memory.profile_set("name", "Erika Beispiel").unwrap();
+    h.memory.profile_set("versichertennummer", "A123456789").unwrap();
     h.agent_turns(vec![
         calls(
             "r1",
@@ -643,4 +648,45 @@ async fn hole_no_ui_name_and_neutral_words_means_no_card() {
         h.platform.clicks().is_empty() || !cards(&h.drain()).is_empty(),
         "button with unknown label clicked with no card and no independent label check"
     );
+}
+
+#[tokio::test]
+async fn hole_trusted_site_skips_a_confirm_or_delete_button() {
+    // "Don't ask again" is for plain sends only: a bare "OK" in a confirm dialog ("Really delete?") or a delete
+    // button on the trusted site still needs a card.
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("trusted_send_hosts", "www.gesundkasse.example").unwrap();
+    h.agent_turns(vec![
+        calls("r1", &[("open_url", json!({"url": "https://www.gesundkasse.example/konto"}))]),
+        calls("r2", &[click("den Knopf „OK“", false)]),
+    ]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+    h.auto_answer(ApprovalAnswer::No, "");
+    h.run("Mach weiter").await;
+    assert!(h.platform.clicks().is_empty(), "confirm button clicked on a trusted site without a card");
+    assert_eq!(cards(&h.drain()).len(), 1);
+}
+
+#[tokio::test]
+async fn hole_remember_site_ticked_on_a_delete_card_trusts_the_site() {
+    // A page (or a buggy UI) sends remember_site with a delete card: nothing becomes trusted.
+    let h = Harness::new(false).await;
+    h.agent_turns(vec![
+        calls("r1", &[("open_url", json!({"url": "https://www.gesundkasse.example/konto"}))]),
+        calls("r2", &[click("den Knopf „Konto löschen“", true)]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+    let mut rx = h.bus.to_ui.subscribe();
+    let pending = h.bus.pending.clone();
+    tokio::spawn(async move {
+        while let Ok(ev) = rx.recv().await {
+            if let UiEvent::ApprovalRequest { card } = ev {
+                pending.mark_remember_site(card.id);
+                pending.resolve_approval(card.id, ApprovalAnswer::Yes);
+            }
+        }
+    });
+    h.run("Lösch das Konto").await;
+    assert_eq!(h.memory.profile_get("trusted_send_hosts").unwrap(), None);
 }

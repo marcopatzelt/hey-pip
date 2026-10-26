@@ -53,8 +53,8 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("btn_type_or_say", "Oder sag mir einfach, was du brauchst", "Or just tell me what you need"),
     (
         "task_look_screen",
-        "Schau auf meinen Bildschirm. Sag mir in einem kurzen Satz, was offen ist, und biete mir 2 oder 3 konkrete Dinge an, die du hier für mich tun kannst.",
-        "Look at my screen. Tell me in one short sentence what is open, and offer me 2 or 3 concrete things you can do for me here.",
+        "Schau auf meinen Bildschirm. Sag EINEN kurzen Satz: was offen ist und was du jetzt tust. Dann tu es sofort: Füll jedes Feld aus, das du aus WHAT YOU KNOW kennst, häng den passenden Brief an und halte erst am Senden-Knopf an (is_commit). Frag mich nur, wenn ein Wert weder im Gedächtnis noch auf dem Bildschirm steht oder zwei Aufgaben gleich wahrscheinlich sind. Gibt es hier nichts zu tun, biete mir 2 oder 3 konkrete Dinge an.",
+        "Look at my screen. Say ONE short sentence: what is open and what you will do about it. Then do it right away: fill every field you can from WHAT YOU KNOW, attach the letter that fits, and stop only at the send button (is_commit). Ask me only if a value is missing from memory AND the screen, or if two different tasks are equally likely. If there is nothing here for you to do, offer 2 or 3 concrete things you can do instead.",
     ),
     ("btn_pick_letter", "Brief auswählen", "Choose a letter"),
     ("onb_ask_state", "Wohnst du in Nordrhein-Westfalen?", "Do you live in North Rhine-Westphalia?"),
@@ -107,11 +107,19 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("progress_scroll", "Ich scrolle ein Stück.", "I'm scrolling a little."),
     ("progress_wait", "Ich warte kurz.", "I'm waiting a moment."),
     // --- approval card ---
-    ("approve_title_send", "Darf ich das abschicken?", "May I send this?"),
+    ("approve_title_send", "Bereit zum Abschicken an {to}?", "Ready to send to {to}?"),
+    ("approve_remember_site", "Für {to} nicht mehr fragen", "Don't ask again for {to}"),
+    ("approve_remembered", "Ich merke mir: {fact}", "I'll remember: {fact}"),
+    (
+        "sent_trusted",
+        "Abgeschickt. Du hast gesagt, dass ich bei {to} nicht fragen muss.",
+        "Sent. You told me I don't need to ask for {to}.",
+    ),
     ("approve_title_attach", "Darf ich das anhängen?", "May I attach this?"),
     ("approve_what", "Was: {what}", "What: {what}"),
     ("approve_to", "An: {to}", "To: {to}"),
-    ("btn_yes_send", "Ja, abschicken", "Yes, send it"),
+    ("btn_yes_send", "Abschicken", "Send"),
+    ("btn_answer_ok", "OK", "OK"),
     ("btn_yes_attach", "Ja, anhängen", "Yes, attach it"),
     ("btn_not_yet", "Noch nicht", "Not yet"),
     ("approve_title_delete", "Darf ich das löschen?", "May I delete this?"),
@@ -528,6 +536,17 @@ mod tests {
     fn placeholders() {
         assert_eq!(tf("approve_to", Lang::De, &[("to", "Gesundkasse")]), "An: Gesundkasse");
         assert_eq!(t("no_such_key", Lang::En), "no_such_key");
+        assert_eq!(
+            tf("approve_title_send", Lang::En, &[("to", "www.kasse.example")]),
+            "Ready to send to www.kasse.example?"
+        );
+        assert_eq!(t("btn_yes_send", Lang::En), "Send");
+        assert_eq!(t("btn_not_yet", Lang::En), "Not yet");
+        assert_eq!(tf("approve_remember_site", Lang::En, &[("to", "x.example")]), "Don't ask again for x.example");
+        assert_eq!(
+            tf("sent_trusted", Lang::En, &[("to", "x.example")]),
+            "Sent. You told me I don't need to ask for x.example."
+        );
     }
 
     #[test]

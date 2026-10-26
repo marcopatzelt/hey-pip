@@ -31,6 +31,8 @@ use crate::{mock, tray};
 const LETTER_EXT: &[&str] = &["png", "jpg", "jpeg", "webp", "pdf"];
 /// After "Ja" on a card, the presenter's hand moves on: no mouse-move stop for this long.
 const QUIET_AFTER_YES: Duration = Duration::from_secs(7);
+/// After any click on Pip's own bubbles, cards or buttons the hand is still moving: no mouse-move stop.
+const QUIET_AFTER_CLICK: Duration = Duration::from_secs(3);
 /// How long "Rückgängig" stays after "Ich bin gesund" / "Erledigt".
 const UNDO_SECS: u32 = 30;
 /// Strings the page asks for once at start (everything it shows itself).
@@ -151,8 +153,6 @@ pub struct Ctx {
     mouse_stop: bool,
     /// The task's words, for "Nochmal" after an error.
     last_text: Mutex<Option<String>>,
-    /// "Wenn du die Maus bewegst, halte ich an" was said in this session.
-    told_mouse: AtomicBool,
     focus: FocusKeeper,
     ready: AtomicBool,
     onboarding: Mutex<OnboardingStep>,
@@ -228,6 +228,7 @@ fn release_focus(ctx: tauri::State<'_, Shared>) {
 /// Buttons with ids "app:…": pause, undo:<reminder>, last_letter, deadline_done:<id>.
 #[tauri::command]
 fn app_action(ctx: tauri::State<'_, Shared>, action: String) {
+    ctx.quiet_mouse(QUIET_AFTER_CLICK);
     ctx.inner().clone().app_action(&action);
 }
 
@@ -304,7 +305,6 @@ pub fn run() -> Result<()> {
                 mouse_armed: Arc::new(AtomicBool::new(false)),
                 mouse_quiet: Arc::new(Mutex::new(None)),
                 last_text: Mutex::new(None),
-                told_mouse: AtomicBool::new(false),
                 focus: FocusKeeper::default(),
                 mouse_stop: std::env::var("PIP_MOUSE_STOP").map_or(true, |v| v.trim() != "0"),
                 ready: AtomicBool::new(false),
@@ -425,6 +425,8 @@ async fn dispatch(ctx: Shared, mut rx: mpsc::Receiver<UserCommand>) {
             // Only the command name: texts and paths can be personal.
             let dbg = format!("{cmd:?}");
             tracing::info!("ui command: {}", dbg.split([' ', '{', '(']).next().unwrap_or(""));
+            // A click on Pip's bubble or card: the hand moving away from it is not "stop".
+            ctx.quiet_mouse(QUIET_AFTER_CLICK);
         }
         match cmd {
             UserCommand::HitRects { rects } => {
@@ -433,9 +435,12 @@ async fn dispatch(ctx: Shared, mut rx: mpsc::Receiver<UserCommand>) {
             UserCommand::Stop => ctx.stop_by(StopReason::User),
             UserCommand::Resume => ctx.resume(),
             UserCommand::Quit => quit(&ctx.app),
-            UserCommand::Approve { id, answer } => {
+            UserCommand::Approve { id, answer, remember_site } => {
                 if answer == copilot_core::agent::ApprovalAnswer::Yes {
-                    *ctx.mouse_quiet.lock().expect("quiet lock") = Some(Instant::now() + QUIET_AFTER_YES);
+                    ctx.quiet_mouse(QUIET_AFTER_YES);
+                    if remember_site {
+                        ctx.bus.pending.mark_remember_site(id);
+                    }
                 }
                 if !ctx.bus.pending.resolve_approval(id, answer) {
                     tracing::debug!("approval {id} had no waiter");
@@ -739,6 +744,15 @@ impl Ctx {
         self.app_event(AppEvent::Acting { on });
     }
 
+    /// No mouse-move stop until `d` from now (a later quiet time already set stays).
+    fn quiet_mouse(&self, d: Duration) {
+        let until = Instant::now() + d;
+        let mut q = self.mouse_quiet.lock().expect("quiet lock");
+        if q.is_none_or(|t| t < until) {
+            *q = Some(until);
+        }
+    }
+
     fn set_waiting(&self, on: bool) {
         self.waiting.store(on, Ordering::SeqCst);
         self.update_mouse_armed();
@@ -840,12 +854,15 @@ impl Ctx {
             self.say(t("busy", lang), vec![]);
             return;
         }
-        // Once: Pip looks at the screen to click. Ask before the first time.
-        if matches!(job, Job::Task(_)) && self.backend.profile_get("screen_notice_ok").is_none() {
+        // The start bubble already says what goes to Meta's AI, and pressing a job is the user's yes:
+        // no second question. PIP_SCREEN_NOTICE=1 brings the old one-time notice back.
+        if matches!(job, Job::Task(_))
+            && env_flag("PIP_SCREEN_NOTICE")
+            && self.backend.profile_get("screen_notice_ok").is_none()
+        {
             tauri::async_runtime::spawn(async move {
                 if self.screen_notice(lang).await {
                     self.backend.profile_set("screen_notice_ok", "1");
-                    self.told_mouse.store(true, Ordering::SeqCst);
                     self.run_job(job, lang);
                 } else {
                     self.idle_later(500);
@@ -853,9 +870,8 @@ impl Ctx {
             });
             return;
         }
-        if !self.told_mouse.swap(true, Ordering::SeqCst) {
-            self.bus.emit(UiEvent::Speak { text: t("working_hint", lang).to_string() });
-        }
+        // No spoken "I'm working now, moving the mouse stops me": a deliberate move still stops Pip, and the
+        // Stop button and Esc are on screen.
         self.run_job(job, lang);
     }
 

@@ -5,7 +5,7 @@
 //! Deviation from the design note: payload variants are struct variants
 //! (serde cannot internally tag a newtype holding a string or a list).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -133,6 +133,9 @@ pub enum UserCommand {
     Approve {
         id: Uuid,
         answer: ApprovalAnswer,
+        /// "Don't ask again for this site" was ticked (only counts with Yes).
+        #[serde(default)]
+        remember_site: bool,
     },
     Answer {
         question_id: Uuid,
@@ -170,6 +173,8 @@ pub enum UserCommand {
 pub struct Pending {
     approvals: Arc<Mutex<HashMap<Uuid, oneshot::Sender<ApprovalAnswer>>>>,
     answers: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
+    /// Cards answered Yes with "Don't ask again for this site" ticked.
+    remember_site: Arc<Mutex<HashSet<Uuid>>>,
 }
 
 impl Pending {
@@ -182,6 +187,14 @@ impl Pending {
     pub fn resolve_approval(&self, id: Uuid, answer: ApprovalAnswer) -> bool {
         let tx = self.approvals.lock().expect("pending lock").remove(&id);
         tx.is_some_and(|tx| tx.send(answer).is_ok())
+    }
+    /// Yes plus "Don't ask again for this site": call before `resolve_approval`.
+    pub fn mark_remember_site(&self, id: Uuid) {
+        self.remember_site.lock().expect("pending lock").insert(id);
+    }
+    /// True once if the card was answered with the "Don't ask again" box ticked.
+    pub fn take_remember_site(&self, id: Uuid) -> bool {
+        self.remember_site.lock().expect("pending lock").remove(&id)
     }
     pub fn wait_answer(&self, question_id: Uuid) -> oneshot::Receiver<String> {
         let (tx, rx) = oneshot::channel();
@@ -237,6 +250,15 @@ mod tests {
         assert!(matches!(c, UserCommand::HitRects { rects } if rects.len() == 1));
         let c: UserCommand = serde_json::from_value(serde_json::json!({"type":"stop"})).unwrap();
         assert!(matches!(c, UserCommand::Stop));
+        // Old pages without the checkbox still work; the box comes as remember_site.
+        let id = Uuid::new_v4();
+        let c: UserCommand =
+            serde_json::from_value(serde_json::json!({"type":"approve","id":id,"answer":"yes"})).unwrap();
+        assert!(matches!(c, UserCommand::Approve { remember_site: false, .. }));
+        let c: UserCommand =
+            serde_json::from_value(serde_json::json!({"type":"approve","id":id,"answer":"yes","remember_site":true}))
+                .unwrap();
+        assert!(matches!(c, UserCommand::Approve { remember_site: true, .. }));
     }
 
     #[tokio::test]
@@ -247,5 +269,8 @@ mod tests {
         assert!(p.resolve_approval(id, ApprovalAnswer::Yes));
         assert_eq!(rx.await.unwrap(), ApprovalAnswer::Yes);
         assert!(!p.resolve_approval(id, ApprovalAnswer::No));
+        assert!(!p.take_remember_site(id));
+        p.mark_remember_site(id);
+        assert!(p.take_remember_site(id) && !p.take_remember_site(id));
     }
 }

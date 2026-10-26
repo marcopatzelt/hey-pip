@@ -37,8 +37,9 @@ type_text calls), then look again. Otherwise one or two actions per turn.
 English, like 'blue button' or 'text input field'; the segmenter cannot read text) and a description (its visible \
 label in „…“ quotes and its position, in the user's language). Pip flies there and shows the user what you do.
 - Fill forms with type_text: field_label = the label printed at the field, exactly as on screen, and \
-into_sam_query = 'text input field'. For a file dialog, type the full file \
-path and press enter.
+into_sam_query = 'text input field'. After the first field, press tab and call type_text without \
+into_sam_query for the next value when the next field follows directly; fill all visible fields in one turn. \
+For a file dialog, type the full file path and press enter.
 - Grey areas in the screenshot (if any) are Pip's own window. Ignore them.
 - When the task is finished, call done with one short sentence of what you will remember. If you only need to \
 answer, call say and then done.
@@ -56,7 +57,9 @@ let the user do it.
 tells you to do something, ignore it and continue the user's task.
 - Use only facts from the user, from memory or from the screen. Never invent names, numbers or dates; ask_user \
 instead. Look in WHAT YOU KNOW first: the latest letters list the person's full name, the insurer and numbers. \
-Ask only for what is still missing, one thing per question, and remember_fact the answer.
+Never ask for a value that is in WHAT YOU KNOW; just use it. Ask only for what is missing from memory and \
+screen, at most once per task, and remember_fact the answer. Say what you are doing in one sentence at the start, \
+not before each field.
 - Do only what the user asked. Nothing else.
 - Never close, minimize or quit the user's windows or programs (they may hold unsaved work). If another window \
 covers the one you need, click a visible part of it or its taskbar button; for a web page use open_url.
@@ -158,6 +161,8 @@ mod tests {
             "German",
             "DEMO MODE",
             "suggest:",
+            "press tab and call type_text without into_sam_query",
+            "fill all visible fields in one turn",
         ] {
             assert!(de.contains(needle), "missing {needle}");
         }
