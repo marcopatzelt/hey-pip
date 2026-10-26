@@ -192,9 +192,16 @@ pub fn quoted_label(description: &str) -> Option<String> {
 /// True if the text looks like attaching / uploading a file (card title "anhängen" instead of "abschicken").
 pub(crate) fn is_attach_like(text: &str) -> bool {
     let low = text.to_lowercase();
-    ["anhäng", "anhang", "hochlad", "upload", "attach", "datei", "file", "durchsuchen", "browse"]
-        .iter()
-        .any(|w| low.contains(w))
+    // A taskbar or app icon is never a file picker ("the Edge icon … browser icon in the taskbar").
+    if ["taskbar", "taskleiste", "task bar"].iter().any(|w| low.contains(w)) {
+        return false;
+    }
+    // Whole words or word starts only: "browser" is no "browse", "profile" is no "file".
+    let words: Vec<&str> = low.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let starts = ["anhäng", "anhang", "hochlad", "upload", "attach", "datei", "durchsuchen"];
+    words.iter().any(|w| {
+        starts.iter().any(|s| w.starts_with(s)) || matches!(*w, "file" | "files" | "browse")
+    })
 }
 
 /// True if the target looks like a send / submit button (not a file picker).
@@ -725,5 +732,22 @@ mod close_tests {
         assert!(!Gate::closes_window("das X zum Schließen vom Hinweis oben rechts", "close button X", "Schließen"));
         assert!(!Gate::closes_window("das Feld Vor- und Nachname", "name text field", "Vor- und Nachname"));
         assert!(!Gate::closes_window("den Knopf Absenden", "green submit button", "Absenden"));
+    }
+}
+
+#[cfg(test)]
+mod attach_words_tests {
+    use super::is_attach_like;
+
+    #[test]
+    fn only_real_file_pickers_look_like_attaching() {
+        assert!(is_attach_like("den Knopf „Datei auswählen“"));
+        assert!(is_attach_like("the button \"Choose file\""));
+        assert!(is_attach_like("Browse…"));
+        assert!(is_attach_like("Upload your sick note"));
+        assert!(is_attach_like("Attachment"));
+        assert!(!is_attach_like("the Edge icon „Microsoft Edge“ in the task bar at the bottom browser icon in taskbar"));
+        assert!(!is_attach_like("the browser tab „Questionnaire“"));
+        assert!(!is_attach_like("Your profile"));
     }
 }
