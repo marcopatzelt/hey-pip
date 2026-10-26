@@ -1,5 +1,8 @@
+data/private/
+/design/**/*.tmp
 .env
+*.local
 node_modules/
 __pycache__/
+/target
 .venv/
-data/private/
