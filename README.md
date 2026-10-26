@@ -1,16 +1,16 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="design/readme/banner-dark.png">
-    <img src="design/readme/banner.png" alt="Pip, a small blue helper, points at a web form and asks: Ready to send this to your university? Headline: No one should have to be good at computers to live their life." width="100%">
+    <img src="design/readme/banner.png" alt="Pip, a small blue helper, points at a web form and asks: Ready to send this to your university? Headline: Everyone is a beginner at something. Pip makes sure it doesn't cost you." width="100%">
   </picture>
 </p>
 
 <h1 align="center">Pip</h1>
 
 <p align="center">
-  <b>No one should have to be good at computers to live their life.</b><br>
-  Pip is a personal assistant that lives on your screen. It knows you, notices what's coming,<br>
-  and does the computer work for you. It asks only once, before anything leaves your computer.<br>
+  <b>Everyone is a beginner at something. Pip makes sure it doesn't cost you.</b><br>
+  Pip is a personal assistant that knows you, notices what's coming, and gets things done with you:<br>
+  letters, claims, forms, deadlines, on any screen. It asks only once, before anything leaves your computer.<br>
   <sub>Powered by Meta's models: <b>Muse Spark</b>, <b>SAM 3.1</b>, <b>Muse Voice</b>, <b>Muse Image</b> and the open-weights <b>Muse Glimmer</b>.</sub>
 </p>
 
@@ -36,22 +36,22 @@
 
 ## Why Pip exists
 
-Computers were supposed to make life easier. For many people, they made it harder.
+Life is full of things nobody ever taught you how to do. Claiming money you are owed. Answering a letter from an
+office. Insurance, taxes, a move, an application, a deadline hidden on page two. Each one needs knowledge you don't
+have and time you don't want to spend, so you put it off, or you get it wrong, or you give up.
 
-Almost everything that matters now happens on a screen: your insurance, your studies, your job, your money, your
-appointments. If you are good with computers, each of these takes a few minutes. If you are not, each one is a wall.
-And the digital world quietly expects everyone to climb it alone.
+Everyone is a beginner at something. A software engineer can be lost with a tax form. A nurse can be lost with a
+university portal. Someone new to a country can be lost with all of it. And people who are ill, tired or older lose
+the most, because they have the least strength left. The cost is real: money nobody claims, deadlines nobody
+notices, chances that quietly pass.
 
-Billions of people are left behind this way: people who are ill or tired, older people, people with disabilities,
-people new to a country, people who simply never learned. They don't lack intelligence. They lack a helper who knows
-their life and handles the screen for them.
+**Pip is the helper who knows you and knows how.** It remembers what matters about you, notices what's coming before
+you do, and does the work with you on your own screen. You stay in charge: Pip asks once, before anything leaves
+your computer.
 
-**We think it should be the other way around: you shouldn't have to be good at computers. The computer should be
-good at helping you.** That is Pip.
-
-My mom is one of these people. She once lost money because a document was issued two days late. It was a deadline
-from her health insurer, and nobody told her. She was ill, tired, and not a computer person. **Pip is the helper I
-wish she had had.**
+It started with my mom. She once lost money because a document was issued two days late. It was a deadline from her
+health insurer, and nobody told her. She was ill, tired, and nobody was watching the date for her.
+**Pip is the helper I wish she had had, and the one I want for myself.**
 
 ## Meet Pip
 
@@ -94,7 +94,8 @@ helps. It works with the programs and websites you already use, on your real scr
 **Pip is for you if**
 
 - ✅ letters and online forms make you tired before you even start
-- ✅ you have missed a date before, because nobody reminded you
+- ✅ you have missed a date or a claim before, because nobody reminded you
+- ✅ you are great at your job, but insurance, taxes and claims are not your thing
 - ✅ you help a parent or a friend with their paperwork, and you can't always be there
 - ✅ you are new to a country and the forms are not in your language
 
@@ -250,7 +251,7 @@ Architecture, target finding, the gate in detail and the full eval: **[docs/TECH
 ## Built for the Meta Global AI Developer Hackathon
 
 Pip was built from October 26 to November 4, 2026, in the **Indie track**, theme **"Build for your world"**. My
-world is a family where not everyone is good with computers.
+world is a family where everyone is a beginner at something, and nobody should lose out because of it.
 
 - **Impact:** a helper for everyone the digital world leaves behind.
 - **Meta AI at the core:** Muse Spark thinks and sees, SAM 3.1 finds the buttons, Muse Voice Transcribe listens,
