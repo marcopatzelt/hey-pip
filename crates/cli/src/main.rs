@@ -12,7 +12,7 @@
 //!   pip-cli --lang en agent "…" --page file://…/fixtures/demo-uni/index.html --answer 7654321
 //!   pip-cli transcribe sample.wav
 //!   pip-cli --lang en agent "@task_look_screen" --memory cold --answer "name => Erika Beispiel"
-//!   pip-cli eval [--real] [--only demo-uni-v2]
+//!   pip-cli eval [--real] [--set quick] [--only demo-uni-v2,konto-check] [--jobs 4]
 //!   pip-cli card --demo --out target/pip-did-this.html
 
 mod agent_cmd;
@@ -143,9 +143,17 @@ enum Cmd {
         /// for those tasks only, every card refused: nothing is ever sent).
         #[arg(long)]
         real: bool,
-        /// Only the agent tasks whose page or task text contains this (skips letters and click targets).
-        #[arg(long)]
-        only: Option<String>,
+        /// Level: `full` (everything) or `quick` (2 letters, no click targets, the tasks with "quick": true on the
+        /// full memory only, a few minutes).
+        #[arg(long, value_enum, default_value_t = eval::EvalSet::Full)]
+        set: eval::EvalSet,
+        /// Only the agent tasks whose page or task text contains one of these, comma-separated (skips letters and
+        /// click targets; keeps all memory conditions, with --set quick only `full`).
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// How many agent units (one task x one memory condition), letters or click targets run at the same time.
+        #[arg(long, default_value_t = 4)]
+        jobs: usize,
     },
 }
 
@@ -252,7 +260,10 @@ async fn main() -> Result<()> {
             eprintln!("({:.1} s)", started.elapsed().as_secs_f32());
             Ok(())
         }
-        Cmd::Eval { tasks, out, real, only } => eval::run(&ctx, &tasks, &out, real, only.as_deref()).await,
+        Cmd::Eval { tasks, out, real, set, only, jobs } => {
+            let only: Vec<String> = only.into_iter().map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect();
+            eval::run(&ctx, &tasks, &out, real, set, &only, jobs).await
+        }
         Cmd::Card { out, demo } => card::run(&ctx, &out, demo),
     }
 }

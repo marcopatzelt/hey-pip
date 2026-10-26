@@ -11,13 +11,14 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
+use futures_util::StreamExt as _;
 use pip_core::agent::AgentOutcome;
 use pip_core::clock::{Clock, FixedClock};
 use pip_core::config::file_url;
 use pip_core::docs::DocPipeline;
 use pip_core::i18n::{Lang, t};
 use pip_core::memory::Memory;
-use pip_core::meta::Usage;
+use pip_core::meta::{MetaClient, Usage};
 use pip_core::rules::RuleEngine;
 use serde::Deserialize;
 use serde_json::Value;
@@ -87,6 +88,9 @@ struct AgentTask {
     /// Step limit of one run (default 10; a two-page form needs more).
     #[serde(default = "default_max_steps")]
     max_steps: u32,
+    /// Part of `--set quick` (run on the `full` memory only).
+    #[serde(default)]
+    quick: bool,
 }
 
 /// eval/real-sites.json: real, read-only pages. Dry run up to the send card; every card is refused.
@@ -206,6 +210,15 @@ impl CondStats {
         self.cards += r.cards.len();
     }
 
+    fn merge(&mut self, o: &CondStats) {
+        self.runs += o.runs;
+        self.ok += o.ok;
+        self.steps += o.steps;
+        self.secs += o.secs;
+        self.questions += o.questions;
+        self.cards += o.cards;
+    }
+
     fn line(&self, cond: &str) -> String {
         let n = self.runs.max(1) as f32;
         format!(
@@ -277,11 +290,379 @@ fn fresh(ctx: &Ctx) -> Result<Ctx> {
     })
 }
 
-pub async fn run(ctx: &Ctx, tasks_path: &Path, out: &Path, real: bool, only: Option<&str>) -> Result<()> {
+/// Which tasks a run takes: `full` (everything) or `quick` (2 letters, no click targets, the tasks marked
+/// `"quick": true` on the `full` memory only). `--only` narrows either one (the targeted level).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum EvalSet {
+    #[default]
+    Full,
+    Quick,
+}
+
+/// What one eval run takes from tasks.json.
+struct Selection<'a> {
+    letters: &'a [String],
+    ground: &'a [GroundTask],
+    /// Agent tasks in file order, each with the memory conditions to run.
+    agent: Vec<(&'a AgentTask, Vec<MemoryCond>)>,
+}
+
+/// Does the agent task match one of the `--only` filters (page or task text contains it)?
+fn matches_only(a: &AgentTask, only: &[String]) -> bool {
+    let page = a.page.as_deref().unwrap_or("demo-kasse/index.html");
+    only.iter().any(|f| page.contains(f.as_str()) || a.task.contains(f.as_str()))
+}
+
+/// Picks letters, click targets and agent units for the level. `only` empty = no filter.
+fn select<'a>(tasks: &'a Tasks, set: EvalSet, only: &[String]) -> Selection<'a> {
+    let filtered = !only.is_empty();
+    let agent = tasks
+        .agent
+        .iter()
+        .filter(|a| set == EvalSet::Full || a.quick)
+        .filter(|a| !filtered || matches_only(a, only))
+        .map(|a| (a, if set == EvalSet::Quick { vec![MemoryCond::Full] } else { a.memory.clone() }))
+        .collect();
+    let (letters, ground) = match (set, filtered) {
+        // --only: just the matching agent tasks.
+        (_, true) => (&[][..], &[][..]),
+        (EvalSet::Quick, false) => (&tasks.letters[..tasks.letters.len().min(2)], &[][..]),
+        (EvalSet::Full, false) => (&tasks.letters[..], &tasks.ground[..]),
+    };
+    Selection { letters, ground, agent }
+}
+
+/// The header line: "Level: quick (5 tasks, full memory, jobs 4)".
+fn level_line(set: EvalSet, only: &[String], sel: &Selection, jobs: usize) -> String {
+    let name = match (set, only.is_empty()) {
+        (EvalSet::Full, true) => "full".to_string(),
+        (EvalSet::Full, false) => format!("targeted, only {}", only.join(",")),
+        (EvalSet::Quick, true) => "quick".to_string(),
+        (EvalSet::Quick, false) => format!("quick, only {}", only.join(",")),
+    };
+    let memory = if set == EvalSet::Quick { "full memory" } else { "all memory conditions" };
+    let mut extra = String::new();
+    if !sel.letters.is_empty() {
+        let _ = write!(extra, ", {} letters", sel.letters.len());
+    }
+    if !sel.ground.is_empty() {
+        let _ = write!(extra, ", {} click targets", sel.ground.len());
+    }
+    format!("Level: {name} ({} tasks, {memory}{extra}, jobs {jobs})", sel.agent.len())
+}
+
+/// Runs the futures at most `jobs` at a time and yields their results in the ORIGINAL order.
+fn ordered<I>(futs: I, jobs: usize) -> impl futures_util::Stream<Item = <I::Item as std::future::Future>::Output>
+where
+    I: IntoIterator,
+    I::Item: std::future::Future,
+{
+    futures_util::stream::iter(futs).buffered(jobs.max(1))
+}
+
+/// The counters of the summary (agent part and false alarms).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Tally {
+    held_ok: usize,
+    held_all: usize,
+    sent_ok: usize,
+    sent_all: usize,
+    typed_ok: usize,
+    typed_all: usize,
+    all_ok: usize,
+    all_n: usize,
+    guard_ok: usize,
+    guard_all: usize,
+    false_alarms: usize,
+    safe_runs: usize,
+}
+
+impl Tally {
+    fn add(&mut self, o: &Tally) {
+        self.held_ok += o.held_ok;
+        self.held_all += o.held_all;
+        self.sent_ok += o.sent_ok;
+        self.sent_all += o.sent_all;
+        self.typed_ok += o.typed_ok;
+        self.typed_all += o.typed_all;
+        self.all_ok += o.all_ok;
+        self.all_n += o.all_n;
+        self.guard_ok += o.guard_ok;
+        self.guard_all += o.guard_all;
+        self.false_alarms += o.false_alarms;
+        self.safe_runs += o.safe_runs;
+    }
+}
+
+/// What one agent unit (one task x one memory condition, its runs in order) produced.
+#[derive(Debug)]
+struct UnitOut {
+    cond: MemoryCond,
+    /// Table rows, one per run, in run order (each ends with a newline).
+    rows: Vec<String>,
+    /// Console lines, one per run.
+    lines: Vec<String>,
+    verdict: Option<(bool, String)>,
+    tally: Tally,
+    stats: CondStats,
+}
+
+/// All agent units merged in order.
+#[derive(Debug, Default)]
+struct AgentTotals {
+    md: String,
+    tally: Tally,
+    per_cond: BTreeMap<MemoryCond, CondStats>,
+    verdicts: Vec<(bool, String)>,
+}
+
+impl AgentTotals {
+    /// Appends one unit; call in unit order so rows and verdicts keep the task order.
+    fn absorb(&mut self, u: UnitOut) {
+        for r in &u.rows {
+            self.md.push_str(r);
+        }
+        self.tally.add(&u.tally);
+        self.per_cond.entry(u.cond).or_default().merge(&u.stats);
+        self.verdicts.extend(u.verdict);
+    }
+}
+
+/// A Ctx with its own Meta client (own token counter), so a unit's tokens can be counted while others run.
+fn fresh_counted(base: &Ctx) -> Result<(Ctx, Arc<MetaClient>)> {
+    let m = Arc::new(MetaClient::from_env().context("MODEL_API_KEY missing: put it in .env")?);
+    let mut c = fresh(base)?;
+    c.meta = Arc::new(std::sync::Mutex::new(Some(m.clone())));
+    Ok((c, m))
+}
+
+struct LetterOut {
+    md: String,
+    line: String,
+    f_ok: usize,
+    f_all: usize,
+    d_ok: usize,
+    tokens: u64,
+}
+
+async fn letter_unit(base: &Ctx, rel: &str) -> Result<LetterOut> {
+    let (c, meta) = fresh_counted(base)?;
+    let path = c.fixture(rel);
+    let rules = Arc::new(RuleEngine::new(c.memory.clone(), c.clock.clone()));
+    let pipeline = DocPipeline::new(meta.clone(), c.memory.clone(), rules);
+    let started = Instant::now();
+    let (mut f_ok, mut f_all, mut d_ok) = (0, 0, 0);
+    let row = match pipeline.ingest(&path, c.lang).await {
+        Ok(r) => {
+            let x = expected::load(&expected::path_for(&path).context("expected.json missing")?)?;
+            let checks = expected::check(&x, &r.extract, &r.deadlines);
+            let ok = checks.iter().filter(|c| c.ok).count();
+            let dl = checks.iter().filter(|c| c.name.ends_with("deadline")).all(|c| c.ok);
+            f_ok += ok;
+            f_all += checks.len();
+            d_ok += usize::from(dl);
+            let wrong: Vec<String> = checks.iter().filter(|c| !c.ok).map(|c| format!("{}={}", c.name, c.got)).collect();
+            let note = if wrong.is_empty() { String::new() } else { format!(" ({})", wrong.join("; ")) };
+            format!("{ok}/{}{note} | {} |", checks.len(), if dl { "yes" } else { "**no**" })
+        }
+        Err(e) => {
+            f_all += 1;
+            format!("failed: {e} | **no** |")
+        }
+    };
+    let secs = started.elapsed().as_secs_f32();
+    let used = tokens(meta.usage_total());
+    Ok(LetterOut {
+        md: format!("| `{rel}` | {row} {secs:.1} s | {used} |\n"),
+        line: format!("letter {rel}: {row} {secs:.1}s"),
+        f_ok,
+        f_all,
+        d_ok,
+        tokens: used,
+    })
+}
+
+struct GroundOut {
+    md: String,
+    line: String,
+    hit: bool,
+    tokens: u64,
+}
+
+async fn ground_unit(base: &Ctx, g: &GroundTask) -> Result<GroundOut> {
+    let (c, meta) = fresh_counted(base)?;
+    let shot = c.fixture(&g.screen);
+    let stem = shot.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+    let boxes: Value = expected::load(&shot.with_file_name(format!("{stem}.boxes.json")))?;
+    let t = &boxes["targets"][&g.target];
+    let (desc, query) = (t["description"].as_str().unwrap_or(&g.target), t["sam_query"].as_str().unwrap_or("button"));
+    let b: Vec<i64> = t["box"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
+    let started = Instant::now();
+    let p = screen::ground_point(&c, &shot, desc, query).await?;
+    let secs = started.elapsed().as_secs_f32();
+    let used = tokens(meta.usage_total());
+    let hit = match (p, b.as_slice()) {
+        (Some(p), [x1, y1, x2, y2]) => (*x1..=*x2).contains(&i64::from(p.x)) && (*y1..=*y2).contains(&i64::from(p.y)),
+        _ => false,
+    };
+    let click = p.map(|p| format!("({}, {})", p.x, p.y)).unwrap_or_else(|| "none".into());
+    Ok(GroundOut {
+        md: format!(
+            "| `{}` | {desc} | {} | {click} | {secs:.1} s | {used} |\n",
+            g.screen,
+            if hit { "yes" } else { "**no**" }
+        ),
+        line: format!("ground {} {}: hit={hit} {click} {secs:.1}s", g.screen, g.target),
+        hit,
+        tokens: used,
+    })
+}
+
+/// One agent task on one memory condition: its runs in order on one memory (run 2 reuses run 1's memory).
+async fn agent_unit(base: &Ctx, a: &AgentTask, page: Option<String>, cond: MemoryCond) -> Result<UnitOut> {
+    let mut out = UnitOut {
+        cond,
+        rows: vec![],
+        lines: vec![],
+        verdict: None,
+        tally: Tally::default(),
+        stats: CondStats::default(),
+    };
+    let tl = &mut out.tally;
+    let mut c = fresh(base)?;
+    if let Some(code) = &a.lang {
+        c.lang = Lang::from_code(code);
+    }
+    let (seed_letter, seed_facts) = cond.seeds();
+    if seed_facts {
+        for (k, v) in &a.profile {
+            c.memory.profile_set(k, v)?;
+        }
+    }
+    let task = a.text(c.lang);
+    // Long task texts (the app's "Look at my screen" text) are cut; the page tells the tasks apart.
+    let short: String = task.chars().take(60).collect();
+    let short = if short.len() < task.len() { format!("{short}…") } else { short };
+    let label = match &a.page {
+        Some(p) if a.task.starts_with('@') => format!("{short} (`{p}`)"),
+        _ => short.clone(),
+    };
+    let mut reports = Vec::new();
+    for run in 1..=a.runs.max(1) {
+        if cond == MemoryCond::NoPlaybook && run > 1 {
+            // A fresh memory with only the profile facts run 1 ended with: the playbook is gone.
+            let facts = c.memory.profile_meta_all()?;
+            let lang = c.lang;
+            c = fresh(&c)?;
+            c.lang = lang;
+            for f in facts {
+                c.memory.profile_set_with(&f.key, &f.value, &f.source, f.confidence)?;
+            }
+        }
+        let opts = Options {
+            task: task.clone(),
+            screens: a.screens.iter().map(|s| c.fixture(s)).collect(),
+            page: page.clone(),
+            letter: None,
+            approve: a.approve,
+            max_steps: a.max_steps,
+            quiet: true,
+            outline: a.outline.as_ref().map(|o| c.fixture(o)),
+            answers: a.answers.clone(),
+            seed_letter,
+            seed_facts,
+            advance_on_click: a.advance_on_click.clone(),
+        };
+        let r = agent_cmd::run(&c, opts).await?;
+        // `done`: the gate / send / guard part alone (its own counter); `ok`: the whole pass criterion.
+        let done = met(a.expect, &[], &r);
+        let ok = met_task(a, &r);
+        let mut notes = Vec::new();
+        if let Some(note) = typed_note(&a.expect_typed, &r) {
+            tl.typed_ok += usize::from(typed_hit(&a.expect_typed, &r).is_some());
+            tl.typed_all += 1;
+            notes.push(note);
+        }
+        if !a.expect_typed_all.is_empty() {
+            let yes = r.typed_all(&a.expect_typed_all);
+            tl.all_ok += usize::from(yes);
+            tl.all_n += 1;
+            notes.push(if yes {
+                "Typed all: yes".to_string()
+            } else {
+                format!("Typed all: **no** (wanted {}; got {:?})", a.expect_typed_all.join(" + "), r.typed)
+            });
+        }
+        if let Some(n) = a.expect_cards {
+            let got = r.send_cards();
+            notes.push(if got == n {
+                format!("Send cards: {got} yes")
+            } else {
+                format!("Send cards: **{got}** (wanted {n})")
+            });
+        }
+        match a.expect {
+            Expect::GateHeld => (tl.held_ok, tl.held_all) = (tl.held_ok + usize::from(done), tl.held_all + 1),
+            Expect::Sent => (tl.sent_ok, tl.sent_all) = (tl.sent_ok + usize::from(done), tl.sent_all + 1),
+            Expect::GuardHeld => (tl.guard_ok, tl.guard_all) = (tl.guard_ok + usize::from(ok), tl.guard_all + 1),
+        }
+        if a.expect != Expect::GuardHeld {
+            tl.safe_runs += 1;
+            tl.false_alarms += usize::from(r.guard_warned > 0);
+        }
+        out.stats.add(ok, &r);
+        let expect = a.expect.name();
+        let mut result = if done { format!("{expect}: yes") } else { format!("{expect}: **no** ({:?})", r.outcome) };
+        for n in &notes {
+            result = format!("{result}; {n}");
+        }
+        if !ok && done {
+            result = format!("{result} → **not met**");
+        }
+        out.lines.push(format!(
+            "agent \"{short}\" [{}] run {run}: {result} ok={ok} steps={} {:.1}s questions={} guard={}/{} by_hand={}",
+            cond.name(),
+            r.steps,
+            r.secs,
+            r.questions,
+            r.guard_warned,
+            r.guard_overridden,
+            r.by_hand_secs
+        ));
+        out.rows.push(format!(
+            "| {} | {} | {run} | {result} | {} | {:.1} | {} | {} | {} | {} |\n",
+            cell(&label),
+            cond.name(),
+            r.steps,
+            r.secs,
+            questions_cell(&r),
+            by_hand(r.by_hand_secs),
+            guard_cell(a.expect, &r),
+            cell(&cards_text(&r))
+        ));
+        reports.push(r);
+    }
+    if let [first, second, ..] = reports.as_slice() {
+        let (faster, sentence) = learning_verdict(first, second);
+        out.verdict = Some((faster, format!("{label} [{}]: {sentence}", cond.name())));
+    }
+    Ok(out)
+}
+
+pub async fn run(
+    ctx: &Ctx,
+    tasks_path: &Path,
+    out: &Path,
+    real: bool,
+    set: EvalSet,
+    only: &[String],
+    jobs: usize,
+) -> Result<()> {
     let tasks: Tasks = serde_json::from_str(
         &std::fs::read_to_string(tasks_path).with_context(|| format!("cannot read {}", tasks_path.display()))?,
     )
     .with_context(|| format!("{} has the wrong format", tasks_path.display()))?;
+    let jobs = jobs.max(1);
     // The fixtures' expected deadlines were computed with this clock (fixtures/README.md).
     let base = Ctx {
         config: ctx.config.clone(),
@@ -292,84 +673,43 @@ pub async fn run(ctx: &Ctx, tasks_path: &Path, out: &Path, real: bool, only: Opt
         meta: ctx.meta.clone(),
     };
     let meta = ctx.meta()?;
+    let sel = select(&tasks, set, only);
+    let level = level_line(set, only, &sel, jobs);
+    println!("{level}");
     let mut md = String::from("# Eval results\n\n");
     let _ = writeln!(
         md,
         "Run: {} · `pip-cli eval` · invented data only · real Meta API\n",
         Local::now().format("%Y-%m-%d %H:%M")
     );
+    let _ = writeln!(md, "{level}\n");
+    // Letters and click targets use their own Meta client each (for their Tokens column); added to the total.
+    let mut unit_tokens = 0;
 
-    // --only: just the matching agent tasks.
-    let (letters, ground) = if only.is_some() { (&[][..], &[][..]) } else { (&tasks.letters[..], &tasks.ground[..]) };
     // 1. Letters.
     md.push_str("## Letters (Muse Spark reads, SAM 3.1 crops photos, rules compute deadlines)\n\n");
     md.push_str("| Letter | Fields correct | Deadline correct | Time | Tokens |\n|---|---|---|---|---|\n");
     let (mut f_ok, mut f_all, mut d_ok) = (0, 0, 0);
-    for rel in letters {
-        let c = fresh(&base)?;
-        let path = c.fixture(rel);
-        let rules = Arc::new(RuleEngine::new(c.memory.clone(), c.clock.clone()));
-        let pipeline = DocPipeline::new(meta.clone(), c.memory.clone(), rules);
-        let before = tokens(meta.usage_total());
-        let started = Instant::now();
-        let row = match pipeline.ingest(&path, c.lang).await {
-            Ok(r) => {
-                let x = expected::load(&expected::path_for(&path).context("expected.json missing")?)?;
-                let checks = expected::check(&x, &r.extract, &r.deadlines);
-                let ok = checks.iter().filter(|c| c.ok).count();
-                let dl = checks.iter().filter(|c| c.name.ends_with("deadline")).all(|c| c.ok);
-                f_ok += ok;
-                f_all += checks.len();
-                d_ok += usize::from(dl);
-                let wrong: Vec<String> =
-                    checks.iter().filter(|c| !c.ok).map(|c| format!("{}={}", c.name, c.got)).collect();
-                let note = if wrong.is_empty() { String::new() } else { format!(" ({})", wrong.join("; ")) };
-                format!("{ok}/{}{note} | {} |", checks.len(), if dl { "yes" } else { "**no**" })
-            }
-            Err(e) => {
-                f_all += 1;
-                format!("failed: {e} | **no** |")
-            }
-        };
-        let secs = started.elapsed().as_secs_f32();
-        let used = tokens(meta.usage_total()) - before;
-        println!("letter {rel}: {row} {secs:.1}s");
-        let _ = writeln!(md, "| `{rel}` | {row} {secs:.1} s | {used} |");
+    let mut letters = ordered(sel.letters.iter().map(|rel| letter_unit(&base, rel)), jobs);
+    while let Some(l) = letters.next().await {
+        let l = l?;
+        println!("{}", l.line);
+        md.push_str(&l.md);
+        (f_ok, f_all, d_ok) = (f_ok + l.f_ok, f_all + l.f_all, d_ok + l.d_ok);
+        unit_tokens += l.tokens;
     }
 
     // 2. Grounding.
     md.push_str("\n## Screen targets (SAM 3.1 + Muse Spark point, on 1600x1000 screenshots)\n\n");
     md.push_str("| Screen | Target | Hit | Click | Time | Tokens |\n|---|---|---|---|---|---|\n");
     let mut g_ok = 0;
-    for g in ground {
-        let c = fresh(&base)?;
-        let shot = c.fixture(&g.screen);
-        let stem = shot.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
-        let boxes: Value = expected::load(&shot.with_file_name(format!("{stem}.boxes.json")))?;
-        let t = &boxes["targets"][&g.target];
-        let (desc, query) =
-            (t["description"].as_str().unwrap_or(&g.target), t["sam_query"].as_str().unwrap_or("button"));
-        let b: Vec<i64> = t["box"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
-        let before = tokens(meta.usage_total());
-        let started = Instant::now();
-        let p = screen::ground_point(&c, &shot, desc, query).await?;
-        let secs = started.elapsed().as_secs_f32();
-        let used = tokens(meta.usage_total()) - before;
-        let hit = match (p, b.as_slice()) {
-            (Some(p), [x1, y1, x2, y2]) => {
-                (*x1..=*x2).contains(&i64::from(p.x)) && (*y1..=*y2).contains(&i64::from(p.y))
-            }
-            _ => false,
-        };
-        g_ok += usize::from(hit);
-        let click = p.map(|p| format!("({}, {})", p.x, p.y)).unwrap_or_else(|| "none".into());
-        println!("ground {} {}: hit={hit} {click} {secs:.1}s", g.screen, g.target);
-        let _ = writeln!(
-            md,
-            "| `{}` | {desc} | {} | {click} | {secs:.1} s | {used} |",
-            g.screen,
-            if hit { "yes" } else { "**no**" }
-        );
+    let mut ground = ordered(sel.ground.iter().map(|g| ground_unit(&base, g)), jobs);
+    while let Some(g) = ground.next().await {
+        let g = g?;
+        println!("{}", g.line);
+        md.push_str(&g.md);
+        g_ok += usize::from(g.hit);
+        unit_tokens += g.tokens;
     }
 
     // 3. Agent runs (dry run on screenshots). Repeated runs of one task share one memory per memory condition.
@@ -386,19 +726,9 @@ pub async fn run(ctx: &Ctx, tasks_path: &Path, out: &Path, real: bool, only: Opt
         "| Task | Memory | Run | Result | Steps | Seconds | Questions | By hand | Guard | Cards |\n\
          |---|---|---|---|---|---|---|---|---|---|\n",
     );
-    let (mut held_ok, mut held_all, mut sent_ok, mut sent_all) = (0, 0, 0, 0);
-    let (mut typed_ok, mut typed_all) = (0, 0);
-    let (mut all_ok, mut all_n) = (0, 0);
-    let (mut guard_ok, mut guard_all, mut false_alarms, mut safe_runs) = (0, 0, 0, 0);
-    let mut per_cond: BTreeMap<MemoryCond, CondStats> = BTreeMap::new();
-    let mut verdicts = Vec::new();
-    for a in &tasks.agent {
-        if let Some(f) = only
-            && !a.page.as_deref().unwrap_or("demo-kasse/index.html").contains(f)
-            && !a.task.contains(f)
-        {
-            continue;
-        }
+    // Units: one task x one memory condition, in task order. Units share nothing mutable (fresh memory each).
+    let mut units = Vec::new();
+    for (a, conds) in &sel.agent {
         let page = match &a.page {
             Some(rel) => {
                 let p = base.fixture(rel);
@@ -406,128 +736,33 @@ pub async fn run(ctx: &Ctx, tasks_path: &Path, out: &Path, real: bool, only: Opt
             }
             None => None,
         };
-        for &cond in &a.memory {
-            let mut c = fresh(&base)?;
-            if let Some(code) = &a.lang {
-                c.lang = Lang::from_code(code);
-            }
-            let (seed_letter, seed_facts) = cond.seeds();
-            if seed_facts {
-                for (k, v) in &a.profile {
-                    c.memory.profile_set(k, v)?;
-                }
-            }
-            let task = a.text(c.lang);
-            // Long task texts (the app's "Look at my screen" text) are cut; the page tells the tasks apart.
-            let short: String = task.chars().take(60).collect();
-            let short = if short.len() < task.len() { format!("{short}…") } else { short };
-            let label = match &a.page {
-                Some(p) if a.task.starts_with('@') => format!("{short} (`{p}`)"),
-                _ => short.clone(),
-            };
-            let mut reports = Vec::new();
-            for run in 1..=a.runs.max(1) {
-                if cond == MemoryCond::NoPlaybook && run > 1 {
-                    // A fresh memory with only the profile facts run 1 ended with: the playbook is gone.
-                    let facts = c.memory.profile_meta_all()?;
-                    let lang = c.lang;
-                    c = fresh(&c)?;
-                    c.lang = lang;
-                    for f in facts {
-                        c.memory.profile_set_with(&f.key, &f.value, &f.source, f.confidence)?;
-                    }
-                }
-                let opts = Options {
-                    task: task.clone(),
-                    screens: a.screens.iter().map(|s| c.fixture(s)).collect(),
-                    page: page.clone(),
-                    letter: None,
-                    approve: a.approve,
-                    max_steps: a.max_steps,
-                    quiet: true,
-                    outline: a.outline.as_ref().map(|o| c.fixture(o)),
-                    answers: a.answers.clone(),
-                    seed_letter,
-                    seed_facts,
-                    advance_on_click: a.advance_on_click.clone(),
-                };
-                let r = agent_cmd::run(&c, opts).await?;
-                // `done`: the gate / send / guard part alone (its own counter); `ok`: the whole pass criterion.
-                let done = met(a.expect, &[], &r);
-                let ok = met_task(a, &r);
-                let mut notes = Vec::new();
-                if let Some(note) = typed_note(&a.expect_typed, &r) {
-                    typed_ok += usize::from(typed_hit(&a.expect_typed, &r).is_some());
-                    typed_all += 1;
-                    notes.push(note);
-                }
-                if !a.expect_typed_all.is_empty() {
-                    let yes = r.typed_all(&a.expect_typed_all);
-                    (all_ok, all_n) = (all_ok + usize::from(yes), all_n + 1);
-                    notes.push(if yes {
-                        "Typed all: yes".to_string()
-                    } else {
-                        format!("Typed all: **no** (wanted {}; got {:?})", a.expect_typed_all.join(" + "), r.typed)
-                    });
-                }
-                if let Some(n) = a.expect_cards {
-                    let got = r.send_cards();
-                    notes.push(if got == n {
-                        format!("Send cards: {got} yes")
-                    } else {
-                        format!("Send cards: **{got}** (wanted {n})")
-                    });
-                }
-                match a.expect {
-                    Expect::GateHeld => (held_ok, held_all) = (held_ok + usize::from(done), held_all + 1),
-                    Expect::Sent => (sent_ok, sent_all) = (sent_ok + usize::from(done), sent_all + 1),
-                    Expect::GuardHeld => (guard_ok, guard_all) = (guard_ok + usize::from(ok), guard_all + 1),
-                }
-                if a.expect != Expect::GuardHeld {
-                    safe_runs += 1;
-                    false_alarms += usize::from(r.guard_warned > 0);
-                }
-                per_cond.entry(cond).or_default().add(ok, &r);
-                let expect = a.expect.name();
-                let mut result =
-                    if done { format!("{expect}: yes") } else { format!("{expect}: **no** ({:?})", r.outcome) };
-                for n in &notes {
-                    result = format!("{result}; {n}");
-                }
-                if !ok && done {
-                    result = format!("{result} → **not met**");
-                }
-                println!(
-                    "agent \"{short}\" [{}] run {run}: {result} ok={ok} steps={} {:.1}s questions={} guard={}/{} \
-                     by_hand={}",
-                    cond.name(),
-                    r.steps,
-                    r.secs,
-                    r.questions,
-                    r.guard_warned,
-                    r.guard_overridden,
-                    r.by_hand_secs
-                );
-                let _ = writeln!(
-                    md,
-                    "| {} | {} | {run} | {result} | {} | {:.1} | {} | {} | {} | {} |",
-                    cell(&label),
-                    cond.name(),
-                    r.steps,
-                    r.secs,
-                    questions_cell(&r),
-                    by_hand(r.by_hand_secs),
-                    guard_cell(a.expect, &r),
-                    cell(&cards_text(&r))
-                );
-                reports.push(r);
-            }
-            if let [first, second, ..] = reports.as_slice() {
-                let (faster, sentence) = learning_verdict(first, second);
-                verdicts.push((faster, format!("{label} [{}]: {sentence}", cond.name())));
-            }
-        }
+        units.extend(conds.iter().map(|&cond| (*a, page.clone(), cond)));
     }
+    let mut totals = AgentTotals::default();
+    let mut agent = ordered(units.into_iter().map(|(a, page, cond)| agent_unit(&base, a, page, cond)), jobs);
+    while let Some(u) = agent.next().await {
+        let u = u?;
+        for l in &u.lines {
+            println!("{l}");
+        }
+        totals.absorb(u);
+    }
+    md.push_str(&totals.md);
+    let AgentTotals { tally, per_cond, verdicts, .. } = totals;
+    let Tally {
+        held_ok,
+        held_all,
+        sent_ok,
+        sent_all,
+        typed_ok,
+        typed_all,
+        all_ok,
+        all_n,
+        guard_ok,
+        guard_all,
+        mut false_alarms,
+        mut safe_runs,
+    } = tally;
 
     // 4. Real websites (read-only, dry run up to the send card, every card refused).
     if real {
@@ -537,7 +772,7 @@ pub async fn run(ctx: &Ctx, tasks_path: &Path, out: &Path, real: bool, only: Opt
         );
     }
 
-    let total = tokens(meta.usage_total());
+    let total = tokens(meta.usage_total()) + unit_tokens;
     let faster = verdicts.iter().filter(|(f, _)| *f).count();
     let questions: Vec<String> = verdicts.iter().map(|(_, s)| format!("  - {s}")).collect();
     let summary = format!(
@@ -550,8 +785,8 @@ pub async fn run(ctx: &Ctx, tasks_path: &Path, out: &Path, real: bool, only: Opt
          - Learning: {faster} of {} repeated tasks were faster the 2nd time (fewer steps and seconds; questions 1st \
          -> 2nd, per task and memory condition){}\n- Tokens for the whole run: {total}\n",
         100.0 * f_ok as f32 / f_all.max(1) as f32,
-        letters.len(),
-        ground.len(),
+        sel.letters.len(),
+        sel.ground.len(),
         per_cond.iter().map(|(c, st)| format!("- {}", st.line(c.name()))).collect::<Vec<_>>().join("\n"),
         verdicts.len(),
         questions.iter().map(|q| format!("\n{q}")).collect::<String>(),
@@ -864,6 +1099,109 @@ mod tests {
         assert!(!learning_verdict(&first, &report(5, 45.0, 0, true)).0, "more seconds");
         assert!(!learning_verdict(&first, &report(5, 14.0, 2, true)).0, "more questions");
         assert!(!learning_verdict(&first, &report(5, 14.0, 0, false)).0, "the 2nd run must finish");
+    }
+
+    fn tasks_file() -> Tasks {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../eval/tasks.json");
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn pages(sel: &Selection) -> Vec<String> {
+        sel.agent.iter().map(|(a, _)| a.page.clone().unwrap_or_else(|| a.task.clone())).collect()
+    }
+
+    #[test]
+    fn quick_set_takes_the_five_flagged_tasks_on_full_memory() {
+        let tasks = tasks_file();
+        let sel = select(&tasks, EvalSet::Quick, &[]);
+        assert_eq!(
+            pages(&sel),
+            [
+                "Send my sick note to my health insurer",
+                "demo-uni/index.html",
+                "demo-kasse/fragebogen.html",
+                "demo-kasse-v2/index.html",
+                "demo-kasse-konto-check/index.html"
+            ]
+        );
+        assert!(sel.agent.iter().all(|(_, m)| m == &[MemoryCond::Full]));
+        assert_eq!(sel.letters, &tasks.letters[..2]);
+        assert!(sel.ground.is_empty());
+        assert_eq!(level_line(EvalSet::Quick, &[], &sel, 4), "Level: quick (5 tasks, full memory, 2 letters, jobs 4)");
+
+        let full = select(&tasks, EvalSet::Full, &[]);
+        assert_eq!(full.agent.len(), tasks.agent.len());
+        assert_eq!((full.letters.len(), full.ground.len()), (tasks.letters.len(), tasks.ground.len()));
+        assert!(full.agent.iter().all(|(a, m)| &a.memory == m));
+    }
+
+    #[test]
+    fn only_matches_any_filter_and_intersects_with_quick() {
+        let tasks = tasks_file();
+        let only = ["demo-uni-v2".to_string(), "konto-check".to_string()];
+        let sel = select(&tasks, EvalSet::Full, &only);
+        assert_eq!(pages(&sel), ["demo-uni-v2/index.html", "demo-kasse-konto-check/index.html"]);
+        assert!(sel.agent.iter().all(|(a, m)| &a.memory == m), "targeted keeps every memory condition");
+        assert!(sel.letters.is_empty() && sel.ground.is_empty());
+        assert_eq!(
+            level_line(EvalSet::Full, &only, &sel, 2),
+            "Level: targeted, only demo-uni-v2,konto-check (2 tasks, all memory conditions, jobs 2)"
+        );
+        // The default page and the task text count too.
+        let sick = select(&tasks, EvalSet::Full, &["sick note".to_string()]);
+        assert!(sick.agent.iter().all(|(a, _)| a.task.contains("sick note")) && !sick.agent.is_empty());
+
+        let both = select(&tasks, EvalSet::Quick, &only);
+        assert_eq!(pages(&both), ["demo-kasse-konto-check/index.html"], "demo-uni-v2 is not a quick task");
+        assert_eq!(both.agent[0].1, [MemoryCond::Full]);
+        assert!(both.letters.is_empty());
+        assert!(select(&tasks, EvalSet::Full, &["no-such-page".to_string()]).agent.is_empty());
+    }
+
+    fn unit(cond: MemoryCond, rows: &[&str], ok: bool, verdict: Option<&str>) -> UnitOut {
+        let mut stats = CondStats::default();
+        let mut tally = Tally::default();
+        for _ in rows {
+            stats.add(ok, &report(4, 10.0, 0, true));
+            tally.sent_ok += usize::from(ok);
+            tally.sent_all += 1;
+            tally.safe_runs += 1;
+        }
+        UnitOut {
+            cond,
+            rows: rows.iter().map(|r| format!("{r}\n")).collect(),
+            lines: vec![],
+            verdict: verdict.map(|v| (ok, v.to_string())),
+            tally,
+            stats,
+        }
+    }
+
+    #[test]
+    fn absorb_merges_units_in_order() {
+        let mut t = AgentTotals::default();
+        t.absorb(unit(MemoryCond::Full, &["a1", "a2"], true, Some("a")));
+        t.absorb(unit(MemoryCond::Cold, &["b1"], false, None));
+        t.absorb(unit(MemoryCond::Full, &["c1", "c2"], false, Some("c")));
+        assert_eq!(t.md, "a1\na2\nb1\nc1\nc2\n");
+        assert_eq!(t.verdicts, [(true, "a".to_string()), (false, "c".to_string())]);
+        assert_eq!((t.tally.sent_ok, t.tally.sent_all, t.tally.safe_runs), (2, 5, 5));
+        let full = &t.per_cond[&MemoryCond::Full];
+        assert_eq!((full.runs, full.ok, full.steps), (4, 2, 16));
+        assert_eq!((t.per_cond[&MemoryCond::Cold].runs, t.per_cond[&MemoryCond::Cold].ok), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn ordered_keeps_the_order_while_running_in_parallel() {
+        let started = Instant::now();
+        // The first one is the slowest: buffered still yields 0, 1, 2, 3.
+        let futs = (0..4u64).map(|i| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(80 - 20 * i)).await;
+            i
+        });
+        let got: Vec<u64> = ordered(futs, 4).collect().await;
+        assert_eq!(got, [0, 1, 2, 3]);
+        assert!(started.elapsed() < std::time::Duration::from_millis(180), "ran at the same time");
     }
 
     #[test]

@@ -3615,6 +3615,7 @@ dependencies = [
  "chrono",
  "clap",
  "dotenvy",
+ "futures-util",
  "hound",
  "image",
  "pip-core",

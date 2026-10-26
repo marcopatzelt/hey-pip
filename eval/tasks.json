@@ -35,6 +35,7 @@
       ]
     },
     {
+      "quick": true,
       "task": "Send my sick note to my health insurer",
       "lang": "en",
       "outline": "screens/demo-kasse.outline.json",
@@ -57,6 +58,7 @@
       ]
     },
     {
+      "quick": true,
       "task": "@task_look_screen",
       "lang": "en",
       "page": "demo-uni/index.html",
@@ -80,6 +82,7 @@
       ]
     },
     {
+      "quick": true,
       "task": "@task_look_screen",
       "lang": "en",
       "page": "demo-kasse/fragebogen.html",
@@ -113,6 +116,7 @@
       ]
     },
     {
+      "quick": true,
       "task": "@task_look_screen",
       "lang": "en",
       "page": "demo-kasse-v2/index.html",
@@ -216,6 +220,7 @@
       "max_steps": 14
     },
     {
+      "quick": true,
       "task": "@task_look_screen",
       "lang": "en",
       "page": "demo-kasse-konto-check/index.html",

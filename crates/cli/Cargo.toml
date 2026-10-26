@@ -26,3 +26,4 @@ image.workspace = true
 chrono.workspace = true
 dotenvy.workspace = true
 hound.workspace = true
+futures-util.workspace = true

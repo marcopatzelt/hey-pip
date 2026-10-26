@@ -5,10 +5,27 @@ OWNER: agent "docs-cli". Tasks with invented data (SPEC §13.3): 5 letters (fiel
 one approved card? is the 2nd run on the same memory faster? does Pip still manage page VARIANTS (cookie banner, two
 steps, an error after Submit, reworded labels) and a cold memory? does the guard stop FAKE pages and stay silent on
 safe ones?
-Run: `cargo run -p pip-cli -- eval --tasks eval/tasks.json --out eval/results.md [--real] [--only <page part>]`
-(uses the real API, a few cents, about 20 minutes; the agent tasks run on Linux with the fake platform: a PNG is the
-screen, nothing is clicked or sent for real). `--only demo-uni-v2` runs only the agent tasks whose page or task text
-contains that (no letters, no click targets) — for trying one task. `--real` adds the real websites (below).
+Run: `cargo run -p pip-cli -- eval --tasks eval/tasks.json --out eval/results.md [--set full|quick] [--only a,b]
+[--jobs N] [--real]` (uses the real API, a few cents; the agent tasks run on Linux with the fake platform: a PNG is
+the screen, nothing is clicked or sent for real). `--real` adds the real websites (below).
+
+## Three levels: quick, targeted, full
+| Level | Command | What runs | Typical time (jobs 4) |
+|---|---|---|---|
+| quick | `eval --set quick --out target/eval-quick.md` | the first 2 letters, no click targets, the 5 agent tasks with `"quick": true` in tasks.json (insurer form, university form, questionnaire, cookie-banner variant, lookalike page), each on the `full` memory only, runs as given | about 1 minute (55 s on Oct 27, 9 runs) |
+| targeted | `eval --only demo-uni-v2,konto-check --out target/eval-only.md` | only the agent tasks whose page (default `demo-kasse/index.html`) or task text contains ANY of the comma-separated filters, with ALL their memory conditions; no letters, no click targets | 1 to 3 minutes per task |
+| full | `eval` | every letter, click target and agent task with all memory conditions | about 20 minutes with `--jobs 1`; with `--jobs 4` not measured yet (expect a few times faster) |
+
+`--set quick --only a,b` intersects: the quick tasks that match a filter, on the `full` memory. Use quick after every
+change in a loop run, targeted for the task you are fixing (the "changed" level), full before a commit that touches
+the agent. Write quick and targeted runs to `target/…`; only a full run belongs in `eval/results.md`. The results
+file and the console start with the level, e.g. `Level: quick (5 tasks, full memory, 2 letters, jobs 4)`.
+
+`--jobs N` (default 4) runs that many units at the same time. A unit is one agent task on one memory condition; its
+runs (`runs: 2`) stay in order inside the unit, because run 2 reuses run 1's memory. Each unit has its own fresh
+memory, so units share nothing. Letters and click targets also run N at a time. The table and the console lines keep
+the task order (a finished unit waits for the ones before it). Seconds per run can be a little higher under load
+than with `--jobs 1`; use `--jobs 1` when you compare times with an old results file.
 
 Base rules of every run (notes/next-run-evals.md): every problem found becomes an eval task with a clear pass
 criterion BEFORE or WITH the fix; each task family has several page variants (so a speed-up shows understanding, not
@@ -36,6 +53,7 @@ Paths are relative to `fixtures/`. Only `task` and `screens` are required.
 | `memory` | `["full"]` | Memory conditions, each on its own fresh memory (see below). |
 | `advance_on_click` | `[]` | Named targets (from `<screen>.boxes.json`) whose click shows the next screen: `cookie_necessary`, `next_button`, `submit_button` (a submit that leads to an error screen). |
 | `max_steps` | `10` | Step limit per run (14 for the two-page and banner variants). |
+| `quick` | `false` | Part of `--set quick` (then only on the `full` memory). Keep it at 5 tasks that cover each family once. |
 
 The agent table in results.md has one row per run:
 `| Task | Memory | Run | Result | Steps | Seconds | Questions | By hand | Guard | Cards |`. Guard = `warned/overridden`
