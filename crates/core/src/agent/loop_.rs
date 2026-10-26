@@ -1463,7 +1463,10 @@ without say.",
         // The element's own name counts for the gate too (a send button by number still gets its card).
         let element_name = by_element.as_ref().map(|i| i.name.clone()).unwrap_or_default();
         let ui_name_now = ui.as_ref().map(|u| u.name.as_str()).unwrap_or("");
-        if Gate::closes_window(description, sam_query, ui_name_now) {
+        let ui_tree = self.platform.ui.clone();
+        let tp = target.point;
+        let window_button = tokio::task::spawn_blocking(move || ui_tree.is_window_control(tp)).await.unwrap_or(false);
+        if window_button || Gate::closes_window(description, sam_query, ui_name_now) {
             return Ok(ToolRun::out(
                 base_risk,
                 "refused: Pip never closes, minimizes or quits the user's windows. To bring a window to the front, \
@@ -1779,6 +1782,9 @@ without say.",
             self.blocking(move |pl| pl.input.click(p)).await?;
             state.last_point = Some(p);
             state.focus_by_key = false;
+            // Replace what the field holds, as in type_into_element: new text never lands behind old text.
+            self.blocking(|pl| pl.input.key("ctrl+a")).await?;
+            self.blocking(|pl| pl.input.key("backspace")).await?;
         } else if state.enter_after_attach {
             // The file dialog of an approved attach: only the approved letter goes in.
             if self.foreground().await.is_some_and(|w| !w.is_file_dialog()) {

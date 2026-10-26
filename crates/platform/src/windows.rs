@@ -519,6 +519,45 @@ impl UiTree for WinPlatform {
         .unwrap_or(false)
     }
 
+    fn is_window_control(&self, p: PhysPoint) -> bool {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, GetWindowRect, WindowFromPoint};
+        if overlay_at(p) {
+            return false;
+        }
+        // 1) Geometry: the top-right corner of the top-level window under the point (title bar buttons).
+        let root = unsafe { GetAncestor(WindowFromPoint(POINT { x: p.x, y: p.y }), GA_ROOT) };
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let in_caption_corner = !root.is_null()
+            && unsafe { GetWindowRect(root, &mut r) } != 0
+            && p.y >= r.top
+            && p.y < r.top + 56
+            && p.x > r.right - 200
+            && p.x <= r.right;
+        // 2) UI tree: a TitleBar ancestor, or a caption button name in that corner.
+        with_uia(|uia| {
+            let el = uia.element_from_point(Point::new(p.x, p.y))?;
+            let walker = uia.get_control_view_walker()?;
+            let mut cur = Some(el.clone());
+            for _ in 0..4 {
+                let Some(e) = cur else { break };
+                if e.get_control_type().is_ok_and(|c| c == ControlType::TitleBar) {
+                    return Ok(true);
+                }
+                cur = walker.get_parent(&e).ok();
+            }
+            let name = el.get_name().unwrap_or_default().to_lowercase();
+            let caption = [
+                "schließen", "close", "maximieren", "maximize", "minimieren", "minimize", "wiederherstellen",
+                "restore", "verkleinern",
+            ]
+            .iter()
+            .any(|n| name == *n);
+            Ok(in_caption_corner && caption)
+        })
+        .unwrap_or(in_caption_corner)
+    }
+
     fn set_value_at(&self, p: PhysPoint, text: &str) -> bool {
         let text = text.to_string();
         with_uia(|uia| {

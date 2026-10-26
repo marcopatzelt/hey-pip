@@ -451,6 +451,11 @@ pub trait UiTree: Send + Sync {
     fn value_at(&self, _p: PhysPoint) -> Option<String> {
         None
     }
+    /// True if the point is on a window's own title-bar button (close, maximize, minimize, restore).
+    /// Pip never clicks those: a popup's ✕ inside the page is fine, the window's ✕ is not.
+    fn is_window_control(&self, _p: PhysPoint) -> bool {
+        false
+    }
     /// Set the text of the field at this point directly (Windows ValuePattern). False = not possible.
     /// Used only to repair a field whose typed text came out wrong; never for password fields.
     fn set_value_at(&self, _p: PhysPoint, _text: &str) -> bool {

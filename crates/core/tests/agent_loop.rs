@@ -839,7 +839,8 @@ async fn enter_in_a_form_needs_approval() {
     h.auto_answer(ApprovalAnswer::No, "");
     let out = h.run("Trag meinen Namen ein").await;
     assert_eq!(out, AgentOutcome::Stopped);
-    assert!(!h.platform.actions().iter().any(|a| a.starts_with("key")), "{:?}", h.platform.actions());
+    // Clearing the field (ctrl+a, backspace) is fine; Enter must not be pressed after "no".
+    assert!(!h.platform.actions().iter().any(|a| a == "key enter"), "{:?}", h.platform.actions());
     let c = cards(&h.drain());
     assert_eq!(c.len(), 1);
     assert_eq!(c[0].what, "Was: das ausgefüllte Formular");
