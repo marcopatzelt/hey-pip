@@ -1,4 +1,4 @@
-# Pip – a desktop helper for paperwork
+# Pip – your AI helper on the screen
 
 <img src="design/pip/png/wave.png" alt="Pip, a small blue drop with a folded paper tuft, waving" width="140" align="right">
 
