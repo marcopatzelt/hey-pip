@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="design/readme/banner-dark.png">
-    <img src="design/readme/banner.png" alt="Pip, a small blue helper, points at a claim form and asks: Your flight landed 4 hours late. You may be owed €400. Claim it now? Headline: Your personal AI assistant. It knows you, sees what's coming, and gets things done with you." width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="design/readme/pip-banner-dark.png">
+    <img src="design/readme/pip-banner.png" alt="Pip, a small blue helper, points at a claim form and asks: Your flight landed 4 hours late. You may be owed €400. Claim it now? Headline: Your personal AI assistant. It knows you, sees what's coming, and gets things done with you." width="100%">
   </picture>
 </p>
 
