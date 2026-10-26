@@ -1,0 +1,20 @@
+{
+  "doc_type": "au_bescheinigung",
+  "date": "2026-10-20",
+  "reference": "G123456789",
+  "sender_contains": "Beispiel",
+  "recipient_contains": "Gesundkasse",
+  "au": {
+    "from": "2026-10-20",
+    "until": "2026-10-30",
+    "first_or_follow": "erst"
+  },
+  "deadlines_due": [],
+  "rule_deadlines": [
+    {
+      "rule_id": "au_lueckenlos",
+      "due": "2026-11-02"
+    }
+  ],
+  "note": "Phone photo of au_erika_erst on a wooden table (SAM crops the sheet)."
+}

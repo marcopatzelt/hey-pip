@@ -1,0 +1,22 @@
+{
+  "note": "SPEC 13.3: 5 letters, 4 screen targets, 1 agent run with the approval gate. Paths are relative to fixtures/. Only invented data.",
+  "letters": [
+    "letters/au_erika_erst_foto.jpg",
+    "letters/au_erika_folge.pdf",
+    "letters/kasse_brief.pdf",
+    "letters/bescheid_wohngeld.pdf",
+    "letters/uni_rueckmeldung.pdf"
+  ],
+  "ground": [
+    {"screen": "screens/kasse_form.png", "target": "name_field"},
+    {"screen": "screens/kasse_form.png", "target": "nr_field"},
+    {"screen": "screens/kasse_form.png", "target": "file_button"},
+    {"screen": "screens/kasse_form_filled.png", "target": "submit_button"}
+  ],
+  "agent": [
+    {
+      "task": "Schick die Krankschreibung an die Gesundkasse",
+      "screens": ["screens/kasse_form.png", "screens/kasse_form_filled.png"]
+    }
+  ]
+}

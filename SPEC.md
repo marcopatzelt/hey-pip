@@ -7,14 +7,18 @@ Wir sind technisch und verstehen Computer Use. Die Nutzer nicht. Jede Entscheidu
 - Keine Fachwörter in der Oberfläche. Keine Einrichtung über Dateien oder Terminal.
 - Die Figur sagt immer, was sie gerade tut und warum ("Ich klicke jetzt auf Absenden. Darf ich?").
 - Der Nutzer kann jederzeit stoppen: Maus bewegen oder Esc = sofort Pause, die Figur bestätigt das.
-- Der erste Start ist ein Erlebnis, keine Einstellungsseite: Die Figur stellt sich vor, fragt drei Dinge (Name, Krankenkasse, Bundesland) und zeigt einmal, was sie kann.
+- Der erste Start ist ein Erlebnis, keine Einstellungsseite: Die Figur stellt sich vor, fragt nur den Namen und zeigt einmal, was sie kann. Die Krankenkasse liest sie aus dem ersten Brief; das Bundesland fragt sie erst, wenn eine Frist es braucht (Stand 26.10., siehe §10).
 - Fehler sagt die Figur freundlich und mit nächstem Schritt, nie als Fehlercode.
 - UX steht vor Funktionsumfang: lieber drei Dinge, die sich großartig anfühlen, als zehn halbe.
 
 ## 1. Produkt in einem Satz
-Ein kleiner Helfer auf dem Windows-Bildschirm, der Briefe und Bescheinigungen liest, sich Fristen merkt, sich rechtzeitig von selbst meldet und Formulare und Mails am Bildschirm selbst erledigt. Vor jedem Senden fragt er.
+Pip ist Computer Use für Alltagsmenschen: ein kleiner Helfer auf dem Windows-Bildschirm, der versteht, was du gerade tust, Vorschläge macht, sich Dinge über dich merkt und den Computer für dich bedient und Formulare ausfüllt. Vor jedem Senden fragt er.
 
-Zielgruppe: Menschen, die Behörden-Regeln nicht kennen oder nicht die Kraft dafür haben (Kranke, Ältere, Menschen mit Einschränkungen, Studenten, Zugezogene).
+**Nicht an einen Anwendungsfall gebunden (Marco, 26.10.):** Pip passt sich dem Nutzer an. Papierkram (Briefe, Fristen, Krankschreibung) ist nur die Hauptgeschichte für Demo und Video. Die Architektur bleibt allgemein: Gedächtnis über den Nutzer, Vorschläge aus dem, was auf dem Bildschirm passiert, Handeln am Bildschirm, Freigabe. Weitere Beispiele: Anträge, Anmeldungen, Studien-Fristen, Bewerbungen schreiben (nicht bewerten: "Job-Application-Screener" ist verboten), Online-Formulare aller Art.
+- Für die Jury: eine starke, echte Geschichte zeigen, dann in 20 Sekunden zeigen, dass Pip auch anderes kann. "Für alles" ohne Geschichte wirkt beliebig.
+- Kein Code, der nur für die AU funktioniert: Regeln und Abläufe sind Module; der Agent selbst ist allgemein.
+
+Zielgruppe: alle, die nicht technisch sind oder keine Kraft für Bürokratie haben (Kranke, Ältere, Menschen mit Einschränkungen, Studenten, Zugezogene).
 
 Auslöser (echte Geschichte, im Video erzählt): Die Folge-Krankschreibung von Marcos Mutter kam zwei Tage zu spät. Die Krankenkasse zahlte diese zwei Tage nicht, obwohl sie krank war.
 
@@ -94,8 +98,11 @@ Laufzeit: `tokio`. HTTP: `reqwest` (rustls) + `serde_json`. Fehler: `anyhow`/`th
 trait Screen  { fn capture(&self, monitor: MonitorId) -> Result<Frame>; fn monitors(&self) -> Vec<Monitor>; }
 trait Input   { fn click(&self, p: PhysPoint) -> Result<()>; fn type_text(&self, s: &str) -> Result<()>;
                 fn key(&self, combo: &str) -> Result<()>; fn scroll(&self, p: PhysPoint, dy: i32) -> Result<()>; }
-trait UiTree  { fn element_at(&self, p: PhysPoint) -> Option<UiElement>; fn find(&self, name: &str) -> Vec<UiElement>; }
+trait UiTree  { fn element_at(&self, p: PhysPoint) -> Option<UiElement>; }
 ```
+- Stand 26.10. (gebaut): `find(name)` ist kein Teil des Traits, sondern `copilot_platform::windows::WinPlatform::find` (sucht im Vordergrundfenster). `element_at` gibt `None`, wenn Pips eigenes Fenster unter dem Punkt liegt.
+- `Input::scroll(p, dy)`: `dy` in Mausrad-Rasten, positiv = nach unten.
+- `type_text` nimmt keine Steuerzeichen (Zeilenumbruch, Tab): die würden wie Enter/Tab wirken und ein Formular an der Schranke vorbei abschicken. Enter und Tab gehen nur über `key`.
 - Alle Koordinaten in **physischen Pixeln** (Windows-Skalierung beachten; Tauri setzt Per-Monitor-DPI).
 - `Frame` = Bild + Monitor-Offset + Skalierung. Für die API verkleinern (lange Seite max. 1600 px), Koordinaten zurückrechnen.
 - Die Figur selbst: vor dem Bildschirmfoto ihren Bereich merken und im Bild ausgrauen (nicht unsichtbar schalten, sonst fehlt sie im Demo-Video).
@@ -107,7 +114,7 @@ trait UiTree  { fn element_at(&self, p: PhysPoint) -> Option<UiElement>; fn find
 | Planen, Bildschirm verstehen, Dokument lesen, Antworten schreiben | `muse-spark-1.3` | `POST /v1/responses` |
 | Ziel auf dem Bildschirm finden (Text → Box), Blatt im Foto ausschneiden | `sam-3.1` | `POST /v1/responses` (stream) |
 | Sprache → Text | `muse-voice-transcribe-1.0` | `POST /v1/asr/transcribe` |
-| Figur/Grafiken gestalten (einmalig, offline) | `muse-image-1.0` | `POST /v1/images/generations` |
+| Figur/Grafiken gestalten (einmalig, offline) | `muse-image-1.0` | `POST /v1/images/generations` (immer `output_format:"png"`: Standard ist WebP 1600x1600, `size` wird ignoriert) |
 | Privat-Modus: Dokument lokal lesen (Soll) | Muse Glimmer 30B (Q4, llama.cpp `llama-server`) | lokal, OpenAI-kompatibel |
 | Fallback Open-Weight | Muse Spark Open über Baseten `meta-models/muse-spark-open-1026` | Baseten |
 
@@ -125,7 +132,9 @@ Basis: `https://api.meta.ai/v1`, Header `Authorization: Bearer $MODEL_API_KEY`.
 - Anfrage: `model:"sam-3.1"`, `input` mit `input_text` (kurze Nominalphrase, z. B. `"Absenden button"`) + `input_image`, `stream:true`.
 - Antwort: Text mit Spezial-Tokens, eine Zeile pro Frame: `<0f>` dann pro Treffer `id<|box;x1=..;y1=..;x2=..;y2=..;w=..;h=..|><|mask;...|>`.
 - Boxen: Pixel im Quellbild, Format xyxy, `w/h` = Bildgröße. Masken (base85) brauchen wir nicht → nicht dekodieren.
-- `include_confidence:"true"` setzen → `c=` nutzen, um zwischen mehreren Treffern zu wählen.
+- ~~`include_confidence`~~: gibt Fehler 400 (geprüft 26.10.). Nicht senden. Der Parser ignoriert Masken, nimmt Schlüssel in jeder Reihenfolge und rechnet Boxen um, wenn SAM eine andere Bildgröße meldet.
+- Der Stream endet mit `response.completed`; fehlt es, gilt die Antwort als abgebrochen (`MetaError::StreamCut`, wird wiederholt).
+- SAM findet Dinge nach Form: ein runder Knopf mit Text wird als "button" gefunden, eine flache Fläche ohne Text nicht, Textfelder ("text input field") meist gar nicht.
 - Kein Treffer → keine Zeile. Dann: Muse Spark neu fragen (anderer Begriff) oder UI-Baum.
 - Parser in Rust mit `regex`, Unit-Tests mit festen Beispielzeilen.
 
@@ -137,6 +146,8 @@ Basis: `https://api.meta.ai/v1`, Header `Authorization: Bearer $MODEL_API_KEY`.
 3. Bei mehreren: Muse Spark bekommt das Bild mit nummerierten Boxen und wählt eine Nummer.
 4. Klickpunkt = Box-Mitte → physische Pixel.
 5. Optional: UI-Baum am Punkt fragen (`element_at`) → Name prüfen ("Absenden"?). Wichtig für die Schranke.
+
+**Gebaut (Stand 26.10., nach Live-Tests):** SAM 3.1 und ein Muse-Spark-Aufruf `locate {found, x, y}` laufen parallel. Liegt Sparks Punkt in einer SAM-Box, wird deren Mitte geklickt (kleinste Box gewinnt; beide Modelle sind sich einig). Sonst wählt Spark eine Nummer unter den nummerierten SAM-Boxen; passt keine (oder SAM fand nichts), gilt Sparks eigener Punkt. Grund: SAM fand Textfelder nicht, und bei einer einzigen Box "button" wäre für "Datei auswählen" der falsche Knopf (Absenden) geklickt worden. Für `type_text` sucht der Locator "das Eingabefeld, in das {what} kommt", nicht nur die Wörter für den Nutzer.
 
 ## 6. Agent
 
@@ -172,10 +183,16 @@ loop (max 25 Schritte, max 3 min):
 | `request_approval` | `summary`, `action` | – (Modell darf es selbst anfordern) |
 | `done` | `summary` | frei |
 
+Gebaut (26.10.): `click` und `key` haben zusätzlich `is_commit`, `commit_what`, `commit_to` (füllen die Karte); `type_text` hat `what` ("Ich trage {what} ein."). `request_approval` und `draft_message` sind (noch) nicht gebaut; die Schranke fragt selbst. Alle Schemas sind strikt (`additionalProperties:false`, alle Felder Pflicht, nullable als `["string","null"]`); der String `"null"` gilt als leer.
+
 ### 6.3 Schranke (Freigabe)
 - Stufen: **frei** (lesen, zeigen, merken), **handeln** (klicken, tippen; sichtbar, jederzeit stoppbar), **Commit** (Senden, Absenden, Abschicken, Hochladen eines privaten Dokuments, Bezahlen, Kaufen, Löschen, Kündigen, Submit, Send, Pay, Upload, Delete).
 - Commit wird an DREI Stellen erkannt, eine reicht: Modell meldet es, Wortliste auf `description`/`sam_query`, Name aus dem UI-Baum am Klickpunkt.
-- Karte zeigt: was, an wen, welche Anlagen, Bildausschnitt des Knopfs. Knöpfe: "Ja, senden" / "Ändern" / "Nein". Ohne Antwort in 5 min = Nein.
+- Karte zeigt: was, an wen, welche Anlagen, Bildausschnitt des Knopfs. Knöpfe (gebaut, 26.10.): "Ja, abschicken" bzw. "Ja, anhängen" / "Noch nicht". "Ändern" gibt es nicht: der Nutzer sagt es Pip einfach neu. Ohne Antwort in 5 min = Nein. Die Wartezeit auf die Karte zählt nicht gegen die 3 Minuten des Laufs.
+- Ob die Karte "anhängen" oder "abschicken" sagt, entscheidet nur das Ziel (Beschreibung, SAM-Begriff, UI-Name), nie der Text "Was". Ein Sende-Wort im Ziel gewinnt (Live-Fehler 26.10.: "Absenden" mit "Was: … (Datei au.pdf)" zeigte "Darf ich das anhängen?").
+- Tasten: Enter, Return und Strg+Enter brauchen immer eine Freigabe (Enter im Formular schickt es ab). Ausnahme: ein Enter direkt nach einem freigegebenen Anhängen bestätigt den Datei-Dialog. Leertaste auf einem Sende-Knopf und Umschalt+Entf brauchen eine Freigabe.
+- `type_text` klickt nie auf einen Knopf, der nach Senden oder Hochladen aussieht; dafür gibt es `click` mit `is_commit`.
+- DEMO_MODE: Commit nur auf einer erlaubten Seite (localhost oder `file:///…/fixtures/…`), die `open_url` geöffnet hat (oder die der CLI-Trockenlauf als offen angibt).
 - Jede Commit-Entscheidung → `actions_log`.
 
 ### 6.4 Prompt (Kern)
@@ -187,6 +204,8 @@ loop (max 25 Schritte, max 3 min):
 
 ### 7.1 Ablauf
 Foto/PDF → (Foto: SAM `"sheet of paper"`, zuschneiden, gerade ziehen nur per Box) → Muse Spark (PDF direkt) → JSON → prüfen → speichern → Regeln anwenden.
+- PDF geht direkt als `{"type":"input_file","filename","file_data":"data:application/pdf;base64,…"}` an Muse Spark (geprüft 26.10.: HTTP 200, Daten richtig gelesen).
+- Fotos werden vorher nach EXIF aufgerichtet. Leere Felder und der String `"null"` (kommt live vor) werden zu `null`.
 
 ### 7.2 `DocumentExtract` (JSON, vom Modell)
 ```json
@@ -216,6 +235,8 @@ Daten mit `source_text` belegen; ohne Zitat → als "unsicher" zeigen.
 | `actions_log` | id, at, tool, args_redacted, risk, approved, result |
 
 Ort: `%APPDATA%/papierkram-copilot/`. Dokumente bleiben lokal; an die API geht nur das, was ein Aufruf braucht.
+- Zeiten in der Datenbank: RFC 3339 in UTC (Reihenfolge stimmt auch bei der Zeitumstellung). Fälligkeiten: `YYYY-MM-DD`.
+- Profil-Schlüssel, die der Agent nutzt: `name`, `krankenkasse`, `bundesland`, `lang` ("de"/"en"), im DEMO_MODE `krankenkasse_kontaktformular` (file-URL des Demo-Formulars).
 
 ## 9. Regel-Motor
 - Läuft jede Minute (`tokio::time::interval`). Prüft `deadlines` und Regel-Bedingungen. Feuert Erinnerungen, nie doppelt (`fired_at`).
@@ -228,23 +249,28 @@ Ort: `%APPDATA%/papierkram-copilot/`. Dokumente bleiben lokal; an die API geht n
 | `frist_aus_brief` | `deadlines[]` aus dem Dokument | wie im Brief | Brief selbst |
 
 - Erinnerungen: 3 Tage vorher, 1 Tag vorher (18:00), am Tag (09:00). Feiertage: NRW 2026/2027 fest im Code.
+- Ausnahme `au_lueckenlos`: am Tag vor dem Ende der Krankschreibung um 18:00 und am Fälligkeitstag um 09:00.
+- Bekanntgabe (Widerspruch): der vierte Tag nach dem Datum wird **nicht** verschoben, auch nicht am Wochenende (BSG, 6.5.2010, B 14 AS 12/09 R). Nur das Fristende rückt auf den nächsten Werktag (§ 64 Abs. 3 SGG).
+- Nach einer langen Pause feuert pro Frist nur die letzte fällige Erinnerung; die älteren werden als "skipped" markiert.
 - Jede Meldung endet mit: "Das ist ein Hinweis, keine Rechtsberatung."
 
 ## 10. Pip – Figur und Gefühl
 - Name: **Pip**. Weicher blauer Tropfen (Meta-Blau #0866FF → Violett), kleines gefaltetes Papier als Haarbüschel. Vorlage: `design/maskottchen/b_tropfen_1.png`, gemacht mit Muse Image.
 - Marke: passt zur Farbwelt von Meta, nutzt aber **kein Meta-Logo und keine Meta-Figur** (fremde Assets = Disqualifikation). Im Video: "Built with Meta Muse + SAM".
-- Platz: ruht klein (ca. 72 px) unten rechts. Wenn Pip zeigt oder handelt, fliegt er in einer weichen Kurve zum Ziel und zeigt darauf; danach zurück.
+- Platz: ruht klein (96 px, gebaut 26.10.; 72 px war zu klein zum Anklicken) unten rechts. Wenn Pip zeigt oder handelt, fliegt er in einer weichen Kurve zum Ziel und zeigt darauf; danach zurück.
 - Posen (Muse Image, aus der Vorlage): ruhig, hört zu, denkt, zeigt, freut sich, fragt (Freigabe), schläft (Pause). Freistellen: weißer Hintergrund → transparent (SAM 3.1 Maske oder Farbschlüssel).
 - Bewegung: leichtes Atmen im Ruhezustand, Blinzeln, kleine Hüpfer bei Meldungen. Keine hektischen Effekte.
 - Sprechblase: große Schrift (mind. 18 px), max. 2 Sätze, immer mit klaren Knöpfen.
 - Stimme: ruhig, langsam, Deutsch oder Englisch.
-- Erster Start: Pip fliegt ins Bild, stellt sich vor, fragt Name, Krankenkasse, Bundesland, zeigt einmal "Zieh einen Brief auf mich".
+- Erster Start: Pip fliegt ins Bild, stellt sich vor, fragt nur den Namen, zeigt einmal "Zieh einen Brief auf mich". Krankenkasse kommt aus dem ersten Brief, Bundesland erst, wenn eine Frist es braucht ("Wohnst du in Nordrhein-Westfalen?").
 
 ## 10b. Overlay (Tauri 2)
 - Fenster: `transparent`, `decorations:false`, `alwaysOnTop`, `skipTaskbar`, ganzer Bildschirm; `set_ignore_cursor_events(true)`, aus nur über Figur/Karte.
 - Zustände der Figur: ruhig, hört zu, denkt, zeigt (Pfeil zur Box), handelt, wartet auf Freigabe, Fehler.
 - Tray-Menü: Pause, Fristen-Liste, Privat-Modus an/aus, Beenden.
 - Hotkeys: `Ctrl+Shift+Space` halten = sprechen; `Esc` (global, während Agent läuft) = Stopp.
+- Maus bewegen = Stopp: etwa 100 ms stetige Bewegung über mindestens 60 px, aus während Karte oder Frage offen ist und 2 s nach Start oder "Ja". `PIP_MOUSE_STOP=0` schaltet es ab.
+- Schalter zum Testen: `PIP_MOCK=1` (gespielte Demo ohne Kern), `PIP_WINDOWED=1` (Eckfenster statt Overlay), `PIP_MUTE=1`, `PIP_LANG=en`, `PIP_SKIP_ONBOARDING=1`, `PIP_TICK_SECS`, `PIP_QUIT_AFTER_SECS`.
 - Mitteilungen: `tauri-plugin-notification` (Windows-Toast).
 - Sprache raus: `tts` (Windows OneCore/SAPI), Deutsch und Englisch.
 
@@ -256,7 +282,7 @@ MODEL_API_BASE=https://api.meta.ai/v1
 AGENT_MODEL=muse-spark-1.3
 LOCAL_DOC_MODEL_URL=http://127.0.0.1:8080/v1   # Privat-Modus (optional)
 BASETEN_API_KEY=...                            # optional
-DEMO_MODE=1                                    # Commit-Aktionen nur auf fixtures/
+DEMO_MODE=1                                    # Standard AN (auch ohne Eintrag); DEMO_MODE=0 schaltet aus
 ```
 
 ## 12. Datenschutz und Sicherheit
@@ -271,7 +297,7 @@ DEMO_MODE=1                                    # Commit-Aktionen nur auf fixture
 ### 13.1 Auf Linux (täglich, schnell)
 - `cargo test` für `core`: SAM-Parser, Regel-Motor (Fristen mit Wochenenden/Feiertagen), JSON-Prüfung, Schranke (Wortliste).
 - `core`-Integrationstest gegen die echte API mit `fixtures/` (kostet Cent, nur bei Bedarf: `cargo test -- --ignored`).
-- CLI `copilot-cli` im `core`: Dokument lesen, Frist zeigen, SAM-Box auf einem Bild zeichnen – ohne Overlay.
+- CLI `copilot-cli` (Crate `crates/cli`), ohne Overlay: `read <datei>` (Brief lesen + Vergleich mit `*.expected.json`), `sam <bild> <begriff>` (Boxen + PNG mit Nummern), `ground <bild> <beschreibung>`, `rules --now <zeit>` (Fristen + fällige Erinnerungen, ohne API), `agent "<auftrag>"` (Trockenlauf auf Bildschirmfotos: plant, zeigt Karten, klickt nichts), `transcribe <wav>`, `eval` (10 Aufgaben → `eval/results.md`).
 
 ### 13.2 Auf Windows
 1. **Bauen**: GitHub Actions (`windows-latest`) baut bei jedem Push eine `.exe` (Repo ist eh öffentlich → kostenlos). Schnell lokal: `cargo xwin build --target x86_64-pc-windows-msvc` auf Linux.

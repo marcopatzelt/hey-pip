@@ -1,0 +1,26 @@
+[package]
+name = "copilot-platform"
+description = "Screen capture, mouse/keyboard input and UI tree per OS (Windows real, Linux stub, fake for tests)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "copilot_platform"
+
+[dependencies]
+copilot-core.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+image.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+xcap.workspace = true
+enigo.workspace = true
+uiautomation.workspace = true
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

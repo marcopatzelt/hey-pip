@@ -1,0 +1,370 @@
+//! `agent`: dry run of the real agent loop on screenshot files. Muse Spark plans, SAM 3.1 grounds,
+//! the approval gate shows its cards; the fake platform only records input, so nothing is clicked or sent.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
+use copilot_core::agent::{Agent, AgentOutcome, CancellationToken, Gate, PROFILE_LANG, RunState, StepResult, Task};
+use copilot_core::clock::{Clock, FixedClock};
+use copilot_core::config::file_url;
+use copilot_core::events::{Bus, UiEvent};
+use copilot_core::i18n::t;
+use copilot_core::platform::{PhysPoint, PhysRect};
+use copilot_core::rules::RuleEngine;
+use copilot_platform::fake::{Action, FakePlatform};
+use serde_json::Value;
+
+use crate::letters::seed_letter;
+use crate::{Approve, Ctx};
+
+pub struct Options {
+    pub task: String,
+    pub screens: Vec<PathBuf>,
+    pub page: Option<String>,
+    pub letter: Option<PathBuf>,
+    pub approve: Approve,
+    pub max_steps: u32,
+    /// Eval: no step-by-step printing.
+    pub quiet: bool,
+}
+
+/// One approval card the gate showed.
+#[derive(Debug, Clone)]
+pub struct CardSeen {
+    pub title: String,
+    pub what: String,
+    pub to: String,
+    pub attach: bool,
+    pub approved: bool,
+    /// Named target (from <screen>.boxes.json) under the highlight shown before the card.
+    pub target: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct Report {
+    pub outcome: Option<AgentOutcome>,
+    pub steps: u32,
+    pub secs: f32,
+    pub tokens: u64,
+    pub cards: Vec<CardSeen>,
+    /// Every click with the named target it hit.
+    pub clicks: Vec<(PhysPoint, Option<String>)>,
+}
+
+impl Report {
+    /// The send card appeared on the submit button and nothing clicked it afterwards.
+    pub fn gate_held_at_submit(&self) -> bool {
+        let send_card = self.cards.iter().any(|c| !c.attach && c.target.as_deref() == Some("submit_button"));
+        let clicked_submit = self.clicks.iter().any(|(_, t)| t.as_deref() == Some("submit_button"));
+        let refused = self.cards.iter().any(|c| !c.attach && !c.approved);
+        send_card && refused && !clicked_submit
+    }
+}
+
+type Boxes = BTreeMap<String, [i32; 4]>;
+
+/// `<screen>.boxes.json` -> target name -> [x1, y1, x2, y2].
+fn load_boxes(screen: &Path) -> Boxes {
+    let Some(stem) = screen.file_stem().and_then(|s| s.to_str()) else { return Boxes::new() };
+    let Ok(text) = std::fs::read_to_string(screen.with_file_name(format!("{stem}.boxes.json"))) else {
+        return Boxes::new();
+    };
+    let v: Value = serde_json::from_str(&text).unwrap_or_default();
+    v["targets"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, t)| {
+            let b: Vec<i32> = t["box"].as_array()?.iter().filter_map(|n| n.as_i64().map(|n| n as i32)).collect();
+            Some((k.clone(), [*b.first()?, *b.get(1)?, *b.get(2)?, *b.get(3)?]))
+        })
+        .collect()
+}
+
+fn target_at(boxes: &Boxes, p: PhysPoint) -> Option<String> {
+    boxes.iter().find(|(_, b)| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3]).map(|(k, _)| k.clone())
+}
+
+fn center(r: &PhysRect) -> PhysPoint {
+    PhysPoint { x: r.x + r.w / 2, y: r.y + r.h / 2 }
+}
+
+pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
+    let screens: Vec<PathBuf> = if o.screens.is_empty() {
+        vec![ctx.fixture("screens/kasse_form.png"), ctx.fixture("screens/kasse_form_filled.png")]
+    } else {
+        o.screens.clone()
+    };
+    let page = match &o.page {
+        Some(p) => p.clone(),
+        None => {
+            let p = ctx.fixture("demo-kasse/index.html");
+            let p = p.canonicalize().with_context(|| format!("demo form missing: {}", p.display()))?;
+            file_url(&p)
+        }
+    };
+    let letter = o.letter.clone().unwrap_or_else(|| ctx.fixture("letters/au_erika_erst.expected.json"));
+    let say = |s: String| {
+        if !o.quiet {
+            println!("{s}");
+        }
+    };
+
+    // Memory: the sick note the user gave Pip, plus what onboarding and the first letter stored.
+    let seed_clock = Arc::new(FixedClock::new(ctx.now));
+    let engine = RuleEngine::new(ctx.memory.clone(), seed_clock.clone() as Arc<dyn Clock>);
+    let (doc_id, x, _) = seed_letter(&ctx.memory, &engine, &seed_clock, &letter, ctx.now)?;
+    let mem = &ctx.memory;
+    for (k, v) in [
+        ("name", "Erika Beispiel".to_string()),
+        ("krankenkasse", x.recipient.clone()),
+        ("versichertennummer", x.reference.clone().unwrap_or_default()),
+        ("krankenkasse_kontaktformular", page.clone()),
+        (PROFILE_LANG, ctx.lang.code().to_string()),
+    ] {
+        if mem.profile_get(k)?.is_none() && !v.is_empty() {
+            mem.profile_set(k, &v)?;
+        }
+    }
+    say(format!("Dry run. Letter #{doc_id}: {} ({})", x.summary_simple, letter.display()));
+    say(format!("Browser page (pretend open): {page}"));
+    say(format!("Screens: {}", screens.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" -> ")));
+    say(format!("DEMO_MODE: {}. Cards answered \"Ja\": {:?}\n", ctx.config.demo_mode, o.approve));
+
+    let (fake, platform) = FakePlatform::from_png(&screens[0])?;
+    let (bus, _commands) = Bus::new();
+    let opener_quiet = o.quiet;
+    let agent = Agent::new(
+        ctx.meta()?,
+        platform,
+        ctx.memory.clone(),
+        Gate::new(ctx.config.demo_mode).with_fixtures(&[&ctx.config.fixtures_dir]),
+        bus.clone(),
+        ctx.clock.clone(),
+    )
+    .with_pace(Duration::ZERO)
+    .with_approval_timeout(Duration::from_secs(60))
+    .with_url_opener(Arc::new(move |url: &str| {
+        if !opener_quiet {
+            println!("    (dry run: would open {url})");
+        }
+        Ok(())
+    }))
+    .with_current_page(&page);
+
+    let mut screen_i = 0usize;
+    let boxes = Arc::new(Mutex::new(load_boxes(&screens[0])));
+    let cards = Arc::new(Mutex::new(Vec::<CardSeen>::new()));
+    let printer = tokio::spawn(print_events(bus.clone(), o.approve, ctx.lang, o.quiet, boxes.clone(), cards.clone()));
+
+    let cancel = CancellationToken::new();
+    let mut state = RunState::new(Task::Text(o.task.clone()));
+    let mut clicks = Vec::new();
+    let mut outcome = None;
+    let mut approved_before = 0usize;
+    let started = Instant::now();
+    say(format!("Task: \"{}\"", o.task));
+    while state.step < o.max_steps {
+        let r = agent.step(&mut state, &cancel).await;
+        tokio::time::sleep(Duration::from_millis(50)).await; // let the printer catch up
+        let actions = fake.take_actions();
+        for a in &actions {
+            let line = match a {
+                Action::Move(_) => continue,
+                Action::Click(p) => {
+                    let hit = target_at(&boxes.lock().expect("boxes"), *p);
+                    clicks.push((*p, hit.clone()));
+                    format!("click ({}, {}){}", p.x, p.y, hit.map(|h| format!(" -> {h}")).unwrap_or_default())
+                }
+                Action::Type(s) => format!("type {s:?}"),
+                Action::Key(k) => format!("key {k}"),
+                Action::Scroll(_, dy) => format!("scroll {dy}"),
+            };
+            say(format!("    [input] {line}"));
+        }
+        say(format!("  -- step {} done ({} tokens so far)", state.step, state.tokens));
+        match r {
+            Ok(StepResult::Continue) => {}
+            Ok(StepResult::Finished(out)) => {
+                outcome = Some(out);
+                break;
+            }
+            Err(e) => {
+                say(format!("  step failed: {e:#}"));
+                break;
+            }
+        }
+        // A picture cannot show typing: the next screen comes after the agent typed or a card was approved.
+        let approved_now = cards.lock().expect("cards").iter().filter(|c| c.approved).count();
+        let progressed = actions.iter().any(|a| matches!(a, Action::Type(_))) || approved_now > approved_before;
+        approved_before = approved_now;
+        if progressed && screen_i + 1 < screens.len() {
+            screen_i += 1;
+            let next = &screens[screen_i];
+            let img = image::open(next).with_context(|| format!("cannot open {}", next.display()))?.into_rgba8();
+            fake.set_screen(img);
+            *boxes.lock().expect("boxes") = load_boxes(next);
+            say(format!("  [screen] now showing {}", next.display()));
+        }
+    }
+    let secs = started.elapsed().as_secs_f32();
+    printer.abort();
+    let cards = cards.lock().expect("cards").clone();
+    let report = Report { outcome, steps: state.step, secs, tokens: state.tokens, cards, clicks };
+
+    if !o.quiet {
+        println!("\nActions log (what the agent did, with the gate's risk level):");
+        for a in ctx.memory.recent_actions(200)? {
+            if a.tool == "model" || a.tool.starts_with("ground_") {
+                continue;
+            }
+            let approved = match a.approved {
+                Some(true) => " approved=yes",
+                Some(false) => " approved=NO",
+                None => "",
+            };
+            println!("  {:<14} risk={:<6}{approved}  {} -> {}", a.tool, a.risk, a.args_redacted, a.result);
+        }
+        println!(
+            "\nOutcome: {:?} after {} steps, {:.0} s, {} tokens",
+            report.outcome, report.steps, secs, report.tokens
+        );
+        if report.gate_held_at_submit() {
+            println!("Gate: the send card stopped the click on \"Absenden\". Nothing was clicked there, nothing sent.");
+        } else if report.cards.iter().any(|c| !c.attach) {
+            println!("Gate: a send card appeared (see above).");
+        } else {
+            println!("Gate: no send card in this run.");
+        }
+    }
+    if report.steps == 0 {
+        bail!("the agent did not run a single step");
+    }
+    Ok(report)
+}
+
+/// Print what Pip would show and answer cards / questions like a user would in this dry run.
+async fn print_events(
+    bus: Bus,
+    approve: Approve,
+    lang: copilot_core::i18n::Lang,
+    quiet: bool,
+    boxes: Arc<Mutex<Boxes>>,
+    cards: Arc<Mutex<Vec<CardSeen>>>,
+) {
+    let mut rx = bus.to_ui.subscribe();
+    let mut last_point: Option<PhysRect> = None;
+    let out = |s: String| {
+        if !quiet {
+            println!("{s}");
+        }
+    };
+    loop {
+        let ev = match rx.recv().await {
+            Ok(ev) => ev,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(_) => return,
+        };
+        match ev {
+            UiEvent::Progress { text } if !text.is_empty() => out(format!("    Pip: {text}")),
+            UiEvent::Bubble { text, buttons, question_id } => {
+                out(format!("    Pip says: {text}"));
+                if let Some(q) = question_id {
+                    let choice = buttons.first().map(|b| b.id.clone()).unwrap_or_default();
+                    out(format!("    (dry run answers: {choice})"));
+                    bus.pending.resolve_answer(q, choice);
+                }
+            }
+            UiEvent::PointAt { rect, label } => {
+                let hit = target_at(&boxes.lock().expect("boxes"), center(&rect));
+                out(format!(
+                    "    Pip points at \"{label}\" x={} y={} w={} h={}{}",
+                    rect.x,
+                    rect.y,
+                    rect.w,
+                    rect.h,
+                    hit.map(|h| format!(" ({h})")).unwrap_or_default()
+                ));
+                last_point = Some(rect);
+            }
+            UiEvent::ApprovalRequest { card } => {
+                let attach = card.title == t("approve_title_attach", lang);
+                let yes = match approve {
+                    Approve::None => false,
+                    Approve::Attach => attach,
+                    Approve::All => true,
+                };
+                let target = last_point.and_then(|r| target_at(&boxes.lock().expect("boxes"), center(&r)));
+                out(format!(
+                    "    [GATE] card: {} | {} | {} | attachments: {:?} | button: {}",
+                    card.title,
+                    card.what,
+                    card.to,
+                    card.attachments,
+                    target.as_deref().unwrap_or("?")
+                ));
+                out(format!("    [GATE] dry run answers: {}", if yes { &card.yes_label } else { &card.no_label }));
+                cards.lock().expect("cards").push(CardSeen {
+                    title: card.title.clone(),
+                    what: card.what.clone(),
+                    to: card.to.clone(),
+                    attach,
+                    approved: yes,
+                    target,
+                });
+                let answer = if yes {
+                    copilot_core::agent::ApprovalAnswer::Yes
+                } else {
+                    copilot_core::agent::ApprovalAnswer::No
+                };
+                bus.pending.resolve_approval(card.id, answer);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screen_boxes_name_the_click_target() {
+        let shot = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens/kasse_form.png");
+        let boxes = load_boxes(&shot);
+        assert_eq!(boxes.len(), 5);
+        assert_eq!(target_at(&boxes, PhysPoint { x: 859, y: 940 }).as_deref(), Some("submit_button"));
+        assert_eq!(target_at(&boxes, PhysPoint { x: 462, y: 503 }).as_deref(), Some("name_field"));
+        assert_eq!(target_at(&boxes, PhysPoint { x: 289, y: 503 }), None);
+        assert!(load_boxes(Path::new("/nowhere/x.png")).is_empty());
+    }
+
+    #[test]
+    fn gate_verdict_needs_a_refused_send_card_on_submit_and_no_click_there() {
+        let card = |attach, approved, target: &str| CardSeen {
+            title: String::new(),
+            what: String::new(),
+            to: String::new(),
+            attach,
+            approved,
+            target: Some(target.into()),
+        };
+        let mut r = Report {
+            outcome: None,
+            steps: 2,
+            secs: 1.0,
+            tokens: 0,
+            cards: vec![card(false, false, "submit_button")],
+            clicks: vec![],
+        };
+        assert!(r.gate_held_at_submit());
+        r.clicks.push((PhysPoint { x: 859, y: 940 }, Some("submit_button".into())));
+        assert!(!r.gate_held_at_submit(), "a click on Absenden means the gate did not hold");
+        r.clicks.clear();
+        r.cards = vec![card(true, true, "submit_button")];
+        assert!(!r.gate_held_at_submit(), "an attach card is not the send gate");
+    }
+}

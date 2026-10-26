@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pip</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Plain HTML/CSS/JS, no bundler. Everything is placed by main.js. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-2.1A7 7 0 0 0 19 12h-2Z" fill="currentColor"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="M16.5 6.5v10a4.5 4.5 0 0 1-9 0V5a3 3 0 0 1 6 0v10.5a1.5 1.5 0 0 1-3 0V6.5H9v9a3 3 0 0 0 6 0V5a4.5 4.5 0 0 0-9 0v11.5a6 6 0 0 0 12 0v-10h-1.5Z" fill="currentColor"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6 6.4 5Z" fill="currentColor"/></symbol>
+    <symbol id="i-letter" viewBox="0 0 24 24"><path d="M6 2h8l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm7 1.5V8h4.5L13 3.5ZM7 12v1.5h10V12H7Zm0 3.5V17h7v-1.5H7Z" fill="currentColor"/></symbol>
+    <symbol id="i-cal" viewBox="0 0 24 24"><path d="M7 2v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7Zm-2 8h14v10H5V10Z" fill="currentColor"/></symbol>
+  </svg>
+
+  <!-- target highlight (never blocks clicks) -->
+  <div id="highlight" class="highlight" hidden><span id="hl-label" class="hl-label"></span></div>
+  <div id="arrow" class="arrow" hidden></div>
+
+  <!-- Pip -->
+  <div id="pip" class="pip state-idle" role="button" tabindex="-1" aria-label="Pip">
+    <div id="drop-ring" class="drop-ring"></div>
+    <div class="pip-floor"></div>
+    <div id="pip-body" class="pip-body"><img id="pip-img" src="pip/idle.png" alt="" draggable="false"></div>
+    <div id="zzz" class="zzz" aria-hidden="true"><span>z</span><span>z</span><span>z</span></div>
+  </div>
+
+  <!-- everything Pip says sits in one column beside him -->
+  <div id="column" class="column">
+    <section id="panel" class="card panel" hidden>
+      <h2 id="panel-title"></h2>
+      <ul id="panel-list"></ul>
+      <div class="buttons"><button id="panel-close" class="btn"></button></div>
+    </section>
+
+    <section id="card" class="card approval" hidden aria-live="assertive">
+      <h2 id="card-title"></h2>
+      <p id="card-what" class="row"></p>
+      <p id="card-to" class="row"></p>
+      <div id="card-att" class="att"></div>
+      <div id="card-filled" class="filled" hidden><p id="card-filled-title"></p><ul id="card-filled-list"></ul></div>
+      <figure id="card-crop" class="crop" hidden><figcaption id="card-crop-cap"></figcaption><img id="card-crop-img" alt=""></figure>
+      <div class="buttons">
+        <button id="card-yes" class="btn primary big"></button>
+        <button id="card-no" class="btn big"></button>
+      </div>
+    </section>
+
+    <section id="ask" class="card ask" hidden>
+      <button id="ask-close" class="icon-btn" aria-label=""><svg><use href="#i-close"/></svg></button>
+      <h2 id="ask-title"></h2>
+      <form id="ask-form" autocomplete="off">
+        <textarea id="ask-input" rows="2"></textarea>
+        <div id="ask-chips" class="chips"></div>
+        <div class="buttons">
+          <button id="ask-mic" type="button" class="btn mic"><svg><use href="#i-mic"/></svg><span></span></button>
+          <button id="ask-go" type="submit" class="btn primary"></button>
+        </div>
+      </form>
+      <div class="links">
+        <button id="ask-letter" type="button" class="link"><svg><use href="#i-letter"/></svg><span></span></button>
+        <button id="ask-deadlines" type="button" class="link"><svg><use href="#i-cal"/></svg><span></span></button>
+        <button id="ask-pause" type="button" class="link quiet"><span></span></button>
+      </div>
+    </section>
+
+    <p id="note" class="note" hidden aria-live="polite"></p>
+
+    <section id="bubble" class="bubble" hidden aria-live="polite">
+      <button id="bubble-close" class="icon-btn" hidden aria-label=""><svg><use href="#i-close"/></svg></button>
+      <p id="bubble-text"></p>
+      <p id="bubble-count" class="count" hidden></p>
+      <div id="bubble-extra"></div>
+      <div id="bubble-buttons" class="buttons"></div>
+    </section>
+
+  </div>
+
+  <!-- while Pip works: one line of what he does + the big Stopp button, right at Pip -->
+  <div id="dock" class="dock">
+    <div id="progress" class="progress" hidden><span class="dots"><i></i><i></i><i></i></span><span id="progress-text"></span></div>
+    <button id="stop" class="btn stop" hidden><svg><use href="#i-stop"/></svg><span></span></button>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>

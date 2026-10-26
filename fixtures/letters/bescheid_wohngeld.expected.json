@@ -1,0 +1,16 @@
+{
+  "doc_type": "bescheid",
+  "date": "2026-10-14",
+  "reference": "50.2-WG-2026-04711",
+  "sender_contains": "Beispielstadt",
+  "recipient_contains": "Erika Beispiel",
+  "au": null,
+  "deadlines_due": [],
+  "rule_deadlines": [
+    {
+      "rule_id": "widerspruch_bescheid",
+      "due": "2026-11-18"
+    }
+  ],
+  "note": "Widerspruch: 1 month after Bekanntgabe; Bekanntgabe = 14.10. + 4 days = 18.10. -> 18.11.2026. The letter itself names no date (model must not calculate one)."
+}

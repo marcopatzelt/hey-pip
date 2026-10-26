@@ -1,0 +1,18 @@
+{
+  "doc_type": "brief",
+  "date": "2026-10-27",
+  "reference": "G123456789",
+  "sender_contains": "Gesundkasse",
+  "recipient_contains": "Erika Beispiel",
+  "au": null,
+  "deadlines_due": [
+    "2026-11-13"
+  ],
+  "rule_deadlines": [
+    {
+      "rule_id": "frist_aus_brief",
+      "due": "2026-11-13"
+    }
+  ],
+  "note": "Insurer asks for a questionnaire by 13.11.2026."
+}

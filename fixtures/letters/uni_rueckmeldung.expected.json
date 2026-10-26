@@ -1,0 +1,18 @@
+{
+  "doc_type": "brief",
+  "date": "2026-10-20",
+  "reference": "7654321",
+  "sender_contains": "Universität Beispielstadt",
+  "recipient_contains": "Jonas Muster",
+  "au": null,
+  "deadlines_due": [
+    "2027-01-15"
+  ],
+  "rule_deadlines": [
+    {
+      "rule_id": "frist_aus_brief",
+      "due": "2027-01-15"
+    }
+  ],
+  "note": "Student re-registration: fee must arrive by 15.01.2027."
+}

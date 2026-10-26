@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Pip preview</title>
+  <!-- Dev tool: runs ui/main.js in a normal browser with a fake Tauri bridge and an invented form
+       behind it. Scenes: #onboarding #story #reminder #error #deadlines #state (all invented data). -->
+  <base href="../ui/">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    #desk { position: fixed; inset: 0; z-index: -1; background: linear-gradient(160deg, #dfe7f3, #c9d4e6); font-family: "Segoe UI", system-ui, sans-serif; }
+    #desk .win { position: absolute; left: 12%; top: 14%; width: 46%; height: 64%; background: #fff; border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,.18); }
+    #desk .bar { height: 40px; background: #f1f3f7; border-radius: 10px 10px 0 0; border-bottom: 1px solid #e3e6ee; padding: 9px 16px; font-size: 15px; color: #555; }
+    #desk label { position: absolute; font-size: 15px; color: #333; }
+    #desk .f { position: absolute; border: 1px solid #b9c0cc; border-radius: 6px; background: #fff; }
+    #desk .send { position: absolute; background: #2e7d32; color: #fff; border-radius: 6px; display: grid; place-items: center; font-size: 17px; }
+    #desk .file { position: absolute; background: #eceff4; border: 1px solid #b9c0cc; border-radius: 6px; display: grid; place-items: center; font-size: 15px; }
+    #log { position: fixed; left: 8px; bottom: 8px; font: 12px monospace; color: #345; max-width: 40vw; white-space: pre; opacity: .7; }
+  </style>
+  <script>
+  (() => {
+    const S = {
+      onb_hello: "Hallo! Ich bin Pip. Ich helfe dir mit Briefen und Fristen.", onb_ask_name: "Wie darf ich dich nennen?",
+      onb_next: "Weiter", onb_privacy: "Deine Briefe bleiben auf diesem Computer. Zum Lesen schicke ich nur das Bild an Meta.",
+      onb_drop_letter: "Zieh einen Brief auf mich. Oder drück hier:", onb_name_placeholder: "Dein Vorname",
+      onb_ask_state: "Wohnst du in Nordrhein-Westfalen?", onb_state_pick: "In welchem Bundesland wohnst du?",
+      states_list: "Baden-Württemberg|Bayern|Berlin|Brandenburg|Bremen|Hamburg|Hessen|Mecklenburg-Vorpommern|Niedersachsen|Nordrhein-Westfalen|Rheinland-Pfalz|Saarland|Sachsen|Sachsen-Anhalt|Schleswig-Holstein|Thüringen",
+      btn_pick_letter: "Brief auswählen", btn_yes: "Ja", btn_elsewhere: "Woanders", ask_what: "Was soll ich tun?",
+      ask_placeholder: "Schreib es hier hin. Oder halte das Mikrofon gedrückt.", btn_go: "Los", btn_mic: "Gedrückt halten und sprechen",
+      btn_close: "Schließen", btn_ok: "Gut", thinking: "Ich schaue mir das an …", listening: "Ich höre zu …", btn_stop: "Stopp",
+      btn_resume: "Weiter", btn_why: "Warum?", btn_retry: "Nochmal", btn_later: "Später", approve_attachments: "Anhang",
+      approve_button_preview: "Diesen Knopf drücke ich:", drop_hint: "Lass den Brief los. Ich lese ihn.",
+      deadlines_title: "Deine Fristen", tray_deadlines: "Meine Fristen", deadlines_none: "Du hast gerade keine offenen Fristen.",
+      hint_not_legal_advice: "Das ist ein Hinweis, keine Rechtsberatung.",
+    };
+    const handlers = {};
+    window.addEventListener("error", (e) => log("ERR " + e.message + " @" + e.lineno));
+    window.addEventListener("unhandledrejection", (e) => log("REJ " + (e.reason && e.reason.message || e.reason)));
+    const emit = (name, payload) => (handlers[name] || []).forEach((cb) => cb({ payload }));
+    var log = (m) => { const l = document.getElementById("log"); if (l) l.textContent = (m + "\n" + l.textContent).slice(0, 900); };
+    const dpr = () => window.devicePixelRatio || 1;
+    const rect = (x, y, w, h) => ({ x: Math.round(innerWidth * x * dpr()), y: Math.round(innerHeight * y * dpr()), w: Math.round(innerWidth * w * dpr()), h: Math.round(innerHeight * h * dpr()) });
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    let approve = null;
+    window.__TAURI__ = {
+      core: {
+        invoke: async (cmd, args) => {
+          if (cmd === "ui_strings") return S;
+          if (cmd === "overlay_info") return { x: 0, y: 0, w: innerWidth * dpr(), h: innerHeight * dpr(), scale: dpr(), windowed: false };
+          if (cmd === "ui_ready") { setTimeout(scene, 300); return; }
+          if (cmd === "ui_command" && args.cmd.type !== "hit_rects") {
+            log(JSON.stringify(args.cmd));
+            if (args.cmd.type === "approve" && approve) approve(args.cmd.answer);
+            if (args.cmd.type === "onboarding_answer" && args.cmd.step === "ask_name") {
+              emit("ui", { type: "pip", state: "happy" });
+              emit("ui", { type: "bubble", text: `Schön, dich kennenzulernen, ${args.cmd.value}!`, buttons: [], question_id: null });
+              await wait(2600); emit("ui", { type: "pip", state: "idle" }); emit("ui", { type: "onboarding", step: "first_letter" });
+            }
+            if (args.cmd.type === "text") story();
+          }
+        },
+      },
+      event: { listen: async (name, cb) => { (handlers[name] ||= []).push(cb); } },
+    };
+    const ui = (ev) => emit("ui", ev);
+    async function card(title, yes) {
+      ui({ type: "approval_request", card: { id: crypto.randomUUID(), title, what: "Was: deine Krankschreibung 20.10.–30.10.", to: "An: Gesundkasse (Kontaktformular)", attachments: ["krankschreibung_beispiel.pdf"], crop_png_b64: null, yes_label: yes, no_label: "Noch nicht" } });
+      return new Promise((r) => (approve = r));
+    }
+    async function story() {
+      emit("app", { type: "acting", on: true });
+      ui({ type: "pip", state: "thinking" }); ui({ type: "progress", text: "Ich schaue mir das an …" }); await wait(1500);
+      ui({ type: "pip", state: "acting" }); ui({ type: "point_at", rect: rect(0.18, 0.30, 0.30, 0.05), label: "Name" }); ui({ type: "progress", text: "Ich trage deinen Namen ein." }); await wait(1800);
+      ui({ type: "point_at", rect: rect(0.18, 0.40, 0.30, 0.05), label: "Versichertennummer" }); ui({ type: "progress", text: "Ich trage deine Versichertennummer ein." }); await wait(1800);
+      ui({ type: "point_at", rect: rect(0.18, 0.50, 0.14, 0.05), label: "Datei anhängen" }); ui({ type: "pip", state: "asking" }); ui({ type: "progress", text: "" });
+      if (await card("Darf ich die Krankschreibung anhängen?", "Ja, anhängen") !== "yes") return;
+      ui({ type: "point_at", rect: rect(0.36, 0.62, 0.12, 0.06), label: "Absenden" }); ui({ type: "pip", state: "asking" });
+      if (await card("Darf ich das abschicken?", "Ja, abschicken") !== "yes") return;
+      ui({ type: "pip", state: "acting" }); ui({ type: "progress", text: "Ich klicke auf Absenden." }); await wait(1200);
+      ui({ type: "point_clear" }); ui({ type: "fly_home" }); ui({ type: "progress", text: "" }); ui({ type: "pip", state: "happy" });
+      ui({ type: "bubble", text: "Erledigt. Ich merke mir: Krankschreibung ist bei der Kasse.", buttons: [], question_id: null });
+      emit("app", { type: "acting", on: false }); await wait(2000); ui({ type: "pip", state: "idle" });
+    }
+    function scene() {
+      const name = location.hash.slice(1) || "onboarding";
+      if (name === "onboarding") ui({ type: "onboarding", step: "ask_name" });
+      if (name === "letter") ui({ type: "onboarding", step: "first_letter" });
+      if (name === "story") story();
+      if (name === "card") { ui({ type: "point_at", rect: rect(0.36, 0.62, 0.12, 0.06), label: "Absenden" }); ui({ type: "pip", state: "asking" }); emit("app", { type: "acting", on: true }); card("Darf ich das abschicken?", "Ja, abschicken"); }
+      if (name === "reminder") { ui({ type: "pip", state: "asking" }); ui({ type: "reminder", reminder_id: 1, text: "Deine Krankschreibung endet morgen. Wenn du noch krank bist, brauchst du bis Montag, 2. November, eine neue.", why: "Ohne lückenlose Krankschreibung kann die Krankenkasse für die fehlenden Tage kein Krankengeld zahlen. Regel: § 46 Satz 2 SGB V. Das ist ein Hinweis, keine Rechtsberatung.", buttons: [{ id: "remind:x", label: "Erinnere mich Montag", primary: true }, { id: "done", label: "Ich bin gesund", primary: false }, { id: "later", label: "Später", primary: false }] }); }
+      if (name === "error") { emit("app", { type: "retryable", cmd: { type: "text", text: "x" } }); ui({ type: "pip", state: "error" }); ui({ type: "error", text: "Ich komme gerade nicht ins Internet. Ich versuche es gleich nochmal.", retry: true }); }
+      if (name === "deadlines") emit("app", { type: "deadlines", items: [{ title: "Neue Krankschreibung", due: "Montag, 2. November", why: "Ohne lückenlose Krankschreibung kann die Krankenkasse für die fehlenden Tage kein Krankengeld zahlen." }, { title: "Widerspruch gegen Bescheid", due: "Freitag, 27. November", why: "Gegen einen Bescheid kannst du einen Monat lang Widerspruch einlegen." }] });
+      if (name === "ask") document.getElementById("pip").click();
+      if (name === "sleep") { ui({ type: "pip", state: "sleeping" }); emit("app", { type: "paused", on: true }); ui({ type: "bubble", text: "Ich mache Pause. Klick mich an, dann bin ich wieder da.", buttons: [], question_id: null }); }
+      if (name === "drag") emit("app", { type: "drag", state: "enter" });
+    }
+  })();
+  </script>
+</head>
+<body>
+  <div id="desk">
+    <div class="win"><div class="bar">Gesundkasse – Kontaktformular (Demo)</div></div>
+  </div>
+  <div id="log"></div>
+  <!-- the real overlay markup, copied from ui/index.html at load -->
+  <script>
+    (async () => {
+      const html = await (await fetch("index.html")).text().catch(() => "");
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      for (const n of [...doc.body.children]) if (n.tagName !== "SCRIPT") document.body.append(n);
+      // fake form fields at the same screen fractions as the mock story
+      const desk = document.getElementById("desk");
+      const add = (cls, x, y, w, h, text) => { const d = document.createElement("div"); d.className = cls; Object.assign(d.style, { left: x * 100 + "%", top: y * 100 + "%", width: w * 100 + "%", height: h * 100 + "%" }); if (text) d.textContent = text; desk.append(d); };
+      add("f", .18, .30, .30, .05); add("f", .18, .40, .30, .05); add("file", .18, .50, .14, .05, "Datei auswählen"); add("send", .36, .62, .12, .06, "Absenden");
+      const lab = (t, y) => { const l = document.createElement("label"); l.textContent = t; Object.assign(l.style, { left: "18%", top: (y - .03) * 100 + "%" }); desk.append(l); };
+      lab("Name", .30); lab("Versichertennummer", .40); lab("Krankschreibung", .50);
+      const s = document.createElement("script"); s.src = "main.js"; document.body.append(s);
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test core (no API calls; #[ignore] tests are skipped)
+        run: cargo test -p copilot-core --locked
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test core, platform, cli
+        run: cargo test -p copilot-core -p copilot-platform -p copilot-cli --locked
+      - name: Build release (app + cli)
+        run: cargo build --release --locked -p copilot-app -p copilot-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pip-windows-x64
+          path: |
+            target/release/copilot-app.exe
+            target/release/copilot-cli.exe
+            fixtures/**
+          if-no-files-found: error
