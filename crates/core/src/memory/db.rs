@@ -836,6 +836,41 @@ impl Memory {
         )?;
         Ok(sum.max(0) as u64)
     }
+
+    /// How many letters Pip has read and kept (the "Pip did this for me" card; `knowledge` lists only 20).
+    pub fn documents_count(&self) -> Result<u64> {
+        self.count("SELECT COUNT(*) FROM documents")
+    }
+
+    /// Deadlines that were closed as done (sent by Pip, or "Erledigt" by the user).
+    pub fn deadlines_done_count(&self) -> Result<u64> {
+        self.count("SELECT COUNT(*) FROM deadlines WHERE status = 'done'")
+    }
+
+    /// Reminders that rang on time (fired_at set). Ones marked "skipped" or "replaced" never showed: not counted.
+    pub fn reminders_fired_count(&self) -> Result<u64> {
+        self.count(
+            "SELECT COUNT(*) FROM reminders
+             WHERE fired_at IS NOT NULL AND COALESCE(answer, '') NOT IN ('skipped', 'replaced')",
+        )
+    }
+
+    /// The oldest thing Pip remembers: the first event, letter or action ("my helper since …").
+    pub fn first_event_at(&self) -> Result<Option<DateTime<Local>>> {
+        let at: Option<String> = self.conn().query_row(
+            "SELECT MIN(at) FROM (SELECT MIN(at) AS at FROM events
+                                  UNION ALL SELECT MIN(created_at) FROM documents
+                                  UNION ALL SELECT MIN(at) FROM actions_log)",
+            [],
+            |r| r.get(0),
+        )?;
+        at.map(|s| parse_ts(&s).map_err(anyhow::Error::from)).transpose()
+    }
+
+    fn count(&self, sql: &str) -> Result<u64> {
+        let n: i64 = self.conn().query_row(sql, [], |r| r.get(0))?;
+        Ok(n.max(0) as u64)
+    }
 }
 
 fn local_midnight(now: DateTime<Local>) -> DateTime<Local> {

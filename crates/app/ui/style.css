@@ -29,6 +29,7 @@ button { font: inherit; }
 .pip {
   position: fixed; left: 0; top: 0; width: var(--pip); height: var(--pip);
   cursor: pointer; outline: none; will-change: transform; z-index: 10;
+  touch-action: none; /* hold to talk: no scroll or long-press menu on a touch screen */
 }
 .pip-body { position: absolute; inset: 0; transform-origin: 50% 100%; transition: transform .12s ease-out; }
 .pip-body img {
@@ -40,6 +41,7 @@ button { font: inherit; }
 .pip:hover .pip-body { transform: translateY(-3px); }
 .pip-body.blink { transform: scaleY(.93); }
 .pip-body.hop { animation: hop .45s cubic-bezier(.3, .7, .4, 1); }
+.pip-body.hop-big { animation: hop-big .7s cubic-bezier(.3, .7, .4, 1); }
 .pip-floor {
   position: absolute; left: 22%; right: 22%; bottom: -3px; height: 9px; border-radius: 50%;
   background: radial-gradient(closest-side, rgba(20, 30, 70, .22), transparent);
@@ -47,6 +49,7 @@ button { font: inherit; }
 }
 .pip.flying .pip-floor, .pip.away .pip-floor { opacity: 0; }
 @keyframes breathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.012, 1.025); } }
+@keyframes hop-big { 0% { transform: translateY(0); } 15% { transform: translateY(2px) scaleY(.92); } 45% { transform: translateY(-28px) scaleY(1.05) rotate(-4deg); } 70% { transform: translateY(0) scaleY(.94); } 85% { transform: translateY(-6px); } 100% { transform: none; } }
 @keyframes hop { 0% { transform: translateY(0); } 40% { transform: translateY(-14px) scaleY(1.03); } 75% { transform: translateY(0) scaleY(.96); } 100% { transform: none; } }
 
 .pip.state-thinking .pip-body img { animation: breathe 3s ease-in-out infinite, sway 2.4s ease-in-out infinite; }
@@ -67,8 +70,22 @@ button { font: inherit; }
 .pip.inviting .drop-ring { opacity: .8; animation: ring 2.4s ease-in-out infinite; }
 .pip.dragging .drop-ring { opacity: 1; border-style: solid; border-color: var(--blue); background: rgba(8, 102, 255, .10); animation: ring 1s ease-in-out infinite; }
 .pip.state-listening .drop-ring { opacity: 1; border: 4px solid rgba(8, 102, 255, .45); animation: listen 1.2s ease-out infinite; }
+/* held to talk: the listening ring is stronger */
+.pip.holding .drop-ring { opacity: 1; border: 5px solid rgba(8, 102, 255, .75); background: rgba(8, 102, 255, .08); }
 @keyframes ring { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
 @keyframes listen { 0% { transform: scale(.9); opacity: 1; } 100% { transform: scale(1.35); opacity: 0; } }
+
+/* ---------- confetti (decoration only) ---------- */
+.confetti { position: fixed; inset: 0; pointer-events: none; z-index: 9; overflow: hidden; }
+.confetti i {
+  position: absolute; width: 10px; height: 14px; border-radius: 2px; opacity: 0;
+  animation: burst 1.1s ease-out forwards;
+}
+@keyframes burst {
+  0% { transform: translate(0, 0) rotate(0); opacity: 1; }
+  55% { transform: translate(var(--dx), var(--dy)) rotate(var(--r)); opacity: 1; }
+  100% { transform: translate(var(--dx), calc(var(--dy) + 80px)) rotate(calc(var(--r) * 1.4)); opacity: 0; }
+}
 
 /* ---------- target highlight ---------- */
 .highlight {
@@ -117,6 +134,15 @@ button { font: inherit; }
 .bubble.closable { cursor: pointer; }
 .bubble.has-x #bubble-text { padding-right: 40px; }
 .bubble .privacy { font-size: 18px; margin-top: 12px; }
+/* "Done in 14 s. By hand ..." and friends: the one line a reader looks at */
+.bubble .stat {
+  display: block; margin-top: 8px; padding: 6px 12px; border-radius: 12px;
+  background: #eef4ff; color: var(--blue-dark); font-weight: 650;
+}
+.bubble .stat::before { margin-right: 6px; }
+.bubble .stat.time::before { content: "\23F1\FE0F"; }
+.bubble .stat.fast::before { content: "\26A1"; }
+.bubble .stat.total::before { content: "\2728"; }
 .bubble .count { font-size: 16px; color: var(--ink-soft); margin-top: 8px; }
 .bubble .setup-error { color: #b42318; font-size: 18px; margin-top: 8px; }
 input[type=password] {

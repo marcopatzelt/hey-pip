@@ -2,11 +2,13 @@
 //!
 //! OWNER: agent "memory-rules" (crates/core/src/memory/**, crates/core/src/rules/**, crates/core/src/clock.rs).
 
+pub mod card;
 pub mod db;
 pub mod demo;
 pub mod learn;
 pub mod recall;
 
+pub use card::{Tally, card_html, share_text, tally};
 pub use db::{
     ActionLog, Deadline, DeadlineStatus, DocumentRow, Event, Knowledge, Memory, NewDeadline, Playbook, ProfileFact,
     Reminder, default_db_path,

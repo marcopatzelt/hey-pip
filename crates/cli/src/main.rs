@@ -12,8 +12,10 @@
 //!   pip-cli --lang en agent "…" --page file://…/fixtures/demo-uni/index.html --answer 7654321
 //!   pip-cli transcribe sample.wav
 //!   pip-cli eval
+//!   pip-cli card --demo --out target/pip-did-this.html
 
 mod agent_cmd;
+mod card;
 mod eval;
 mod expected;
 mod letters;
@@ -110,6 +112,15 @@ enum Cmd {
         /// answer). Without (or after the last one) the first button is pressed.
         #[arg(long = "answer")]
         answers: Vec<String>,
+    },
+    /// "Pip did this for me": print the numbers and the post text, write the shareable card (no API call).
+    Card {
+        /// The HTML page to write
+        #[arg(long, default_value = "target/pip-did-this.html")]
+        out: PathBuf,
+        /// Seed the invented demo person first (needs fixtures/letters), so the card has numbers
+        #[arg(long)]
+        demo: bool,
     },
     /// Speech to text for a WAV file (Muse Voice Transcribe).
     Transcribe { wav: PathBuf },
@@ -213,6 +224,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Eval { tasks, out } => eval::run(&ctx, &tasks, &out).await,
+        Cmd::Card { out, demo } => card::run(&ctx, &out, demo),
     }
 }
 

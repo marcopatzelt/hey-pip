@@ -138,7 +138,7 @@ mod tests {
         let kids = [
             w(10, CHROMIUM_PAGE_CLASS, false, 2_000_000), // a background tab
             w(11, "Intermediate D3D Window", true, 3_000_000),
-            w(12, CHROMIUM_PAGE_CLASS, true, 300_000), // side panel
+            w(12, CHROMIUM_PAGE_CLASS, true, 300_000),   // side panel
             w(13, CHROMIUM_PAGE_CLASS, true, 1_800_000), // the tab in front
             w(14, CHROMIUM_PAGE_CLASS, true, 0),
         ];

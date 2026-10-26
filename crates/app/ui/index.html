@@ -22,12 +22,15 @@
   <div id="arrow" class="arrow" hidden></div>
 
   <!-- Pip -->
-  <div id="pip" class="pip state-idle" role="button" tabindex="-1" aria-label="Pip">
+  <div id="pip" class="pip state-idle" role="button" tabindex="-1" aria-label="Pip" title="Click to ask me. Hold to talk to me.">
     <div id="drop-ring" class="drop-ring"></div>
     <div class="pip-floor"></div>
     <div id="pip-body" class="pip-body"><img id="pip-img" src="pip/idle.png" alt="" draggable="false"></div>
     <div id="zzz" class="zzz" aria-hidden="true"><span>z</span><span>z</span><span>z</span></div>
   </div>
+
+  <!-- confetti when a task is done (decoration only: never clickable, never in the hit rects) -->
+  <div id="confetti" class="confetti" aria-hidden="true"></div>
 
   <!-- everything Pip says sits in one column beside him -->
   <div id="column" class="column">
@@ -67,6 +70,7 @@
         <button id="ask-letter" type="button" class="link"><svg><use href="#i-letter"/></svg><span></span></button>
         <button id="ask-deadlines" type="button" class="link"><svg><use href="#i-cal"/></svg><span></span></button>
         <button id="ask-knows" type="button" class="link"><span></span></button>
+        <button id="ask-card" type="button" class="link"><span></span></button>
         <button id="ask-pause" type="button" class="link quiet"><span></span></button>
       </div>
     </section>

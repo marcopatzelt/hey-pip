@@ -1498,6 +1498,7 @@ without say.",
         let mut approved = None;
         let mut sent = None;
         let mut trusted = None;
+        let mut attach_card = false;
         // Opening the file picker sends nothing: no card. Only the user's own stored letters can go into the
         // dialog (approved_file), and the final send button still needs a yes.
         let target_text = format!("{description} {ui_name} {element_name}");
@@ -1550,6 +1551,7 @@ without say.",
                 }
             }
             state.enter_after_attach = card.attach;
+            attach_card = card.attach;
             if card.attach {
                 state.attach_label = Some(button_label.clone());
             } else {
@@ -1567,7 +1569,8 @@ without say.",
             state.sent.push(what);
             state.send_label = Some(button_label);
         }
-        let mut out = format!("clicked {description}{note}");
+        let attach_note = if attach_card { ATTACH_APPROVED_NOTE } else { "" };
+        let mut out = format!("clicked {description}{attach_note}{note}");
         if let Some(to) = &trusted {
             self.bubble(tf("sent_trusted", lang, &[("to", to)]), true);
             out.push_str(" (trusted site: the user said not to ask again for it)");
@@ -1931,10 +1934,12 @@ without say.",
         let mut approved = None;
         let mut sent = None;
         let mut trusted = None;
+        let mut attach_card = false;
         if risk == Risk::Commit {
             match self.commit_check(tool, state, None, ui_name.as_deref().unwrap_or(""), cancel, lang).await? {
                 Ok(card) => {
                     approved = Some(true);
+                    attach_card = card.attach;
                     if !card.attach {
                         sent = Some(card.what);
                     }
@@ -1953,6 +1958,9 @@ without say.",
             state.sent.push(what);
         }
         let mut out = format!("pressed {combo}");
+        if attach_card {
+            out.push_str(ATTACH_APPROVED_NOTE);
+        }
         if let Some(to) = &trusted {
             self.bubble(tf("sent_trusted", lang, &[("to", to)]), true);
             out.push_str(" (trusted site: the user said not to ask again for it)");
@@ -2476,11 +2484,7 @@ without say.",
                     (None, Some(dl)) => format!("deadline #{}", dl.id),
                     (None, None) => String::new(),
                 };
-                state.accepted = Some(format!(
-                    "The user agreed to do \"{quote}\" together (it fits {ids}). Click \"{quote}\" (or its 'Open form' \
-                     link), fill the form with facts from WHAT YOU KNOW, ask_user for anything missing; attaching and \
-                     sending need approval (is_commit=true).\n"
-                ));
+                state.accepted = Some(accepted_task(&quote, &ids));
                 Ok(ToolRun::out(
                     Risk::Free,
                     format!(
@@ -2926,6 +2930,24 @@ fn tools_for(phase: Phase) -> Vec<ToolDef> {
         .collect()
 }
 
+/// The task text after a yes to a suggestion. Straight quotes only (like `rules::daily::find_offer`): curly
+/// or German quotes inside the heading become straight ones, so the model reads one quoting style.
+fn accepted_task(quote: &str, ids: &str) -> String {
+    let quote: String = clean_quote(quote)
+        .chars()
+        .map(|c| match c {
+            '„' | '“' | '”' | '«' | '»' => '"',
+            '‚' | '‘' | '’' => '\'',
+            c => c,
+        })
+        .collect();
+    format!(
+        "The user agreed to do \"{quote}\" together (it fits {ids}). Click \"{quote}\" (or its 'Open form' link), \
+         fill the form with facts from WHAT YOU KNOW, ask_user for anything missing; attaching and sending need \
+         approval (is_commit=true).\n"
+    )
+}
+
 /// „Return your questionnaire online“ -> Return your questionnaire online (quotes and extra spaces gone).
 fn clean_quote(q: &str) -> String {
     squash(q.trim().trim_matches(|c: char| matches!(c, '„' | '“' | '”' | '"' | '\'' | '‚' | '‘' | '’' | '«' | '»')))
@@ -3004,6 +3026,10 @@ fn page_text(html: &str) -> String {
 
 /// Button id that asks the page for a text field (open question); the answer is the typed text.
 pub const TEXT_ANSWER: &str = "__text__";
+
+/// Marks an approved attach card in the action log (risk "commit", approved = true, but nothing was sent), so
+/// "sent after my yes" on the card does not count it.
+pub const ATTACH_APPROVED_NOTE: &str = " (attach approved, nothing sent yet)";
 
 fn risk_str(r: Risk) -> &'static str {
     match r {
@@ -3366,7 +3392,7 @@ fn doc_label(x: &crate::docs::DocumentExtract, doc_type: DocType, lang: Lang) ->
 }
 
 /// Opens a URL with the system's default handler. Windows: url.dll (handles `&` in URLs); else xdg-open.
-fn system_open(url: &str) -> Result<()> {
+pub fn system_open(url: &str) -> Result<()> {
     #[cfg(windows)]
     let mut cmd = {
         let mut c = std::process::Command::new("rundll32.exe");
@@ -3591,6 +3617,14 @@ mod tests {
         assert_eq!(file_url_path("file:///home/p/x.html"), Some(PathBuf::from("/home/p/x.html")));
         assert_eq!(file_url_path("https://example.org/x"), None);
         assert_eq!(clean_quote(" „Return your  questionnaire online“ "), "Return your questionnaire online");
+        let task = accepted_task(" „Return your „new“ questionnaire online“ ", "letter #3 and deadline #2");
+        assert!(!task.contains(['„', '“', '”']), "{task}");
+        assert!(
+            task.starts_with("The user agreed to do \"Return your \"new\" questionnaire online\" together"),
+            "{task}"
+        );
+        assert!(task.contains("Click \"Return your \"new\" questionnaire online\" (or its 'Open form' link)"));
+        assert_eq!(deadline_in_task(&task), Some(2));
     }
 
     #[test]

@@ -7,9 +7,9 @@
 
 pub mod fake;
 pub mod keys;
-pub mod outline_cache;
 #[cfg(target_os = "linux")]
 pub mod linux;
+pub mod outline_cache;
 #[cfg(windows)]
 pub mod windows;
 

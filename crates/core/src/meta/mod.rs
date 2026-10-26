@@ -1,5 +1,6 @@
 //! Meta Model API client (https://api.meta.ai/v1): Muse Spark responses, SSE,
-//! SAM 3.1 boxes, Muse Image, speech to text.
+//! SAM 3.1 boxes, Muse Image, speech to text. Private mode: open_weights.rs (Muse Glimmer /
+//! Muse Spark Open behind an OpenAI-compatible endpoint).
 //!
 //! OWNER: agent "meta" (crates/core/src/meta/**, crates/core/src/config.rs).
 //! Methods of `MetaClient` are split over the files: respond/respond_stream in
@@ -9,6 +10,7 @@ pub mod asr;
 pub mod client;
 pub mod image;
 pub mod images;
+pub mod open_weights;
 pub mod responses;
 pub mod sam;
 pub mod sse;
@@ -16,6 +18,7 @@ pub mod sse;
 pub use asr::{pcm_f32_to_wav16k, wav_from_pcm16};
 pub use client::{MetaClient, MetaError, RetryPolicy, load_dotenv};
 pub use image::{FittedImage, MAX_SIDE, fit_image};
+pub use open_weights::{MODEL_GLIMMER, MODEL_SPARK_OPEN, OpenWeightsClient};
 pub use responses::{
     Content, Effort, FunctionCall, InputItem, ResponseEvent, ResponseOutput, ResponseRequest, Role, ToolDef, Usage,
     data_url, parse_response,

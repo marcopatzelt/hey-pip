@@ -70,9 +70,7 @@ impl Recorder {
         if secs < MIN_SECONDS {
             return Err(TooShort.into());
         }
-        crate::backend::guard("pcm_f32_to_wav16k", || {
-            pip_core::meta::pcm_f32_to_wav16k(&c.samples, c.rate, c.channels)
-        })
+        crate::backend::guard("pcm_f32_to_wav16k", || pip_core::meta::pcm_f32_to_wav16k(&c.samples, c.rate, c.channels))
     }
 }
 

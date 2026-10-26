@@ -11,7 +11,7 @@ pub mod tools;
 pub use gate::{ApprovalAnswer, ApprovalCard, COMMIT_WORDS, Gate, Risk};
 pub use loop_::{
     API_MAX_SIDE, Agent, AgentOutcome, DISCOVER_STEPS, DISCOVER_TIME, PROFILE_LANG, PROFILE_SERVICES, Phase, RunState,
-    StepResult, StopReason, Task, UrlOpener, task_from_words,
+    StepResult, StopReason, Task, UrlOpener, system_open, task_from_words,
 };
 pub use tools::{DISCOVER_TOOLS, ScrollDir, Tool, tool_defs};
 

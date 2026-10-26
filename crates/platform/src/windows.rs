@@ -10,10 +10,10 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use pip_core::platform::{
     Frame, Input, OutlineItem, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo, outline_role,
 };
-use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use uiautomation::core::{UICacheRequest, UICondition};
 use uiautomation::patterns::{UIScrollItemPattern, UIValuePattern};
 use uiautomation::types::{ControlType, ElementMode, Handle, Point, TreeScope, UIProperty};
@@ -26,7 +26,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::keys::{KeyName, Modifier, check_typeable, parse_combo};
-use crate::outline_cache::{ChildWindow, Cached, EMPTY_RETRY_AFTER, Hit, OutlineKey, budget, page_child};
+use crate::outline_cache::{Cached, ChildWindow, EMPTY_RETRY_AFTER, Hit, OutlineKey, budget, page_child};
 use crate::{FoundElement, MonitorInfo};
 
 /// Characters per SendInput batch when typing; small batches keep browsers from dropping keys.
@@ -548,8 +548,15 @@ impl UiTree for WinPlatform {
             }
             let name = el.get_name().unwrap_or_default().to_lowercase();
             let caption = [
-                "schließen", "close", "maximieren", "maximize", "minimieren", "minimize", "wiederherstellen",
-                "restore", "verkleinern",
+                "schließen",
+                "close",
+                "maximieren",
+                "maximize",
+                "minimieren",
+                "minimize",
+                "wiederherstellen",
+                "restore",
+                "verkleinern",
             ]
             .iter()
             .any(|n| name == *n);
@@ -733,11 +740,7 @@ impl OutlineWorker {
                 reader = OutlineReader::new().map_err(|e| tracing::debug!("outline: no UI Automation: {e}")).ok();
             }
             let items = reader.as_mut().and_then(|r| r.read_with_retry(&job.key));
-            tracing::debug!(
-                n = items.as_ref().map(Vec::len),
-                ms = at.elapsed().as_millis() as u64,
-                "outline read"
-            );
+            tracing::debug!(n = items.as_ref().map(Vec::len), ms = at.elapsed().as_millis() as u64, "outline read");
             let mut s = lock(&self.state);
             s.done += 1;
             s.finished = s.finished.max(job.id);

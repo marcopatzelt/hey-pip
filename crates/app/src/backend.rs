@@ -15,7 +15,7 @@ use pip_core::docs::DocPipeline;
 use pip_core::events::Bus;
 use pip_core::i18n::Lang;
 use pip_core::memory::{Memory, default_db_path, seed_demo_profile};
-use pip_core::meta::MetaClient;
+use pip_core::meta::{MetaClient, OpenWeightsClient};
 use pip_core::rules::RuleEngine;
 
 pub struct Backend {
@@ -141,9 +141,24 @@ impl Backend {
         let meta = ok_or_log("meta client", guard("meta client", MetaClient::from_env)).map(Arc::new);
         let rules = memory.clone().map(|m| Arc::new(RuleEngine::new(m, clock.clone())));
         let shared_clock = clock.clone();
-        let docs = match (&meta, &memory, &rules) {
+        // Private mode (PRIVATE_MODEL_BASE): letters are read by a Meta open-weights model, not the cloud.
+        let private = config.as_ref().and_then(OpenWeightsClient::from_config).map(Arc::new);
+        let private_mode = private.is_some();
+        if let Some(p) = &private {
+            tracing::info!(model = p.model(), base = p.base(), "private mode: letters stay on this computer");
+        }
+        // In private mode letters never need the cloud, so a missing MODEL_API_KEY must not stop
+        // the letter pipeline: it gets a cloud client that points nowhere and is never called.
+        let meta_for_docs = meta
+            .clone()
+            .or_else(|| private.as_ref().map(|_| Arc::new(MetaClient::new("http://127.0.0.1:9", "unused"))));
+        let docs = match (&meta_for_docs, &memory, &rules) {
             (Some(meta), Some(mem), Some(rules)) => {
-                Some(Arc::new(DocPipeline::new(meta.clone(), mem.clone(), rules.clone())))
+                let pipeline = DocPipeline::new(meta.clone(), mem.clone(), rules.clone());
+                Some(Arc::new(match &private {
+                    Some(p) => pipeline.with_private(p.clone()),
+                    None => pipeline,
+                }))
             }
             _ => None,
         };
@@ -165,6 +180,7 @@ impl Backend {
             docs = docs.is_some(),
             agent = agent.is_some(),
             demo_mode,
+            private_mode,
             "core services"
         );
         let backend = Self {

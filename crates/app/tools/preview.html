@@ -4,7 +4,9 @@
   <meta charset="utf-8">
   <title>Pip preview</title>
   <!-- Dev tool: runs ui/main.js in a normal browser with a fake Tauri bridge and an invented form
-       behind it. Scenes: #onboarding #story #reminder #error #deadlines #state (all invented data). -->
+       behind it. Scenes: #onboarding #story #card #reminder #error #deadlines #ask #sleep #drag #celebrate #listen
+       #stats #stats_de #hold #celebrate_race (all invented data). ?shot=1 = for tools/shot.sh (headless screenshot when the
+       scene is ready); &reduce=1 = pretend the user asked for reduced motion. -->
   <base href="../ui/">
   <link rel="stylesheet" href="style.css">
   <style>
@@ -27,12 +29,29 @@
       states_list: "Baden-Württemberg|Bayern|Berlin|Brandenburg|Bremen|Hamburg|Hessen|Mecklenburg-Vorpommern|Niedersachsen|Nordrhein-Westfalen|Rheinland-Pfalz|Saarland|Sachsen|Sachsen-Anhalt|Schleswig-Holstein|Thüringen",
       btn_pick_letter: "Brief auswählen", btn_yes: "Ja", btn_elsewhere: "Woanders", ask_what: "Was soll ich tun?",
       ask_placeholder: "Schreib es hier hin. Oder halte das Mikrofon gedrückt.", btn_go: "Los", btn_mic: "Gedrückt halten und sprechen",
-      btn_close: "Schließen", btn_ok: "Gut", thinking: "Ich schaue mir das an …", listening: "Ich höre zu …", btn_stop: "Stopp",
+      btn_close: "Schließen", btn_ok: "Gut", thinking: "Ich schaue mir das an …", btn_stop: "Stopp",
       btn_resume: "Weiter", btn_why: "Warum?", btn_retry: "Nochmal", btn_later: "Später", approve_attachments: "Anhang",
       approve_button_preview: "Diesen Knopf drücke ich:", drop_hint: "Lass den Brief los. Ich lese ihn.",
       deadlines_title: "Deine Fristen", tray_deadlines: "Meine Fristen", deadlines_none: "Du hast gerade keine offenen Fristen.",
       hint_not_legal_advice: "Das ist ein Hinweis, keine Rechtsberatung.",
+      // English, as the real app shows them (Lang::En)
+      done_time: "Done in {secs} s. By hand this takes about {minutes} minutes.",
+      done_time_one: "Done in {secs} s. By hand this takes about a minute.",
+      done_total: "That's about {total} saved since we met.",
+      heard: "I understood: \"{text}\"", listening: "I'm listening …",
+      tray_knowledge: "What Pip knows", btn_pause_link: "Take a break",
     };
+    const params = new URLSearchParams(location.search);
+    const SHOT = params.has("shot");
+    // Headless screenshot: keep the window's load event open until the scene is drawn.
+    const slow = (ms) => { const i = new Image(); i.alt = ""; i.hidden = true; i.src = `/slow?ms=${ms}&t=${Math.random()}`; document.documentElement.append(i); };
+    if (SHOT) slow(1500);
+    // How long each scene runs before the screenshot (ms after the scene starts).
+    const SHOT_AT = { celebrate: 450, celebrate_race: 450, story: 5200, card: 900, listen: 900, stats: 700, stats_de: 700, hold: 900, ask: 700, onboarding: 700 };
+    if (params.has("reduce")) {
+      const real = window.matchMedia.bind(window);
+      window.matchMedia = (q) => q.includes("reduce") ? { matches: true, media: q, addEventListener() {}, removeEventListener() {} } : real(q);
+    }
     const handlers = {};
     window.addEventListener("error", (e) => log("ERR " + e.message + " @" + e.lineno));
     window.addEventListener("unhandledrejection", (e) => log("REJ " + (e.reason && e.reason.message || e.reason)));
@@ -47,7 +66,10 @@
         invoke: async (cmd, args) => {
           if (cmd === "ui_strings") return S;
           if (cmd === "overlay_info") return { x: 0, y: 0, w: innerWidth * dpr(), h: innerHeight * dpr(), scale: dpr(), windowed: false };
-          if (cmd === "ui_ready") { setTimeout(scene, 300); return; }
+          if (cmd === "ui_ready") {
+            if (SHOT) { const name = location.hash.slice(1) || "onboarding"; slow(SHOT_AT[name] ?? 1000); scene(); } else setTimeout(scene, 300);
+            return;
+          }
           if (cmd === "ui_command" && args.cmd.type !== "hit_rects") {
             log(JSON.stringify(args.cmd));
             if (args.cmd.type === "approve" && approve) approve(args.cmd.answer);
@@ -62,7 +84,16 @@
       },
       event: { listen: async (name, cb) => { (handlers[name] ||= []).push(cb); } },
     };
-    const ui = (ev) => emit("ui", ev);
+    // Self-check: the stat chips must leave the bubble's text byte-identical (main.js compares it).
+    const ui = (ev) => {
+      emit("ui", ev);
+      if (ev.type === "bubble") setTimeout(() => {
+        const got = document.getElementById("bubble-text").textContent;
+        const chips = document.querySelectorAll("#bubble-text .stat").length;
+        if (got !== ev.text) { console.error("bubble text changed", got); log("ERROR bubble text changed by decorateStats"); } else log(`bubble ok, ${chips} stat chip(s)`);
+      }, 60);
+    };
+    const press = (type) => document.getElementById("pip").dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 7, button: 0, isPrimary: true, clientX: 0, clientY: 0 }));
     async function card(title, yes) {
       ui({ type: "approval_request", card: { id: crypto.randomUUID(), title, what: "Was: deine Krankschreibung 20.10.–30.10.", to: "An: Gesundkasse (Kontaktformular)", attachments: ["krankschreibung_beispiel.pdf"], crop_png_b64: null, yes_label: yes, no_label: "Noch nicht" } });
       return new Promise((r) => (approve = r));
@@ -90,7 +121,30 @@
       if (name === "reminder") { ui({ type: "pip", state: "asking" }); ui({ type: "reminder", reminder_id: 1, text: "Deine Krankschreibung endet morgen. Wenn du noch krank bist, brauchst du bis Montag, 2. November, eine neue.", why: "Ohne lückenlose Krankschreibung kann die Krankenkasse für die fehlenden Tage kein Krankengeld zahlen. Regel: § 46 Satz 2 SGB V. Das ist ein Hinweis, keine Rechtsberatung.", buttons: [{ id: "remind:x", label: "Erinnere mich Montag", primary: true }, { id: "done", label: "Ich bin gesund", primary: false }, { id: "later", label: "Später", primary: false }] }); }
       if (name === "error") { emit("app", { type: "retryable", cmd: { type: "text", text: "x" } }); ui({ type: "pip", state: "error" }); ui({ type: "error", text: "Ich komme gerade nicht ins Internet. Ich versuche es gleich nochmal.", retry: true }); }
       if (name === "deadlines") emit("app", { type: "deadlines", items: [{ title: "Neue Krankschreibung", due: "Montag, 2. November", why: "Ohne lückenlose Krankschreibung kann die Krankenkasse für die fehlenden Tage kein Krankengeld zahlen." }, { title: "Widerspruch gegen Bescheid", due: "Freitag, 27. November", why: "Gegen einen Bescheid kannst du einen Monat lang Widerspruch einlegen." }] });
-      if (name === "ask") document.getElementById("pip").click();
+      if (name === "ask") { press("pointerdown"); setTimeout(() => press("pointerup"), 80); }
+      if (name === "celebrate") {
+        emit("app", { type: "acting", on: true }); ui({ type: "pip", state: "acting" });
+        ui({ type: "bubble", text: "Done. I'll remember: the sick note is with the insurer. Done in 14 s. By hand this takes about 6 minutes. That's about 25 minutes saved since we met.", buttons: [], question_id: null });
+        ui({ type: "pip", state: "happy" });
+        setTimeout(() => { emit("app", { type: "acting", on: false }); log(`confetti pieces: ${document.querySelectorAll("#confetti i").length}`); }, 300);
+      }
+      if (name === "celebrate_race") {
+        // the real app can deliver "acting off" a moment before "happy": the confetti must still come
+        emit("app", { type: "acting", on: true }); ui({ type: "pip", state: "acting" });
+        emit("app", { type: "acting", on: false });
+        ui({ type: "pip", state: "happy" });
+        ui({ type: "bubble", text: "Done. I'll remember: the sick note is with the insurer. Done in 14 s. By hand this takes about 6 minutes.", buttons: [], question_id: null });
+        setTimeout(() => log(`confetti pieces: ${document.querySelectorAll("#confetti i").length}`), 300);
+      }
+      if (name === "listen") { press("pointerdown"); setTimeout(() => { ui({ type: "pip", state: "listening" }); ui({ type: "progress", text: S.listening }); }, 400); }
+      if (name === "hold") {
+        // a hold sends voice_start then voice_stop; a quick press after it opens the ask box (no voice)
+        press("pointerdown");
+        setTimeout(() => press("pointerup"), 400);
+        setTimeout(() => { press("pointerdown"); setTimeout(() => press("pointerup"), 60); }, 600);
+      }
+      if (name === "stats") ui({ type: "bubble", text: "Done. 2nd time on this site: 14 s instead of 41 s last time.", buttons: [], question_id: null });
+      if (name === "stats_de") ui({ type: "bubble", text: "Erledigt. Fertig in 14 s. Von Hand dauert das etwa 6 Minuten. Seit wir uns kennen, habe ich dir etwa 25 Minuten gespart. Zum 2. Mal auf dieser Seite: 14 s statt 41 s beim letzten Mal.", buttons: [], question_id: null });
       if (name === "sleep") { ui({ type: "pip", state: "sleeping" }); emit("app", { type: "paused", on: true }); ui({ type: "bubble", text: "Ich mache Pause. Klick mich an, dann bin ich wieder da.", buttons: [], question_id: null }); }
       if (name === "drag") emit("app", { type: "drag", state: "enter" });
     }

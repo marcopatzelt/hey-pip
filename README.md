@@ -30,6 +30,8 @@ who reads the letter, keeps an eye on the date, and helps with the form.
 | **Remembers and speaks up on its own** | Deadlines come from rules written in code, with their legal source, not invented by a model. On Thursday 18:00 Pip pops up with a notification and a voice: *"Your sick note ends tomorrow. If you're still sick, you need a new one by Monday, November 2."* Buttons: *Remind me Monday · I'm well again · Later*, and *Why?* shows the rule. |
 | **Acts on the screen** | *"Send the sick note to my health insurer."* Pip flies to each field, says what it types, and fills in the insurer's contact form. Before attaching the letter and before pressing *Submit* it shows a card: what, to whom, which file, and a picture of the exact button. Nothing happens until you press *Yes*. |
 | **Any form** | Open any online form (a university re-registration, an application) and click *Look at my screen*: Pip says what the page is, fills what it knows about you, asks only for what is missing and stops at the send button with one card. The second time it needs no question. |
+| **Shows what it did** | Tray or ask box -> *What Pip did for me*: a page in the browser with letters read, forms filled, sent (each after your yes), deadlines kept and time saved (seconds under a minute; no time tile before Pip saved any), plus *Copy text for a post*. Only the first name is on it, never numbers or addresses. Approving an attachment does not count as sent. |
+| **Feels alive** | Click Pip to ask, hold Pip to talk (mic while held). When a task is done Pip celebrates (a short confetti burst, off when Windows animations are off) and the numbers in the *Done* sentence (time, total saved, faster the 2nd time) show as chips. |
 
 ### Made for people who are not technical
 
@@ -116,7 +118,7 @@ flowchart LR
 | **SAM 3.1** (`/v1/responses`, streamed) | The eyes for shapes: cuts the sheet out of a phone photo; proposes exact boxes for buttons on the screen so clicks land in the middle of the real element. | built |
 | **Muse Voice Transcribe 1.0** (`/v1/asr/transcribe`) | Hold Ctrl+Shift+Space (or the microphone button) and say what you need. | built; checked with a recorded sentence through `pip-cli transcribe` (Oct 26); microphone on Windows still to test |
 | **Muse Image 1.0** (`/v1/images/generations`, `/edits`) | Designed Pip: the character and its eight poses (idle, wave, listen, think, point, happy, ask, sleep). | used offline |
-| **Muse Glimmer** (open weights, local) | Private mode: read letters on the computer without sending them anywhere. | planned |
+| **Muse Glimmer** (open weights, local) / **Muse Spark Open** (open weights, Baseten) | Private mode: reads photos and scans of letters through an OpenAI-compatible endpoint (llama.cpp on the computer, or Baseten). SAM and the Meta API are not called for the letter. | built: private mode reads photos and scans through an OpenAI-compatible endpoint (llama.cpp or Baseten); tested against a mock server, live run pending |
 
 Pip uses Meta's colour world (blue to violet) but no Meta logo and no Meta character.
 
@@ -137,7 +139,9 @@ Pip uses Meta's colour world (blue to violet) but no Meta logo and no Meta chara
 - **New pages, new addresses and new send targets ask first.** Opening an unknown website, storing an address or link,
   or changing where letters are sent needs a "yes". Addresses that carry the user's data are refused.
 - **Your letters stay on your computer** (`%APPDATA%\Pip\memory.db`). Only what one call needs goes
-  to the Meta API: the letter image, or the current screenshot.
+  to the Meta API: the letter image, or the current screenshot. In **private mode** (below) a letter photo goes only
+  to the open-weights model you chose, for example one running on the same computer; Pip then says
+  "Read here on your computer. Nothing left it."
 - **Screenshots live in memory only.** They are not written to disk.
 - **No secrets in logs.** The API key comes from the environment or `.env` and is redacted from every error text.
   Letter contents and typed text are not logged.
@@ -173,7 +177,36 @@ full-screen overlay), `PIP_LANG=en`, `PIP_MUTE=1`, `DEMO_NOW=2026-10-29T18:00` (
 (do not add Pip to the Windows start). `PIP_DEMO_PROFILE=1` seeds the invented person Erika; her story is told
 relative to the day the database is first created (sick note ends in two days, insurer's letter came yesterday).
 For the Thursday-evening reminder start Pip once to seed, then restart with
-`DEMO_NOW=<day the note ends minus 1>T18:00` (seeded today: tomorrow at 18:00).
+`DEMO_NOW=<day the note ends minus 1>T18:00` (seeded today: tomorrow at 18:00). `PIP_DEMO_RESET=1` gives every
+recording day a fresh start: at launch Pip forgets everything and seeds Erika again for today (only when the memory
+belongs to Erika or to nobody; a memory with any other name is never wiped). `pip-cli eval` runs the eval below
+against the real API (a few cents) and writes `eval/results.md`.
+
+### Private mode (Meta open weights, the letter stays local)
+
+With private mode on, a dropped photo or scan of a letter is read by a Meta open-weights model behind an
+OpenAI-compatible `/chat/completions` endpoint, with the same strict letter schema as Muse Spark. The SAM sheet crop is
+skipped (it would send the photo to the cloud), and the Meta API sees nothing of the letter. Pip ends its sentence with
+"Read here on your computer. Nothing left it." PDFs are refused with a friendly sentence (no PDF renderer in Pip yet):
+take a photo of the letter, or turn private mode off. If the model server is not running, Pip says "My private reading
+model isn't answering. Please start it, or turn private mode off." (not "check the Wi-Fi"). Letters work in private mode
+even without `MODEL_API_KEY`; the screen agent still uses Muse Spark and needs the key.
+
+```sh
+PRIVATE_MODEL_BASE=http://127.0.0.1:8080/v1   # turns private mode on (llama.cpp, or a Baseten URL ending in /v1)
+PRIVATE_MODEL=muse-glimmer                    # default; on Baseten e.g. meta-models/muse-spark-open-1026
+PRIVATE_MODEL_KEY=...                         # optional, only for hosted endpoints (never logged)
+# PIP_PRIVATE=0                               # turns private mode off again without removing the lines above
+
+# local example with llama.cpp (vision model: also pass its --mmproj file)
+llama-server -m <muse-glimmer gguf> --port 8080
+PRIVATE_MODEL_BASE=http://127.0.0.1:8080/v1 pip-cli read fixtures/letters/au_erika_erst_foto.jpg
+```
+
+Tested against a mock server (`crates/core/tests/private_mode.rs`: the cloud mock receives zero requests). A live run
+against a real Muse Glimmer or Muse Spark Open endpoint is still pending:
+`cargo test -p pip-core --test private_mode -- --ignored` runs it when `PRIVATE_MODEL_BASE` is set. A 30B model on a
+laptop CPU can take minutes per letter (timeout 10 minutes).
 
 ### Developer CLI (no overlay, same core)
 
@@ -184,6 +217,8 @@ pip-cli ground fixtures/screens/kasse_form.png "Absenden button at the bottom ri
 pip-cli rules --now 2026-10-29T18:00                      # deadlines and the reminder that fires now
 pip-cli agent "Schick die Krankschreibung an die Gesundkasse"   # dry run on screenshots, nothing is clicked
 pip-cli eval                                              # the eval below -> eval/results.md
+pip-cli card --demo                                       # writes the 'Pip did this for me' page with invented numbers
+crates/app/tools/shot.sh                                  # headless screenshots of the overlay scenes (preview.html)
 ```
 
 Example dry run (abridged):

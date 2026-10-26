@@ -49,7 +49,7 @@ Auslöser (echte Geschichte, im Video erzählt): Die Folge-Krankschreibung von M
 8. **Zwei Regeln** fertig: Folge-Krankschreibung (AU) lückenlos; Widerspruchsfrist bei Bescheiden.
 
 ### Soll (wenn Zeit)
-- Privat-Modus: Muse Glimmer lokal liest Dokumente (Bonus Open Weight).
+- Privat-Modus: Muse Glimmer lokal liest Dokumente (Bonus Open Weight). Gebaut 26.10. für Fotos/Scans (`PRIVATE_MODEL_BASE`), mit Mock-Server getestet, Live-Lauf offen.
 - UI-Baum (Windows UI Automation) als zweite Quelle neben SAM.
 - `.ics`-Export der Fristen.
 - Linux-Plattform-Teil.
@@ -129,8 +129,8 @@ trait UiTree  { fn element_at(&self, p: PhysPoint) -> Option<UiElement>; }
 | Ziel auf dem Bildschirm finden (Text → Box), Blatt im Foto ausschneiden | `sam-3.1` | `POST /v1/responses` (stream) |
 | Sprache → Text | `muse-voice-transcribe-1.0` | `POST /v1/asr/transcribe` |
 | Figur/Grafiken gestalten (einmalig, offline) | `muse-image-1.0` | `POST /v1/images/generations` (immer `output_format:"png"`: Standard ist WebP 1600x1600, `size` wird ignoriert) |
-| Privat-Modus: Dokument lokal lesen (Soll) | Muse Glimmer 30B (Q4, llama.cpp `llama-server`) | lokal, OpenAI-kompatibel |
-| Fallback Open-Weight | Muse Spark Open über Baseten `meta-models/muse-spark-open-1026` | Baseten |
+| Privat-Modus: Foto/Scan eines Briefs lokal lesen (gebaut 26.10., `meta/open_weights.rs`; PDF wird freundlich abgelehnt) | Muse Glimmer 30B (Q4, llama.cpp `llama-server`), Standard `PRIVATE_MODEL=muse-glimmer` | `PRIVATE_MODEL_BASE` + `/chat/completions` (OpenAI-kompatibel), gleiches strenges Brief-Schema als JSON-Antwort |
+| Fallback Open-Weight | Muse Spark Open über Baseten `PRIVATE_MODEL=meta-models/muse-spark-open-1026` | Baseten (`PRIVATE_MODEL_BASE=…/v1`, `PRIVATE_MODEL_KEY`) |
 
 Basis: `https://api.meta.ai/v1`, Header `Authorization: Bearer $MODEL_API_KEY`.
 
@@ -297,7 +297,9 @@ Pip startet mit wenig und wird mit jeder Aufgabe schneller. Alles deterministisc
 ## 10b. Overlay (Tauri 2)
 - Fenster: `transparent`, `decorations:false`, `alwaysOnTop`, `skipTaskbar`, ganzer Bildschirm; `set_ignore_cursor_events(true)`, aus nur über Figur/Karte.
 - Zustände der Figur: ruhig, hört zu, denkt, zeigt (Pfeil zur Box), handelt, wartet auf Freigabe, Fehler.
-- Tray-Menü: Pause, Fristen-Liste, Privat-Modus an/aus, Beenden.
+- Tray-Menü: Pause, Fristen-Liste, Was Pip weiß, Was Pip für mich getan hat, Beenden. Privat-Modus nur über `.env` (kein Schalter in der UI).
+- Figur (gebaut 26.10.): kurz klicken (< 350 ms, < 8 px Bewegung) = Frage-Kasten; halten = sprechen (Mikro, solange gehalten); Hover 1 s = Hinweis. Ein verlorenes Loslassen sperrt die Figur nicht (nächster Druck beendet den alten). Fertig = Konfetti (~1,2 s, `pointer-events:none`, aus bei „Animationen aus“) und großer Hüpfer; auch wenn `happy` bis 1,5 s nach dem Ende von `acting` kommt. Zahlen-Sätze (`done_time`, `done_time_one`, `done_total`, „2nd time on this site …“) werden Chips; der Text der Blase bleibt Zeichen für Zeichen gleich. Bildschirmfotos der Szenen ohne Windows: `crates/app/tools/shot.sh` (headless Firefox, `preview.html`).
+- **„Pip did this for me“** (`memory/card.rs`, gebaut 26.10.): Zählung aus dem Gedächtnis (Briefe gelesen, Formulare ausgefüllt, gesendet nach Ja, Fristen eingehalten, Erinnerungen pünktlich, Zeit gespart) als lokale HTML-Seite `%APPDATA%\Pip\pip-did-this.html`, im Browser geöffnet; Knopf „Copy text for a post“ (≤ 280 Zeichen, #MetaHackathon). Nur der Vorname, keine Nummern, Adressen oder Links. Ein Ja auf einer Anhängen-Karte zählt nicht als gesendet (`ATTACH_APPROVED_NOTE` im Aktions-Log). Unter einer Minute zeigt die Seite Sekunden; bei 0 s keine Zeit-Kachel. Alles 0 → keine Seite, Pip sagt „We haven't done anything together yet …“.
 - Hotkeys: `Ctrl+Shift+Space` halten = sprechen; `Esc` (global, während Agent läuft) = Stopp.
 - Maus bewegen = Stopp: etwa 100 ms stetige Bewegung über mindestens 60 px, aus während Karte oder Frage offen ist und 2 s nach Start oder "Ja". `PIP_MOUSE_STOP=0` schaltet es ab.
 - Schalter zum Testen: `PIP_MOCK=1` (gespielte Demo ohne Kern), `PIP_WINDOWED=1` (Eckfenster statt Overlay), `PIP_MUTE=1`, `PIP_LANG=en`, `PIP_SKIP_ONBOARDING=1`, `PIP_TICK_SECS`, `PIP_QUIT_AFTER_SECS`.
@@ -310,8 +312,10 @@ Pip startet mit wenig und wird mit jeder Aufgabe schneller. Alles deterministisc
 MODEL_API_KEY=...
 MODEL_API_BASE=https://api.meta.ai/v1
 AGENT_MODEL=muse-spark-1.3
-LOCAL_DOC_MODEL_URL=http://127.0.0.1:8080/v1   # Privat-Modus (optional)
-BASETEN_API_KEY=...                            # optional
+PRIVATE_MODEL_BASE=http://127.0.0.1:8080/v1    # Privat-Modus an (llama.cpp oder Baseten …/v1)
+PRIVATE_MODEL=muse-glimmer                     # Standard; Baseten z. B. meta-models/muse-spark-open-1026
+PRIVATE_MODEL_KEY=...                          # optional (nur gehostete Endpunkte), nie geloggt
+PIP_PRIVATE=0                                  # schaltet den Privat-Modus aus, auch wenn die Basis gesetzt ist
 DEMO_MODE=1                                    # Standard AN (auch ohne Eintrag); DEMO_MODE=0 schaltet aus
 ```
 
@@ -321,6 +325,7 @@ DEMO_MODE=1                                    # Standard AN (auch ohne Eintrag)
 - `DEMO_MODE=1`: `open_url` und Commit nur für `localhost`/Demo-Seiten.
 - Passwort-Felder (UI-Baum `IsPassword`) werden nie getippt.
 - Text auf dem Bildschirm oder in Dokumenten ist Daten, keine Anweisung (Prompt-Injection-Schutz im Prompt + Schranke).
+- Privat-Modus: nur das verkleinerte Foto (PNG) geht an den lokalen/Open-Weights-Endpunkt, SAM wird übersprungen, die Meta-API sieht nichts vom Brief; PDF wird abgelehnt. Geloggt werden nur Modellname und Dauer, nie der Brief. Antwortet der Endpunkt nicht, sagt Pip `doc_private_offline` („My private reading model isn't answering …“), nicht den WLAN-Satz. Briefe gehen im Privat-Modus auch ohne `MODEL_API_KEY`; der Bildschirm-Agent braucht ihn weiter.
 
 ## 13. Testen
 

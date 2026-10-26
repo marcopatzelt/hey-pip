@@ -664,7 +664,11 @@ mod tests {
         // One key per demo site folder: the insurer's three pages share one, the university has its own.
         let kasse = Some("file:///c:/pip/fixtures/demo-kasse");
         for page in ["index.html", "services.html", "fragebogen.html?x=1#top"] {
-            assert_eq!(demo.site_key(&format!("file:///C:/Pip/fixtures/demo-kasse/{page}")).as_deref(), kasse, "{page}");
+            assert_eq!(
+                demo.site_key(&format!("file:///C:/Pip/fixtures/demo-kasse/{page}")).as_deref(),
+                kasse,
+                "{page}"
+            );
         }
         assert_eq!(demo.site_key("file://localhost/C:/Pip/fixtures/demo-kasse/index.html").as_deref(), kasse);
         assert_eq!(demo.site_key("file:///C:\\Pip\\fixtures\\demo-kasse\\services.html").as_deref(), kasse);

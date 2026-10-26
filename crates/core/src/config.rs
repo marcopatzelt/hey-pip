@@ -20,6 +20,14 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// FIXTURES_DIR, default <repo>/fixtures (used by DEMO_MODE url checks)
     pub fixtures_dir: PathBuf,
+    /// PRIVATE_MODEL_BASE: OpenAI-compatible endpoint of a Meta open-weights model for private mode,
+    /// e.g. `http://127.0.0.1:8080/v1` (llama.cpp `llama-server`) or a Baseten URL ending in `/v1`.
+    /// The key (PRIVATE_MODEL_KEY, optional) is NOT part of Config (only OpenWeightsClient reads it).
+    pub private_model_base: Option<String>,
+    /// PRIVATE_MODEL, default muse-glimmer (Baseten e.g. `meta-models/muse-spark-open-1026`)
+    pub private_model: String,
+    /// PIP_PRIVATE=0 turns private mode off even when the base is set.
+    pub private_disabled: bool,
 }
 
 impl Config {
@@ -46,7 +54,17 @@ impl Config {
             debug_shots: flag("DEBUG_SHOTS"),
             data_dir: data_dir(&var),
             fixtures_dir: var("FIXTURES_DIR").map(PathBuf::from).unwrap_or_else(default_fixtures_dir),
+            private_model_base: var("PRIVATE_MODEL_BASE"),
+            private_model: var("PRIVATE_MODEL").unwrap_or_else(|| crate::meta::MODEL_GLIMMER.to_string()),
+            private_disabled: var("PIP_PRIVATE")
+                .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off")),
         }
+    }
+
+    /// Private mode: letters are read by the open-weights model at PRIVATE_MODEL_BASE
+    /// (set, and not turned off with PIP_PRIVATE=0).
+    pub fn private_mode(&self) -> bool {
+        self.private_model_base.is_some() && !self.private_disabled
     }
 
     /// data_dir/memory.db
@@ -192,5 +210,31 @@ mod tests {
         assert!(!cfg(&[("DEMO_MODE", "0")]).demo_mode);
         assert!(!cfg(&[("DEMO_MODE", "off")]).demo_mode);
         assert!(cfg(&[("DEMO_MODE", " ")]).demo_mode);
+    }
+
+    #[test]
+    fn private_mode_switch() {
+        let off = cfg(&[]);
+        assert!(!off.private_mode(), "no base, no private mode");
+        assert_eq!(off.private_model, "muse-glimmer");
+        assert_eq!(off.private_model_base, None);
+
+        let on = cfg(&[("PRIVATE_MODEL_BASE", " http://127.0.0.1:8080/v1 ")]);
+        assert!(on.private_mode());
+        assert_eq!(on.private_model_base.as_deref(), Some("http://127.0.0.1:8080/v1"));
+        assert_eq!(on.private_model, "muse-glimmer");
+
+        let baseten = cfg(&[
+            ("PRIVATE_MODEL_BASE", "https://inference.baseten.co/v1"),
+            ("PRIVATE_MODEL", "meta-models/muse-spark-open-1026"),
+            ("PIP_PRIVATE", "1"),
+        ]);
+        assert!(baseten.private_mode());
+        assert_eq!(baseten.private_model, "meta-models/muse-spark-open-1026");
+
+        for no in ["0", "off", "false"] {
+            assert!(!cfg(&[("PRIVATE_MODEL_BASE", "http://x/v1"), ("PIP_PRIVATE", no)]).private_mode(), "{no}");
+        }
+        assert!(!cfg(&[("PRIVATE_MODEL_BASE", "  ")]).private_mode(), "blank base is no base");
     }
 }

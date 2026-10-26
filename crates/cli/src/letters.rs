@@ -10,6 +10,7 @@ use pip_core::clock::{Clock, FixedClock};
 use pip_core::docs::{DocError, DocPipeline, DocumentExtract};
 use pip_core::events::UiEvent;
 use pip_core::memory::{Deadline, Memory};
+use pip_core::meta::{MetaClient, OpenWeightsClient};
 use pip_core::rules::{RuleEngine, local_at};
 
 use crate::{Ctx, expected};
@@ -23,10 +24,27 @@ pub const DEMO_SET: &[&str] = &[
 ];
 
 pub async fn read(ctx: &Ctx, file: &Path, crop: Option<&Path>) -> Result<()> {
-    let meta = ctx.meta()?;
+    // Private mode (PRIVATE_MODEL_BASE): a Meta open-weights model reads the letter; the cloud
+    // client is never called for it, so a missing MODEL_API_KEY does not matter there.
+    let private = OpenWeightsClient::from_config(&ctx.config).map(Arc::new);
+    let meta = match (ctx.meta(), &private) {
+        (Ok(m), _) => m,
+        (Err(_), Some(_)) => Arc::new(MetaClient::new("http://127.0.0.1:9", "unused")),
+        (Err(e), None) => return Err(e),
+    };
     let rules = Arc::new(RuleEngine::new(ctx.memory.clone(), ctx.clock.clone()));
-    let pipeline = DocPipeline::new(meta.clone(), ctx.memory.clone(), rules);
-    if let Some(out) = crop {
+    let mut pipeline = DocPipeline::new(meta.clone(), ctx.memory.clone(), rules);
+    if let Some(p) = &private {
+        println!(
+            "Private mode: reading with {} at {} (Meta open weights; the letter stays local, SAM crop skipped)",
+            p.model(),
+            p.base()
+        );
+        pipeline = pipeline.with_private(p.clone());
+    }
+    if let Some(out) = crop.filter(|_| private.is_some()) {
+        println!("--crop skipped: in private mode the photo is not sent to SAM ({}).", out.display());
+    } else if let Some(out) = crop {
         let bytes = std::fs::read(file).with_context(|| format!("cannot read {}", file.display()))?;
         let png = pipeline.crop_sheet(&bytes).await?;
         write_file(out, &png)?;
@@ -55,8 +73,12 @@ pub async fn read(ctx: &Ctx, file: &Path, crop: Option<&Path>) -> Result<()> {
             println!("  [{}] {}: {}", if c.ok { "ok" } else { "XX" }, c.name, c.got);
         }
     }
-    let u = meta.usage_total();
-    println!("\nTokens: {} in, {} out", u.input_tokens, u.output_tokens);
+    if r.private {
+        println!("\nTokens: n/a (private mode)");
+    } else {
+        let u = meta.usage_total();
+        println!("\nTokens: {} in, {} out", u.input_tokens, u.output_tokens);
+    }
     Ok(())
 }
 

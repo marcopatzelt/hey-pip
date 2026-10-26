@@ -29,6 +29,7 @@ const st = {
   pipState: "idle",
   pose: null,           // temporary pose overriding the state (wave, listen while dragging)
   acting: false,
+  actingEndedAt: -1e9,   // performance.now() when the last task ended (a "happy" right after it = celebrate)
   paused: false,
   dragging: false,
   onboarding: null,
@@ -52,7 +53,7 @@ const el = {
   bClose: $("bubble-close"), bCount: $("bubble-count"), note: $("note"),
   progress: $("progress"), pText: $("progress-text"), stop: $("stop"),
   ask: $("ask"), askInput: $("ask-input"), askMic: $("ask-mic"),
-  card: $("card"), panel: $("panel"),
+  card: $("card"), panel: $("panel"), confetti: $("confetti"),
 };
 
 // ---------- geometry ----------
@@ -131,13 +132,48 @@ function setState(state) {
   st.pipState = state;
   el.pip.className = el.pip.className.replace(/\bstate-\S+/g, "").trim() + ` state-${state}`;
   showPose();
-  if (state === "happy" && prev !== "happy") hop();
+  // A task just finished (the daily brief and a read letter are happy too, but never while acting): celebrate.
+  // "acting off" comes straight from the app while "happy" goes through the core bus, so it may arrive a few
+  // ms earlier: a happy right after acting still counts.
+  const justActed = st.acting || performance.now() - st.actingEndedAt < 1500;
+  if (state === "happy" && prev !== "happy") { if (justActed) celebrate(); else hop(); }
 }
 
-function hop() {
-  el.body.classList.remove("hop");
+function hop(big) {
+  // the done bubble arrives right before or after the celebration: its small hop must not cut the big one
+  if (!big && el.body.getAnimations().some((a) => a.animationName === "hop-big" && a.playState === "running")) return;
+  el.body.classList.remove("hop", "hop-big");
   void el.body.offsetWidth;
-  el.body.classList.add("hop");
+  el.body.classList.add(big ? "hop-big" : "hop");
+}
+
+// Confetti from Pip's middle and a big hop. Pure decoration: pointer-events:none, not in reportHits(),
+// gone within 1.2 s (the model's screenshots do not mask it). At most once per 3 s; nothing with reduced motion.
+const CONFETTI_COLORS = ["#0866ff", "#7b5cff", "#f2a33a", "#2ecc71"];
+let lastCelebrate = -1e9;
+function celebrate() {
+  const now = performance.now();
+  if (reduceMotion || now - lastCelebrate < 3000) { hop(); return; }
+  lastCelebrate = now;
+  hop(true);
+  const cx = st.pos.x + P / 2, cy = st.pos.y + P / 2;
+  const pieces = [];
+  for (let i = 0; i < 18; i++) {
+    const c = document.createElement("i");
+    c.style.left = `${cx - 5}px`;
+    c.style.top = `${cy - 7}px`;
+    c.style.background = CONFETTI_COLORS[i % CONFETTI_COLORS.length];
+    let dx = Math.round(-160 + Math.random() * 320);
+    if (cx + dx < EDGE || cx + dx > innerWidth - EDGE) dx = -dx; // at the screen edge: throw inward
+    c.style.setProperty("--dx", `${dx}px`);
+    c.style.setProperty("--dy", `${Math.round(-220 + Math.random() * 160)}px`);
+    c.style.setProperty("--r", `${Math.round(-540 + Math.random() * 1080)}deg`);
+    c.addEventListener("animationend", () => c.remove());
+    pieces.push(c);
+  }
+  el.confetti.append(...pieces);
+  // animationend never comes when animations are off: clean up anyway
+  setTimeout(() => pieces.forEach((c) => c.remove()), 1200);
 }
 
 (function blinkLoop() {
@@ -378,6 +414,7 @@ function showBubble(text, opts = {}) {
   if (!sticky) st.shownOf = 0;
   st.bubbleSticky = sticky;
   el.bText.textContent = text;
+  decorateStats(text);
   el.bExtra.replaceChildren(...(opts.extra || []));
   el.bButtons.replaceChildren(...(opts.buttons || []).map((b) => makeButton(b.label, b.primary, b.onClick)));
   el.bAfter.replaceChildren(...(opts.after || []));
@@ -392,6 +429,54 @@ function showBubble(text, opts = {}) {
   if (!same) hop();
   showCount();
 }
+// The sentences with numbers ("Done in 14 s. By hand ...", "2nd time on this site: ...", "... saved since we met.")
+// become highlighted chips. Built from text nodes only: el.bText.textContent stays exactly `text` (the
+// same-bubble check and the "timed" handler compare it). The icon comes from CSS ::before.
+const STAT_TEMPLATES = [
+  // [i18n key, kind, German, English]: S (UI_KEYS in bridge.rs) carries these; the copies are a safety net
+  ["done_time", "time", "Fertig in {secs} s. Von Hand dauert das etwa {minutes} Minuten.", "Done in {secs} s. By hand this takes about {minutes} minutes."],
+  ["done_time_one", "time", "Fertig in {secs} s. Von Hand dauert das etwa eine Minute.", "Done in {secs} s. By hand this takes about a minute."],
+  ["done_total", "total", "Seit wir uns kennen, habe ich dir etwa {total} gespart.", "That's about {total} saved since we met."],
+];
+const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+let statPatterns = null;
+function statRegexes() {
+  if (statPatterns) return statPatterns;
+  const pats = [];
+  for (const [key, kind, de, en] of STAT_TEMPLATES) {
+    for (const tpl of new Set([S[key], de, en].filter(Boolean))) {
+      pats.push([kind, escapeRe(tpl).replace(/\\\{\w+\\\}/g, "(.+?)")]);
+    }
+  }
+  pats.push(["fast", "\\d+(?:st|nd|rd|th) time on this site: [^]*?\\."]);
+  pats.push(["fast", "Zum \\d+\\. Mal auf dieser Seite: [^]*?beim letzten Mal\\."]);
+  // a stat sentence starts the text or follows a space
+  statPatterns = pats.map(([kind, src]) => [kind, new RegExp(`(?<=^|\\s)${src}`, "g")]);
+  return statPatterns;
+}
+function decorateStats(text) {
+  const hits = [];
+  for (const [kind, re] of statRegexes()) {
+    re.lastIndex = 0;
+    for (const m of text.matchAll(re)) hits.push({ start: m.index, end: m.index + m[0].length, kind });
+  }
+  if (!hits.length) return;
+  hits.sort((a, b) => a.start - b.start || b.end - a.end);
+  const parts = [];
+  let at = 0;
+  for (const h of hits) {
+    if (h.start < at) continue; // overlaps an earlier chip
+    if (h.start > at) parts.push(document.createTextNode(text.slice(at, h.start)));
+    const span = document.createElement("span");
+    span.className = `stat ${h.kind}`;
+    span.textContent = text.slice(h.start, h.end);
+    parts.push(span);
+    at = h.end;
+  }
+  if (at < text.length) parts.push(document.createTextNode(text.slice(at)));
+  el.bText.replaceChildren(...parts);
+}
+
 el.bubble.addEventListener("click", (e) => {
   if (el.bubble.classList.contains("closable") && !e.target.closest("button")) hideBubble();
 });
@@ -578,6 +663,7 @@ el.askInput.addEventListener("keydown", (e) => {
 $("ask-letter").addEventListener("click", () => { closeAsk(); send({ type: "pick_file" }); });
 $("ask-deadlines").addEventListener("click", () => { closeAsk(); invoke("open_deadlines").catch(() => {}); });
 $("ask-knows").addEventListener("click", () => { closeAsk(); invoke("open_knowledge").catch(() => {}); });
+$("ask-card").addEventListener("click", () => { closeAsk(); invoke("app_action", { action: "my_card" }).catch(() => {}); });
 $("ask-pause").addEventListener("click", () => { closeAsk(); invoke("app_action", { action: "pause" }).catch(() => {}); });
 // "Look at my screen": Pip looks at what is open and offers concrete help (works for anything).
 function lookAtScreen() {
@@ -793,6 +879,7 @@ function onApp(ev) {
   switch (ev.type) {
     case "acting":
       st.acting = ev.on;
+      if (!ev.on) st.actingEndedAt = performance.now();
       el.stop.hidden = !ev.on;
       if (ev.on) { closeAsk(); el.panel.hidden = true; st.marks = []; }
       else {
@@ -861,13 +948,61 @@ function showSetup(text) {
   setTimeout(() => input.focus(), 120);
 }
 
-// ---------- input on Pip ----------
-el.pip.addEventListener("click", () => {
+// ---------- input on Pip: click = ask, hold = talk ----------
+const HOLD_MS = 350;
+const HOLD_SLOP = 8;   // px the pointer may move before a press is no longer a click or hold
+const press = { id: null, x: 0, y: 0, timer: 0, holding: false, used: false };
+function pipClick() {
   if (st.dragging) return;
   if (st.paused) { invoke("wake").catch(() => {}); return; }
   if (st.onboarding || st.acting || st.card) { hop(); return; }
   if (el.ask.hidden) openAsk(); else closeAsk();
+}
+function holdStart() {
+  press.timer = 0;
+  press.used = true;
+  if (st.paused || st.onboarding || st.acting || st.card || st.dragging) { hop(); return; }
+  press.holding = true;
+  micDown = true; // keep the release inside the overlay, like the mic button
+  scheduleHits();
+  closeAsk();
+  el.pip.classList.add("holding");
+  st.pose = "listen";
+  showPose();
+  send({ type: "voice_start" });
+}
+el.pip.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  // A release that never reached us (capture lost, window hidden) must not leave Pip deaf: end that press first.
+  if (press.id !== null) pipUp({ pointerId: press.id, type: "pointercancel" });
+  e.preventDefault();
+  try { el.pip.setPointerCapture(e.pointerId); } catch (_) { /* synthetic pointer */ }
+  Object.assign(press, { id: e.pointerId, x: e.clientX, y: e.clientY, holding: false, used: false });
+  press.timer = setTimeout(holdStart, HOLD_MS);
 });
+el.pip.addEventListener("pointermove", (e) => {
+  if (e.pointerId !== press.id || !press.timer) return;
+  if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > HOLD_SLOP) { clearTimeout(press.timer); press.timer = 0; press.used = true; }
+});
+const pipUp = (e) => {
+  if (e.pointerId !== press.id) return;
+  const wasTimer = !!press.timer;
+  clearTimeout(press.timer);
+  press.timer = 0;
+  press.id = null;
+  if (press.holding) {
+    press.holding = false;
+    micDown = false;
+    scheduleHits();
+    el.pip.classList.remove("holding");
+    st.pose = null;
+    showPose();
+    send({ type: "voice_stop" });
+  } else if (wasTimer && e.type === "pointerup" && !press.used) pipClick();
+};
+el.pip.addEventListener("pointerup", pipUp);
+el.pip.addEventListener("pointercancel", pipUp);
+el.pip.addEventListener("lostpointercapture", pipUp); // after a normal release this is a no-op (press.id is null)
 window.addEventListener("keydown", (e) => {
   // Enter on the card = the primary button (only when Pip's window has the keyboard: an Enter typed into
   // another program never answers a card).
@@ -890,6 +1025,7 @@ function applyStaticText() {
   $("ask-letter").querySelector("span").textContent = s("btn_pick_letter");
   $("ask-deadlines").querySelector("span").textContent = s("tray_deadlines");
   $("ask-knows").querySelector("span").textContent = s("tray_knowledge");
+  $("ask-card").querySelector("span").textContent = S.btn_my_card || "What Pip did for me";
   $("ask-pause").querySelector("span").textContent = s("btn_pause_link");
   el.bClose.setAttribute("aria-label", s("btn_close"));
   fillChips();

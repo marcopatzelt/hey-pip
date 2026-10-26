@@ -349,3 +349,40 @@ fn wipe_everything_empties_every_table() {
     // The same letter can come in again after a wipe.
     m.insert_document(Path::new("C:/b/au.pdf"), "sha-w", &au_doc(d(2026, 10, 20), d(2026, 10, 30)), "AU").unwrap();
 }
+
+#[test]
+fn card_counters_count_done_deadlines_fired_reminders_and_the_first_event() {
+    let m = mem();
+    assert_eq!(m.documents_count().unwrap(), 0);
+    assert_eq!(m.deadlines_done_count().unwrap(), 0);
+    assert_eq!(m.reminders_fired_count().unwrap(), 0);
+    assert_eq!(m.first_event_at().unwrap(), None);
+
+    let early = local_at(d(2026, 10, 14), 16, 40);
+    let r1 = local_at(d(2026, 10, 28), 9, 0);
+    let r2 = local_at(d(2026, 10, 29), 9, 0);
+    let r3 = local_at(d(2026, 10, 30), 9, 0);
+    let a = m.add_deadline(&deadline("A", d(2026, 11, 2), vec![r1, r2, r3])).unwrap();
+    let b = m.add_deadline(&deadline("B", d(2026, 11, 3), vec![])).unwrap();
+    m.add_deadline(&deadline("C", d(2026, 11, 4), vec![])).unwrap();
+    m.set_deadline_status(a, DeadlineStatus::Done).unwrap();
+    m.set_deadline_status(b, DeadlineStatus::Dismissed).unwrap();
+    assert_eq!(m.deadlines_done_count().unwrap(), 1);
+
+    let ids: Vec<i64> = m
+        .conn()
+        .prepare("SELECT id FROM reminders ORDER BY at")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    m.mark_fired(ids[0], r1, None).unwrap();
+    m.mark_fired(ids[1], r2, Some("skipped")).unwrap();
+    assert_eq!(m.reminders_fired_count().unwrap(), 1, "a skipped reminder never showed");
+
+    m.insert_document(Path::new("C:/b/au.pdf"), "sha-c", &au_doc(d(2026, 10, 20), d(2026, 10, 30)), "AU").unwrap();
+    assert_eq!(m.documents_count().unwrap(), 1);
+    m.add_event_at(early, "done", "Sent the sick note").unwrap();
+    assert_eq!(m.first_event_at().unwrap(), Some(early));
+}

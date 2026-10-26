@@ -31,6 +31,38 @@ use crate::overlay::{self, FocusKeeper, OverlayInfo};
 use crate::voice::{Recorder, Silent, Speaker, TooShort, TtsSpeaker};
 use crate::{mock, tray};
 
+/// "Pip did this for me" is written next to Pip's log (same data folder) and opened in the browser.
+const CARD_FILE: &str = "pip-did-this.html";
+/// The card in mock mode (no database): invented numbers, so the UI can be shown.
+const MOCK_TALLY: pip_core::memory::Tally = pip_core::memory::Tally {
+    letters_read: 3,
+    forms_filled: 2,
+    sent_after_yes: 2,
+    deadlines_kept: 1,
+    reminders_on_time: 2,
+    seconds_saved: 1500,
+    since: None,
+};
+
+/// What Pip says when the card opens, or (`empty`) when there is nothing on it yet.
+fn card_sentence(empty: bool, lang: Lang) -> &'static str {
+    match (empty, lang) {
+        (false, Lang::En) => "Here's what we did together. I opened it in your browser.",
+        (false, Lang::De) => "Das haben wir zusammen geschafft. Ich habe es im Browser geöffnet.",
+        (true, Lang::En) => "We haven't done anything together yet. Give me a letter or press 'Look at my screen'.",
+        (true, Lang::De) => {
+            "Wir haben noch nichts zusammen gemacht. Gib mir einen Brief oder drück auf 'Schau auf meinen Bildschirm'."
+        }
+    }
+}
+
+fn card_failed(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Sorry, I couldn't open the page in your browser.",
+        Lang::De => "Entschuldige, ich konnte die Seite nicht im Browser öffnen.",
+    }
+}
+
 /// File types Pip can read.
 const LETTER_EXT: &[&str] = &["png", "jpg", "jpeg", "webp", "pdf"];
 /// After "Ja" on a card, the presenter's hand moves on: no mouse-move stop for this long.
@@ -90,6 +122,10 @@ const UI_KEYS: &[&str] = &[
     "tray_deadlines",
     "tray_knowledge",
     "btn_forget",
+    "done_time",
+    "done_time_one",
+    "done_total",
+    "btn_my_card",
 ];
 
 /// Profile keys that are Pip's own settings, not something about the person ("What Pip knows" hides them).
@@ -609,6 +645,13 @@ pub fn show_deadlines(app: &AppHandle) {
 pub fn show_knowledge(app: &AppHandle) {
     if let Some(ctx) = ctx_of(app) {
         ctx.show_knowledge();
+    }
+}
+
+/// Tray "What Pip did for me": the shareable card in the browser.
+pub fn show_card(app: &AppHandle) {
+    if let Some(ctx) = ctx_of(app) {
+        ctx.show_card();
     }
 }
 
@@ -1187,6 +1230,7 @@ impl Ctx {
         match action.split_once(':').unwrap_or((action, "")) {
             ("pause", _) => self.set_paused(true),
             ("last_letter", _) => self.last_letter(),
+            ("my_card", _) => self.show_card(),
             ("brief_go", _) => {
                 let offer = self.brief_task.lock().expect("brief lock").take();
                 if let Some(o) = offer {
@@ -1307,11 +1351,10 @@ impl Ctx {
             let p = path.clone();
             let result: Result<Read> = if self.backend.mock {
                 let m = mock::ingest(lang).await;
-                Ok(Read { bubble: m.bubble, duplicate: false, unsure: false, doc_id: None })
+                Ok(Read { bubble: m.bubble, unsure: false, doc_id: None })
             } else if let Some(docs) = self.backend.docs.clone() {
                 guard_async("ingest", async move { docs.ingest(&p, lang).await }).await.map(|r| Read {
                     bubble: r.bubble,
-                    duplicate: r.duplicate,
                     unsure: r.unsure,
                     doc_id: Some(r.doc_id),
                 })
@@ -1321,8 +1364,8 @@ impl Ctx {
             self.progress("");
             match result {
                 Ok(read) => {
-                    let text =
-                        if read.duplicate { format!("{} {}", t("doc_known", lang), read.bubble) } else { read.bubble };
+                    // a known letter's bubble already starts with "I already know this letter." (DocPipeline::ingest)
+                    let text = read.bubble;
                     self.pip(PipState::Happy);
                     self.bus.emit(UiEvent::Speak { text: text.clone() });
                     self.after_first_letter();
@@ -1539,6 +1582,44 @@ impl Ctx {
                 self.error(t("err_generic", lang), None, false);
             }
         }
+    }
+
+    /// "Pip did this for me": count from memory, write the card next to Pip's log, open it in the browser.
+    /// Nothing done yet: only a sentence, nothing is opened. Mock mode: a fixed invented tally.
+    fn show_card(&self) {
+        let lang = self.lang();
+        let tally = if self.backend.mock {
+            Some(MOCK_TALLY)
+        } else {
+            self.backend.memory.clone().and_then(|m| guard("card", || pip_core::memory::tally(&m)).ok())
+        };
+        let tally = tally.unwrap_or_default();
+        if tally.is_empty() {
+            self.pip(PipState::Idle);
+            let text = card_sentence(true, lang).to_string();
+            self.bus.emit(UiEvent::Speak { text: text.clone() });
+            self.say(text, vec![]);
+            return;
+        }
+        let name = if self.backend.mock { Some("Erika".to_string()) } else { self.backend.profile_get("name") };
+        let html = pip_core::memory::card_html(&tally, name.as_deref(), lang);
+        let path = pip_core::config::log_file().with_file_name(CARD_FILE);
+        let opened = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|_| std::fs::write(&path, html))
+            .map_err(anyhow::Error::from)
+            .and_then(|_| pip_core::agent::system_open(&pip_core::config::file_url(&path)));
+        if let Err(e) = opened {
+            tracing::warn!("card not opened: {e:#}");
+            self.pip(PipState::Asking);
+            self.say(card_failed(lang), vec![]);
+            return;
+        }
+        self.pip(PipState::Happy);
+        let text = card_sentence(false, lang).to_string();
+        self.bus.emit(UiEvent::Speak { text: text.clone() });
+        self.say(text, vec![]);
     }
 
     fn show_deadlines(&self) {
@@ -1850,7 +1931,6 @@ fn enable_autostart() -> bool {
 /// Letter reading result, the parts the bubble needs.
 struct Read {
     bubble: String,
-    duplicate: bool,
     unsure: bool,
     doc_id: Option<i64>,
 }
@@ -1882,6 +1962,18 @@ pub fn format_due(d: NaiveDate, lang: Lang) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_says_nothing_yet_when_every_number_is_zero() {
+        let empty = pip_core::memory::Tally::default();
+        assert!(empty.is_empty());
+        assert!(!MOCK_TALLY.is_empty());
+        assert!(card_sentence(empty.is_empty(), Lang::En).starts_with("We haven't done anything together yet."));
+        assert!(card_sentence(MOCK_TALLY.is_empty(), Lang::En).starts_with("Here's what we did together."));
+        assert!(card_sentence(true, Lang::De).starts_with("Wir haben noch nichts"));
+        let only_since = pip_core::memory::Tally { since: chrono::NaiveDate::from_ymd_opt(2026, 10, 14), ..empty };
+        assert!(only_since.is_empty(), "a day alone is nothing done");
+    }
 
     #[test]
     fn offer_buttons_yes_first_why_only_once() {

@@ -354,11 +354,7 @@ static TABLE: &[(&str, &str, &str)] = &[
     ),
     ("brief_hi", "Hallo {name}! Das steht an.", "Hi {name}! Here's what's coming up."),
     ("brief_hi_noname", "Hallo! Das steht an.", "Hi! Here's what's coming up."),
-    (
-        "brief_offer",
-        "Ich kann „{quote}“ jetzt für dich erledigen.",
-        "I can do \"{quote}\" for you right now.",
-    ),
+    ("brief_offer", "Ich kann „{quote}“ jetzt für dich erledigen.", "I can do \"{quote}\" for you right now."),
     ("btn_brief_go", "Ja, mach das", "Yes, do it now"),
     ("later_hint", "Gut. Klick einfach auf mich, wenn du mich brauchst.", "OK. Just click me when you need me."),
     ("chip_send_au", "Schick meine Krankschreibung an die Kasse", "Send my sick note to my insurer"),
@@ -564,6 +560,24 @@ static TABLE: &[(&str, &str, &str)] = &[
         "Fertig in {secs} s. Von Hand dauert das etwa eine Minute.",
         "Done in {secs} s. By hand this takes about a minute.",
     ),
+    // --- private mode (letters read by a Meta open-weights model on this computer) ---
+    (
+        "doc_private_note",
+        "Hier auf deinem Computer gelesen. Nichts hat ihn verlassen.",
+        "Read here on your computer. Nothing left it.",
+    ),
+    (
+        "doc_private_pdf",
+        "Im Privat-Modus lese ich Fotos und Scans. Bei einer PDF mach bitte ein Foto vom Brief, oder schalte den Privat-Modus aus.",
+        "In private mode I can read photos and scans. For a PDF, please take a picture of the letter, or turn private mode off.",
+    ),
+    (
+        "doc_private_offline",
+        "Mein privates Lesemodell antwortet nicht. Bitte starte es, oder schalte den Privat-Modus aus.",
+        "My private reading model isn't answering. Please start it, or turn private mode off.",
+    ),
+    // --- "Pip did this for me" card (tray entry and ask-box link) ---
+    ("btn_my_card", "Was Pip für mich getan hat", "What Pip did for me"),
 ];
 
 /// Lookup. Unknown key -> the key itself (visible in tests, never panics).
