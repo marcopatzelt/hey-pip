@@ -199,9 +199,7 @@ pub(crate) fn is_attach_like(text: &str) -> bool {
     // Whole words or word starts only: "browser" is no "browse", "profile" is no "file".
     let words: Vec<&str> = low.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
     let starts = ["anhäng", "anhang", "hochlad", "upload", "attach", "datei", "durchsuchen"];
-    words.iter().any(|w| {
-        starts.iter().any(|s| w.starts_with(s)) || matches!(*w, "file" | "files" | "browse")
-    })
+    words.iter().any(|w| starts.iter().any(|s| w.starts_with(s)) || matches!(*w, "file" | "files" | "browse"))
 }
 
 /// True if the target looks like a send / submit button (not a file picker).
@@ -746,7 +744,9 @@ mod attach_words_tests {
         assert!(is_attach_like("Browse…"));
         assert!(is_attach_like("Upload your sick note"));
         assert!(is_attach_like("Attachment"));
-        assert!(!is_attach_like("the Edge icon „Microsoft Edge“ in the task bar at the bottom browser icon in taskbar"));
+        assert!(!is_attach_like(
+            "the Edge icon „Microsoft Edge“ in the task bar at the bottom browser icon in taskbar"
+        ));
         assert!(!is_attach_like("the browser tab „Questionnaire“"));
         assert!(!is_attach_like("Your profile"));
     }

@@ -12,7 +12,7 @@
         380
       ],
       "sam_query": "text input field",
-      "description": "member field"
+      "description": "Text field \"Member number\""
     },
     "sms_field": {
       "box": [
@@ -22,7 +22,7 @@
         486
       ],
       "sam_query": "text input field",
-      "description": "sms field"
+      "description": "Text field \"SMS code\""
     },
     "submit_button": {
       "box": [
@@ -32,7 +32,7 @@
         562
       ],
       "sam_query": "button",
-      "description": "submit button"
+      "description": "Button \"Confirm now\""
     }
   }
 }

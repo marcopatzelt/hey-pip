@@ -33,6 +33,7 @@ use crate::memory::{
     ActionLog, DeadlineStatus, Learned, Memory, NewDeadline, RecallQuery, RunSummary, SENSITIVE_REFUSAL,
     is_protected_key, is_sensitive_key, is_sensitive_value, learn_from_run, recall, set_fact,
 };
+use crate::meta::image::{Zoom, zoom_png};
 use crate::meta::{
     Content, Effort, FunctionCall, InputItem, MODEL_SPARK, MetaClient, MetaError, ResponseRequest, Role, SamBox,
     ToolDef,
@@ -49,6 +50,16 @@ pub const PROFILE_LANG: &str = "lang";
 const MAX_BOX_SHARE: f64 = 0.4;
 /// At most this many numbered candidates go to the pick call.
 const MAX_CANDIDATES: usize = 20;
+/// The second grounding look: this region (API pixels) around the first candidate, enlarged this many times.
+const ZOOM_W: u32 = 480;
+const ZOOM_H: u32 = 300;
+const ZOOM_SCALE: u32 = 2;
+/// The second look this close (API pixels) to the first candidate keeps the first.
+const ZOOM_KEEP: u32 = 24;
+/// A SAM box this many times wider than high around a labelled button is split in two.
+const WIDE_RATIO: u32 = 4;
+/// ... and at least this wide (API pixels): a normal wide button ("Weiter", 200 x 40) stays whole.
+const WIDE_MIN_W: u32 = 240;
 /// Characters typed per chunk (cancel is checked between chunks).
 const TYPE_CHUNK: usize = 16;
 /// An open card or question that nobody answers gets a Windows notification after this long.
@@ -101,6 +112,21 @@ const NOT_DONE_PAGE_CHANGED: &str = "not done: the page changed, look again";
 const MAX_SAME_CALL: u32 = 2;
 /// Keys that move on by themselves (Tab through a form, arrows through a list): never counted as a repeat.
 const MOVING_KEYS: &[&str] = &["tab", "shift+tab", "up", "down", "left", "right", "pageup", "pagedown", "home", "end"];
+/// Said after a field that already shows its value and after a scroll that moved nothing: the form is filled, send it.
+const FILLED_HINT: &str = " All fields you know are filled. If every required field shows a value, click the send \
+button now (is_commit=true); if a value is missing, ask_user. Do not scroll for an upload field: this page has none \
+unless PAGE ELEMENTS lists a file button.";
+/// This many "already done" / "nothing moved" hits in one run: the run ends with the loop guard's question.
+const NOTHING_CHANGED_MAX: u8 = 3;
+/// Mean colour change (0..255) of the whole screen below which a scroll moved nothing (a blinking caret is ~0.03).
+const SCROLL_MOVED: f32 = 0.5;
+/// Output of an offer (ask_user with options) after something was sent in this run: not shown.
+const NOT_ASKED_AFTER_SEND: &str = "not asked: the form was sent. If the page shows a confirmation, call done now \
+with one short sentence. The app offers next steps itself. If the page shows an error instead, fix only the field \
+it names (ask_user without options when you need a value).";
+/// Added to the output of an approved send click or key.
+const SENT_NOTE: &str = " Sent. Look once at the page; if it confirms, call done with one sentence. Do not offer \
+anything else.";
 
 #[derive(Debug, Clone)]
 pub enum Task {
@@ -274,6 +300,14 @@ pub struct RunState {
     guard_site: Option<String>,
     /// The user pressed "I'm sure, continue" on the guard's warning: no more checks in this run.
     guard_ok: bool,
+    /// Offers made in this run (ask_user with options).
+    offers: u8,
+    /// A click, type_text, open_url or key ran since the last offer.
+    acted_since_offer: bool,
+    /// The screen (and the shape of its PAGE ELEMENTS) when the last offer was shown.
+    offer_screen: Option<(ApiImage, u64)>,
+    /// "already done" and "scrolled, but nothing moved" in this run; at NOTHING_CHANGED_MAX the run ends.
+    nothing_changed: u8,
 }
 
 /// A yes that could not be used because the page changed under the button.
@@ -367,6 +401,10 @@ impl RunState {
             guard_hits: 0,
             guard_site: None,
             guard_ok: false,
+            offers: 0,
+            acted_since_offer: false,
+            offer_screen: None,
+            nothing_changed: 0,
         }
     }
 
@@ -405,6 +443,7 @@ impl RunState {
         // The user looked at it: repeats start again.
         self.repeats.clear();
         self.guard_hits = 0;
+        self.nothing_changed = 0;
     }
 
     /// One more identical call (loop guard): how many in a row on this page. The count starts again when the page
@@ -1298,6 +1337,10 @@ impl Agent {
         {
             guarded = Some(self.loop_guard(&tool, &target, state, cancel, lang).await);
         }
+        let acts = matches!(tool, Tool::Click { .. } | Tool::TypeText { .. } | Tool::OpenUrl { .. } | Tool::Key { .. });
+        if acts && guarded.is_none() {
+            state.acted_since_offer = true;
+        }
         let run = match guarded {
             Some(run) => run,
             None => match self.run_tool(&tool, state, cancel, lang).await {
@@ -1345,10 +1388,15 @@ impl Agent {
             let shown = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
             if let Some(v) = shown.filter(|v| value_fits(&item, text, v)) {
                 tracing::info!(element = id, "loop guard: the field already shows the text, not typed again");
+                state.nothing_changed = state.nothing_changed.saturating_add(1);
+                if state.nothing_changed >= NOTHING_CHANGED_MAX {
+                    return self.stuck(lang);
+                }
                 return ToolRun::out(
                     Risk::Free,
                     format!(
-                        "already done: #{id} already shows \"{}\". Do not type into it again; continue with the rest.",
+                        "already done: #{id} already shows \"{}\". Do not type into it again; continue with the \
+                         rest.{FILLED_HINT}",
                         truncate(&v, 60)
                     ),
                 );
@@ -1362,9 +1410,7 @@ impl Agent {
             "loop guard: same call a third time, not run"
         );
         if state.guard_hits > 1 {
-            let text = t("loop_stuck", lang);
-            self.bubble(text, true);
-            return ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(text.to_string()));
+            return self.stuck(lang);
         }
         let Tool::TypeText { what, field_label, element, .. } = tool else {
             return ToolRun::out(
@@ -1397,6 +1443,13 @@ impl Agent {
             }
             Asked::Cancelled => ToolRun::finish(Risk::Free, AgentOutcome::Stopped),
         }
+    }
+
+    /// The run goes round in circles: ask the user once ("I'm stuck") and end the run.
+    fn stuck(&self, lang: Lang) -> ToolRun {
+        let text = t("loop_stuck", lang);
+        self.bubble(text, true);
+        ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(text.to_string()))
     }
 
     async fn run_tool(
@@ -1481,11 +1534,31 @@ without say.",
                 self.emit(UiEvent::PointClear);
                 self.pip(PipState::Acting);
                 self.progress(t("progress_scroll", lang));
-                let api = state.last_api.as_ref().ok_or_else(|| anyhow!("no screenshot yet"))?;
+                let api = state.last_api.clone().ok_or_else(|| anyhow!("no screenshot yet"))?;
                 let center = api.to_phys(api.w / 2, api.h / 2);
                 let dy = i32::from(*amount) * if *direction == ScrollDir::Down { 1 } else { -1 };
                 self.blocking(move |pl| pl.input.scroll(center, dy)).await?;
-                Ok(ToolRun::out(Risk::Act, format!("scrolled {direction:?} {amount}")))
+                // Let the page settle (smooth scrolling), then compare: a page that is already whole does not move.
+                if !self.pause(self.short_pace(), cancel).await {
+                    return Ok(ToolRun::finish(Risk::Free, AgentOutcome::Stopped));
+                }
+                let (after, outline) = tokio::join!(self.capture(), self.read_outline(state.phase));
+                let still = after.ok().is_some_and(|a| same_picture(&api, &a))
+                    && outline_shape(&outline) == outline_shape(&state.outline);
+                if !still {
+                    return Ok(ToolRun::out(Risk::Act, format!("scrolled {direction:?} {amount}")));
+                }
+                tracing::info!(n = state.nothing_changed + 1, "scroll moved nothing");
+                let mut out =
+                    "scrolled, but nothing moved: the whole page is already visible. Do not scroll again.".to_string();
+                if state.phase == Phase::Act {
+                    state.nothing_changed = state.nothing_changed.saturating_add(1);
+                    if state.nothing_changed >= NOTHING_CHANGED_MAX {
+                        return Ok(self.stuck(lang));
+                    }
+                    out.push_str(FILLED_HINT);
+                }
+                Ok(ToolRun::out(Risk::Act, out))
             }
             Tool::OpenUrl { url } => self.open_url(url, state, cancel, lang).await,
             Tool::Wait { seconds } => {
@@ -1534,17 +1607,42 @@ without say.",
                 })?;
                 Ok(ToolRun::out(Risk::Free, format!("saved deadline #{id}, reminders set")))
             }
-            Tool::AskUser { question, options } => match self.ask(state, question, options, cancel, lang).await {
-                Asked::Answer(a) => {
-                    state.answers.push(a.clone());
-                    Ok(ToolRun::out(Risk::Free, format!("The user answered: {a}")))
+            Tool::AskUser { options, .. } if !options.is_empty() && !state.sent.is_empty() => {
+                // After a send the app offers next steps itself; a "what next?" here loops.
+                tracing::info!("offer after a send: not asked");
+                Ok(ToolRun::out(Risk::Free, NOT_ASKED_AFTER_SEND))
+            }
+            Tool::AskUser { question, options }
+                if !options.is_empty()
+                    && state.offers >= 1
+                    && (!state.acted_since_offer || screen_unchanged(state)) =>
+            {
+                // A second offer with nothing done since the first (or nothing came of it: the same screen): the
+                // user already chose. The question closes the run as a plain bubble (no buttons), so it never asks
+                // round and round.
+                tracing::info!("second offer without an action: run ends");
+                self.bubble(question.clone(), true);
+                state.answered = true;
+                Ok(ToolRun::finish(Risk::Free, AgentOutcome::Done(question.clone())))
+            }
+            Tool::AskUser { question, options } => {
+                if !options.is_empty() {
+                    state.offers = state.offers.saturating_add(1);
+                    state.acted_since_offer = false;
+                    state.offer_screen = state.last_api.clone().map(|a| (a, outline_shape(&state.outline)));
                 }
-                Asked::Timeout => {
-                    self.away_bubble("question_timeout", "btn_ask_again", None, lang);
-                    Ok(ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(question.clone())))
+                match self.ask(state, question, options, cancel, lang).await {
+                    Asked::Answer(a) => {
+                        state.answers.push(a.clone());
+                        Ok(ToolRun::out(Risk::Free, format!("The user answered: {a}")))
+                    }
+                    Asked::Timeout => {
+                        self.away_bubble("question_timeout", "btn_ask_again", None, lang);
+                        Ok(ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(question.clone())))
+                    }
+                    Asked::Cancelled => Ok(ToolRun::finish(Risk::Free, AgentOutcome::Stopped)),
                 }
-                Asked::Cancelled => Ok(ToolRun::finish(Risk::Free, AgentOutcome::Stopped)),
-            },
+            }
             Tool::Done { summary } => Ok(ToolRun::finish(Risk::Free, AgentOutcome::Done(summary.clone()))),
             Tool::Suggest { page_quote, reason_doc_id, reason_deadline_id } => {
                 self.suggest(page_quote, *reason_doc_id, *reason_deadline_id, state, cancel, lang).await
@@ -1705,12 +1803,16 @@ without say.",
         let p = target.point;
         self.blocking(move |pl| pl.input.click(p)).await?;
         state.last_point = Some(p);
+        let just_sent = sent.is_some();
         if let Some(what) = sent {
             state.sent.push(what);
             state.send_label = Some(button_label);
         }
         let attach_note = if attach_card { ATTACH_APPROVED_NOTE } else { "" };
         let mut out = format!("clicked {description}{attach_note}{note}");
+        if just_sent {
+            out.push_str(SENT_NOTE);
+        }
         if let Some(to) = &trusted {
             self.bubble(tf("sent_trusted", lang, &[("to", to)]), true);
             out.push_str(" (trusted site: the user said not to ask again for it)");
@@ -2124,10 +2226,14 @@ without say.",
         }
         let c = combo.clone();
         self.blocking(move |pl| pl.input.key(&c)).await?;
+        let just_sent = sent.is_some();
         if let Some(what) = sent {
             state.sent.push(what);
         }
         let mut out = format!("pressed {combo}");
+        if just_sent {
+            out.push_str(SENT_NOTE);
+        }
         if attach_card {
             out.push_str(ATTACH_APPROVED_NOTE);
         }
@@ -3042,9 +3148,10 @@ without say.",
         Ok(t)
     }
 
-    /// SAM 3.1 and a Spark point run in parallel. The SAM box that contains Spark's point gives the exact
-    /// element (click its center, highlight its outline). Otherwise Spark picks among the numbered boxes
-    /// (UI-tree candidates first, then SAM's); if none fits (or there are none), Spark's own point is used.
+    /// Stage 1: SAM 3.1 (the query and its synonyms) and a Spark point run in parallel. The SAM box that contains
+    /// Spark's point gives the exact element (click its center, highlight its outline). Otherwise Spark picks among
+    /// the numbered boxes (UI-tree candidates first, then SAM's); if none fits (or there are none), Spark's own
+    /// point is used. Stage 2 (`zoom`): Spark looks again at an enlarged cut-out around that first candidate.
     async fn ground_target(
         &self,
         api: &ApiImage,
@@ -3052,9 +3159,21 @@ without say.",
         description: &str,
         extra: Vec<SamBox>,
     ) -> Result<Option<Target>> {
-        let (sam, xy) = tokio::join!(self.meta.sam_segment(&api.png, sam_query), self.spark_xy(api, description));
+        let (sam, xy) = tokio::join!(self.meta.sam_segment_all(&api.png, sam_query), self.spark_xy(api, description));
+        // A wide box around a labelled button is often the whole row ("Datei auswählen  Keine ausgewählt"): its
+        // halves are the candidates; the highlight, the card picture and the label stay the whole row.
+        let mut halves: Vec<(SamBox, SamBox)> = Vec::new();
         let sam_boxes = match sam {
-            Ok(raw) => filter_boxes(raw, api.w, api.h),
+            Ok(raw) => {
+                let boxes = filter_boxes(raw, api.w, api.h);
+                if quoted_label(description).is_some() && !is_field_query(sam_query) {
+                    let (boxes, h) = split_wide(boxes);
+                    halves = h;
+                    boxes
+                } else {
+                    boxes
+                }
+            }
             Err(e) if xy.is_ok() || !extra.is_empty() => {
                 tracing::warn!(error = %e, "sam failed, using the model's point");
                 Vec::new()
@@ -3072,24 +3191,99 @@ without say.",
             }
             Err(e) => return Err(e),
         };
-        tracing::debug!(n = boxes.len(), ?xy, sam_query, "grounding candidates");
-        if let Some((x, y)) = xy
-            && let Some(b) = box_at(&boxes, x, y, (api.w.max(api.h) / 120).max(4))
+        let mut largest: Vec<(u32, u32, u32, u32)> = boxes.iter().map(|b| (b.x1, b.y1, b.x2, b.y2)).collect();
+        largest.sort_by_key(|&(x1, y1, x2, y2)| std::cmp::Reverse(u64::from(x2 - x1) * u64::from(y2 - y1)));
+        largest.truncate(3);
+        tracing::info!(n = boxes.len(), ?largest, ?xy, sam_query, "ground: candidates");
+        let margin = (api.w.max(api.h) / 120).max(4);
+        // Stage 1 result: (path, point, box). A pick runs together with the enlarged look around Spark's point.
+        let mut early_look = None;
+        let first = if let Some((x, y)) = xy
+            && let Some(b) = box_at(&boxes, x, y, margin)
         {
             self.log("ground", "agree".into(), Risk::Free, None, "box + point agree", 0);
-            return Ok(Some(target_of(api, b))); // both models agree
+            Some(("agree", b.center(), Some(b))) // both models agree
+        } else {
+            // Disagreement or no point: Spark picks among the numbered boxes (0 = none fits).
+            let pick =
+                async { if boxes.is_empty() { Ok(None) } else { self.spark_pick(api, &boxes, description).await } };
+            let look = async {
+                match xy {
+                    Some(p) => Some(self.zoom_look(api, p, description).await),
+                    None => None,
+                }
+            };
+            let (pick, look) = tokio::join!(pick, look);
+            match pick? {
+                Some(i) => {
+                    self.log("ground", "pick".into(), Risk::Free, None, "numbered box", 0);
+                    // The look around Spark's point counts only when it lands in the picked box.
+                    early_look = look.filter(|l| l.is_some_and(|(x, y)| box_at(&[boxes[i]], x, y, margin).is_some()));
+                    Some(("pick", boxes[i].center(), Some(boxes[i])))
+                }
+                None => match xy {
+                    Some(p) => {
+                        self.log("ground", "point".into(), Risk::Free, None, "model point only", 0);
+                        early_look = look;
+                        Some(("point", p, None))
+                    }
+                    None => None,
+                },
+            }
+        };
+        let Some((path, p, first_box)) = first else {
+            tracing::info!("ground: not found");
+            return Ok(None);
+        };
+        let box_target = |b: SamBox| match halves.iter().find(|(half, _)| *half == b) {
+            Some((half, row)) => {
+                let (cx, cy) = half.center();
+                Target { point: api.to_phys(cx, cy), rect: api.box_to_phys(row), api_box: *row }
+            }
+            None => target_of(api, b),
+        };
+        let keep = || first_box.map(box_target).unwrap_or_else(|| point_target(api, p.0, p.1));
+        // Stage 2: the enlarged look around the first candidate.
+        let second = match early_look {
+            Some(look) => look,
+            None => self.zoom_look(api, p, description).await,
+        };
+        let mut decision = zoom_decision(&boxes, p, second, margin);
+        let mut third = None;
+        if let ZoomPick::Point(x, y) = decision {
+            // The two looks disagree and neither hit a box: one more enlarged look around the second point.
+            third = self.zoom_look(api, (x, y), description).await;
+            decision = tie_break(&boxes, p, (x, y), third, margin);
         }
-        // Disagreement or no point: Spark picks among the numbered boxes (0 = none fits).
-        if !boxes.is_empty()
-            && let Some(i) = self.spark_pick(api, &boxes, description).await?
-        {
-            self.log("ground", "pick".into(), Risk::Free, None, "numbered box", 0);
-            return Ok(Some(target_of(api, boxes[i])));
-        }
-        if xy.is_some() {
-            self.log("ground", "point".into(), Risk::Free, None, "model point only", 0);
-        }
-        Ok(xy.map(|(x, y)| point_target(api, x, y)))
+        let target = match decision {
+            ZoomPick::Keep => keep(),
+            ZoomPick::Box(b) if Some(b) == first_box => keep(),
+            ZoomPick::Box(b) => {
+                self.log("ground", "zoom".into(), Risk::Free, None, "enlarged look: box", 0);
+                box_target(b)
+            }
+            ZoomPick::Point(x, y) => {
+                self.log("ground", "zoom".into(), Risk::Free, None, "enlarged look: point", 0);
+                point_target(api, x, y)
+            }
+        };
+        let (fx, fy) = (target.point.x - api.origin.x, target.point.y - api.origin.y);
+        tracing::info!(path, first = ?p, ?second, ?third, point = ?(fx, fy), "ground: result (physical pixels)");
+        Ok(Some(target))
+    }
+
+    /// Stage 2: Spark points again on a 2x enlarged cut-out (ZOOM_W x ZOOM_H API pixels) around `p`. Returns
+    /// API-image pixels, or None if Spark does not see the target there (or the call failed: the first stays).
+    async fn zoom_look(&self, api: &ApiImage, p: (u32, u32), description: &str) -> Option<(u32, u32)> {
+        let look = async {
+            let z = zoom_png(&api.png, p.0, p.1, ZOOM_W, ZOOM_H, ZOOM_SCALE)?;
+            let zapi = zoomed_api(api, &z);
+            Ok::<_, anyhow::Error>(self.spark_xy(&zapi, description).await?.map(|(x, y)| z.to_source(x, y)))
+        };
+        look.await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "enlarged look failed, keeping the first candidate");
+            None
+        })
     }
 
     /// Small direct model call with one forced tool; returns its arguments (or None).
@@ -3131,7 +3325,23 @@ without say.",
 
     /// Index into `boxes`, or None.
     async fn spark_pick(&self, api: &ApiImage, boxes: &[SamBox], description: &str) -> Result<Option<usize>> {
-        let img = api.with_numbered_boxes(boxes)?;
+        // All candidates in one small region: number them on the 2x enlarged cut-out (bigger labels to read).
+        let img = match pick_region(boxes, api.w, api.h) {
+            Some((cx, cy)) => {
+                let z = zoom_png(&api.png, cx, cy, ZOOM_W, ZOOM_H, ZOOM_SCALE)?;
+                let (zw, zh) = z.size();
+                let local: Vec<SamBox> = boxes
+                    .iter()
+                    .map(|b| {
+                        let (x1, y1) = z.from_source(b.x1, b.y1);
+                        let (x2, y2) = z.from_source(b.x2, b.y2);
+                        SamBox { x1, y1, x2, y2, img_w: zw, img_h: zh }
+                    })
+                    .collect();
+                zoomed_api(api, &z).with_numbered_boxes(&local)?
+            }
+            None => api.with_numbered_boxes(boxes)?,
+        };
         let tool = ToolDef {
             name: "choose".into(),
             description: "Give the number of the box that is the target, or 0 if no box fits.".into(),
@@ -3260,6 +3470,24 @@ fn outline_shape(outline: &[OutlineItem]) -> u64 {
         i.name.hash(&mut h);
     }
     h.finish()
+}
+
+/// The screen looks as it did at the last offer (same picture, same PAGE ELEMENTS): what was done since changed
+/// nothing the user could see.
+fn screen_unchanged(state: &RunState) -> bool {
+    match (&state.offer_screen, &state.last_api) {
+        (Some((then, shape)), Some(now)) => *shape == outline_shape(&state.outline) && same_picture(then, now),
+        _ => false,
+    }
+}
+
+/// Two screenshots show the same page: equal bytes, or (a blinking caret, a clock) almost no colour change over the
+/// whole picture (not only its middle: a form at the left of a wide screen moves at the edge).
+fn same_picture(before: &ApiImage, after: &ApiImage) -> bool {
+    if before.png == after.png {
+        return true;
+    }
+    crate::meta::image::mean_diff(&before.png, &after.png).is_some_and(|d| d < SCROLL_MOVED)
 }
 
 /// A browser window (Edge, Chrome, Firefox) by class or title.
@@ -3561,6 +3789,98 @@ fn not_found(sam_query: &str) -> String {
         "not found: nothing matching '{sam_query}' is visible. Try another sam_query, scroll, or ask_user if it \
          is really missing."
     )
+}
+
+/// What the enlarged second look says about the first candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZoomPick {
+    /// The first candidate stands (the second look agrees, is near it, or saw nothing).
+    Keep,
+    /// The second look lies in this candidate box: its centre.
+    Box(SamBox),
+    /// The second look lies elsewhere: this point (API pixels).
+    Point(u32, u32),
+}
+
+/// Stage 2 decision: the zoomed point inside a candidate box -> that box; within ZOOM_KEEP API pixels of the first
+/// candidate -> keep it; else the zoomed point.
+fn zoom_decision(boxes: &[SamBox], first: (u32, u32), second: Option<(u32, u32)>, margin: u32) -> ZoomPick {
+    let Some((x, y)) = second else { return ZoomPick::Keep };
+    if let Some(b) = box_at(boxes, x, y, margin) {
+        return ZoomPick::Box(b);
+    }
+    let (dx, dy) = (f64::from(x.abs_diff(first.0)), f64::from(y.abs_diff(first.1)));
+    if dx.hypot(dy) <= f64::from(ZOOM_KEEP) { ZoomPick::Keep } else { ZoomPick::Point(x, y) }
+}
+
+/// The first point and the enlarged look around it disagree (and neither is in a box). The third look, enlarged
+/// around the second point, decides: in a box -> that box; near the second -> the second; near the first -> keep
+/// the first; nothing seen there -> keep the first; else the third point.
+fn tie_break(
+    boxes: &[SamBox],
+    first: (u32, u32),
+    second: (u32, u32),
+    third: Option<(u32, u32)>,
+    margin: u32,
+) -> ZoomPick {
+    let near = |a: (u32, u32), b: (u32, u32)| {
+        f64::from(a.0.abs_diff(b.0)).hypot(f64::from(a.1.abs_diff(b.1))) <= f64::from(ZOOM_KEEP)
+    };
+    let Some(t) = third else { return ZoomPick::Keep };
+    if let Some(b) = box_at(boxes, t.0, t.1, margin) {
+        ZoomPick::Box(b)
+    } else if near(t, second) {
+        ZoomPick::Point(second.0, second.1)
+    } else if near(t, first) {
+        ZoomPick::Keep
+    } else {
+        ZoomPick::Point(t.0, t.1)
+    }
+}
+
+/// The enlarged cut-out as an image of its own: its pixels map straight to physical pixels.
+fn zoomed_api(api: &ApiImage, z: &Zoom) -> ApiImage {
+    let (w, h) = z.size();
+    ApiImage { png: z.png.clone(), w, h, factor: api.factor / z.scale as f32, origin: api.to_phys(z.x0, z.y0) }
+}
+
+/// Centre of the region that holds every candidate (plus a small rim), when it fits in one ZOOM_W x ZOOM_H cut-out
+/// that does not cover the whole image anyway.
+fn pick_region(boxes: &[SamBox], w: u32, h: u32) -> Option<(u32, u32)> {
+    const RIM: u32 = 16;
+    let x1 = boxes.iter().map(|b| b.x1).min()?.saturating_sub(RIM);
+    let y1 = boxes.iter().map(|b| b.y1).min()?.saturating_sub(RIM);
+    let x2 = (boxes.iter().map(|b| b.x2).max()? + RIM).min(w);
+    let y2 = (boxes.iter().map(|b| b.y2).max()? + RIM).min(h);
+    let fits = x2 - x1 <= ZOOM_W && y2 - y1 <= ZOOM_H;
+    (fits && (w > ZOOM_W || h > ZOOM_H)).then(|| ((x1 + x2) / 2, (y1 + y2) / 2))
+}
+
+/// A box more than WIDE_RATIO times wider than high and at least WIDE_MIN_W wide is cut into a left and a right
+/// half (a button and the text beside it in one row); the zoom stage decides which half is meant. Returns the
+/// boxes and every (half, whole row).
+fn split_wide(boxes: Vec<SamBox>) -> (Vec<SamBox>, Vec<(SamBox, SamBox)>) {
+    let mut out = Vec::with_capacity(boxes.len());
+    let mut halves = Vec::new();
+    for b in boxes {
+        let (w, h) = (b.x2 - b.x1, b.y2 - b.y1);
+        if w > WIDE_RATIO * h && w >= WIDE_MIN_W {
+            let mid = b.x1 + w / 2;
+            for half in [SamBox { x2: mid, ..b }, SamBox { x1: mid, ..b }] {
+                out.push(half);
+                halves.push((half, b));
+            }
+        } else {
+            out.push(b);
+        }
+    }
+    (out, halves)
+}
+
+/// A sam_query for a text field: a wide box is the field itself, never split.
+fn is_field_query(sam_query: &str) -> bool {
+    let q = sam_query.to_lowercase();
+    ["input", "field", "text", "area", "box", "bar", "drop"].iter().any(|w| q.contains(w))
 }
 
 /// Smallest box that contains (x, y), with a small margin for points just outside an edge.
@@ -4125,6 +4445,80 @@ mod tests {
     fn filter_rescales_other_image_size() {
         let b = SamBox { x1: 50, y1: 50, x2: 100, y2: 70, img_w: 500, img_h: 400 };
         assert_eq!(filter_boxes(vec![b], 1000, 800), vec![sb(100, 100, 200, 140)]);
+    }
+
+    #[test]
+    fn wide_rows_are_split_and_normal_buttons_are_not() {
+        // The file row "Datei auswählen  Keine ausgewählt" (646 x 94) and a normal wide button (200 x 40).
+        let row = sb(307, 746, 953, 840);
+        let button = sb(700, 600, 900, 640);
+        let (boxes, halves) = split_wide(vec![row, button]);
+        assert_eq!(boxes, vec![sb(307, 746, 630, 840), sb(630, 746, 953, 840), button]);
+        assert_eq!(halves, vec![(boxes[0], row), (boxes[1], row)]);
+        // Not wide enough in relation to its height, or too small.
+        let (boxes, halves) = split_wide(vec![sb(0, 0, 300, 100), sb(0, 0, 230, 20)]);
+        assert_eq!(boxes.len(), 2);
+        assert!(halves.is_empty());
+        assert!(is_field_query("text input field") && is_field_query("search box") && !is_field_query("button"));
+    }
+
+    #[test]
+    fn the_zoomed_look_decides() {
+        let boxes = [sb(100, 100, 300, 140), sb(400, 100, 600, 140)];
+        // Saw nothing, or close to the first candidate: keep it.
+        assert_eq!(zoom_decision(&boxes, (200, 300), None, 8), ZoomPick::Keep);
+        assert_eq!(zoom_decision(&boxes, (200, 300), Some((215, 315)), 8), ZoomPick::Keep);
+        // Inside a candidate box (or just outside its edge): that box.
+        assert_eq!(zoom_decision(&boxes, (200, 300), Some((450, 120)), 8), ZoomPick::Box(boxes[1]));
+        assert_eq!(zoom_decision(&boxes, (200, 300), Some((305, 120)), 8), ZoomPick::Box(boxes[0]));
+        // Elsewhere and far: the zoomed point.
+        assert_eq!(zoom_decision(&boxes, (200, 300), Some((441, 793)), 8), ZoomPick::Point(441, 793));
+        assert_eq!(zoom_decision(&[], (277, 793), Some((441, 793)), 8), ZoomPick::Point(441, 793));
+    }
+
+    #[test]
+    fn a_third_look_breaks_the_tie() {
+        let boxes = [sb(766, 910, 952, 970)];
+        let (first, second) = ((277, 793), (438, 904));
+        // Seen nothing around the second point: the second is doubtful, keep the first.
+        assert_eq!(tie_break(&boxes, first, second, None, 8), ZoomPick::Keep);
+        // Confirms the second, or comes back to the first.
+        assert_eq!(tie_break(&boxes, first, second, Some((445, 910)), 8), ZoomPick::Point(438, 904));
+        assert_eq!(tie_break(&boxes, first, second, Some((280, 790)), 8), ZoomPick::Keep);
+        // Lands in a box, or somewhere new: that.
+        assert_eq!(tie_break(&boxes, first, second, Some((800, 930)), 8), ZoomPick::Box(boxes[0]));
+        assert_eq!(tie_break(&boxes, first, second, Some((441, 793)), 8), ZoomPick::Point(441, 793));
+    }
+
+    #[test]
+    fn the_zoomed_picture_maps_to_physical_pixels() {
+        let png = {
+            let img = image::RgbImage::from_pixel(1600, 1000, image::Rgb([250, 250, 250]));
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        // A 2560 x 1600 screen at origin (100, 0), sent as 1600 x 1000 (factor 1.6).
+        let api = ApiImage { png, w: 1600, h: 1000, factor: 1.6, origin: PhysPoint { x: 100, y: 0 } };
+        for (cx, cy) in [(441, 793), (0, 0), (1599, 999)] {
+            let z = zoom_png(&api.png, cx, cy, ZOOM_W, ZOOM_H, ZOOM_SCALE).unwrap();
+            let zapi = zoomed_api(&api, &z);
+            assert_eq!((zapi.w, zapi.h), (960, 600));
+            // The same spot through the cut-out and through the whole picture lands on the same physical pixel.
+            let (lx, ly) = z.from_source(cx, cy);
+            let (a, b) = (zapi.to_phys(lx, ly), api.to_phys(cx, cy));
+            assert!((a.x - b.x).abs() <= 2 && (a.y - b.y).abs() <= 2, "{cx},{cy}: {a:?} vs {b:?}");
+            assert_eq!(z.to_source(lx, ly), (cx, cy));
+        }
+    }
+
+    #[test]
+    fn pick_region_only_when_all_candidates_fit() {
+        assert_eq!(pick_region(&[sb(100, 100, 300, 140), sb(400, 100, 500, 140)], 1600, 1000), Some((300, 120)));
+        assert_eq!(pick_region(&[sb(100, 100, 300, 140), sb(900, 100, 1000, 140)], 1600, 1000), None);
+        assert_eq!(pick_region(&[], 1600, 1000), None);
+        // The picture is no bigger than a cut-out: nothing to enlarge.
+        assert_eq!(pick_region(&[sb(10, 10, 50, 50)], 400, 300), None);
     }
 
     #[test]

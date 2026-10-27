@@ -1,0 +1,291 @@
+{
+ "note": "UI Automation outline of demo-busy.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-busy/index.html, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-busy.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "Services",
+   "value": null,
+   "rect": {
+    "x": 984,
+    "y": 25,
+    "w": 57,
+    "h": 23
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "Appointments",
+   "value": null,
+   "rect": {
+    "x": 1063,
+    "y": 25,
+    "w": 100,
+    "h": 23
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "Forms",
+   "value": null,
+   "rect": {
+    "x": 1185,
+    "y": 25,
+    "w": 44,
+    "h": 23
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "link",
+   "name": "Contact",
+   "value": null,
+   "rect": {
+    "x": 1252,
+    "y": 25,
+    "w": 54,
+    "h": 23
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "button",
+   "name": "Search",
+   "value": null,
+   "rect": {
+    "x": 1334,
+    "y": 20,
+    "w": 32,
+    "h": 32
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "link",
+   "name": "Home",
+   "value": null,
+   "rect": {
+    "x": 234,
+    "y": 80,
+    "w": 40,
+    "h": 22
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "link",
+   "name": "My documents",
+   "value": null,
+   "rect": {
+    "x": 314,
+    "y": 80,
+    "w": 97,
+    "h": 22
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "button",
+   "name": "×",
+   "value": null,
+   "rect": {
+    "x": 1344,
+    "y": 119,
+    "w": 22,
+    "h": 22
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "text",
+   "name": "My documents",
+   "value": null,
+   "rect": {
+    "x": 251,
+    "y": 187,
+    "w": 226,
+    "h": 23
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 10,
+   "role": "link",
+   "name": "Residence certificate",
+   "value": null,
+   "rect": {
+    "x": 251,
+    "y": 219,
+    "w": 226,
+    "h": 34
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 11,
+   "role": "link",
+   "name": "Parking permit",
+   "value": null,
+   "rect": {
+    "x": 251,
+    "y": 253,
+    "w": 226,
+    "h": 34
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 12,
+   "role": "link",
+   "name": "Waste collection calendar",
+   "value": null,
+   "rect": {
+    "x": 251,
+    "y": 287,
+    "w": 226,
+    "h": 34
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 13,
+   "role": "link",
+   "name": "Dog tax notice",
+   "value": null,
+   "rect": {
+    "x": 251,
+    "y": 321,
+    "w": 226,
+    "h": 34
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 14,
+   "role": "link",
+   "name": "Messages (2)",
+   "value": null,
+   "rect": {
+    "x": 251,
+    "y": 356,
+    "w": 226,
+    "h": 34
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 15,
+   "role": "text",
+   "name": "Residence certificate",
+   "value": null,
+   "rect": {
+    "x": 545,
+    "y": 193,
+    "w": 796,
+    "h": 40
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 16,
+   "role": "button",
+   "name": "Download",
+   "value": null,
+   "rect": {
+    "x": 545,
+    "y": 444,
+    "w": 109,
+    "h": 39
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 17,
+   "role": "button",
+   "name": "Print",
+   "value": null,
+   "rect": {
+    "x": 664,
+    "y": 444,
+    "w": 72,
+    "h": 39
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 18,
+   "role": "button",
+   "name": "Share",
+   "value": null,
+   "rect": {
+    "x": 746,
+    "y": 444,
+    "w": 78,
+    "h": 39
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 19,
+   "role": "link",
+   "name": "your appointment page",
+   "value": null,
+   "rect": {
+    "x": 545,
+    "y": 571,
+    "w": 189,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

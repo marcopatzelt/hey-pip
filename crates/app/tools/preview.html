@@ -5,8 +5,9 @@
   <title>Pip preview</title>
   <!-- Dev tool: runs ui/main.js in a normal browser with a fake Tauri bridge and an invented form
        behind it. Scenes: #onboarding #story #card #reminder #error #deadlines #ask #sleep #drag #celebrate #listen
-       #stats #stats_de #hold #celebrate_race #guard (all invented data). ?shot=1 = for tools/shot.sh (headless screenshot when the
-       scene is ready); &reduce=1 = pretend the user asked for reduced motion. -->
+       #stats #stats_de #hold #celebrate_race #guard #peek-rest #peek-hover #peek-open #peek-story #peek-back (all invented data). ?shot=1 = for tools/shot.sh (headless screenshot when the
+       scene is ready); &reduce=1 = pretend the user asked for reduced motion; &mode=always = tray "Always show Pip";
+       &peek=N = PIP_PEEK_SECS. The peek scenes draw a 48 px taskbar that Pip must never cover. -->
   <base href="../ui/">
   <link rel="stylesheet" href="style.css">
   <style>
@@ -17,6 +18,9 @@
     #desk .f { position: absolute; border: 1px solid #b9c0cc; border-radius: 6px; background: #fff; }
     #desk .send { position: absolute; background: #2e7d32; color: #fff; border-radius: 6px; display: grid; place-items: center; font-size: 17px; }
     #desk .file { position: absolute; background: #eceff4; border: 1px solid #b9c0cc; border-radius: 6px; display: grid; place-items: center; font-size: 15px; }
+    #desk .taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: 48px; background: rgba(32, 36, 44, .92); display: flex; align-items: center; justify-content: center; gap: 14px; }
+    #desk .taskbar i { width: 28px; height: 28px; border-radius: 7px; background: rgba(255, 255, 255, .28); }
+    #desk .taskbar .clock { position: absolute; right: 18px; color: #e8ecf3; font: 14px "Segoe UI", system-ui, sans-serif; }
     #log { position: fixed; left: 8px; bottom: 8px; font: 12px monospace; color: #345; max-width: 40vw; white-space: pre; opacity: .7; }
   </style>
   <script>
@@ -40,6 +44,10 @@
       done_total: "That's about {total} saved since we met.",
       heard: "I understood: \"{text}\"", listening: "I'm listening …",
       tray_knowledge: "What Pip knows", btn_pause_link: "Take a break",
+      peek_hint: "Need help? Click me", ask_what: "What shall I do?", btn_go: "Go", btn_mic: "Hold and talk",
+      ask_placeholder: "Type it here. Or hold the microphone.", btn_look_screen: "Look at my screen",
+      chip_send_au: "Send my sick note", chip_last_letter: "My last letter", chip_deadlines: "My deadlines",
+      btn_pick_letter: "Pick a letter", tray_deadlines: "My deadlines", btn_my_card: "What Pip did for me",
     };
     const params = new URLSearchParams(location.search);
     const SHOT = params.has("shot");
@@ -47,7 +55,9 @@
     const slow = (ms) => { const i = new Image(); i.alt = ""; i.hidden = true; i.src = `/slow?ms=${ms}&t=${Math.random()}`; document.documentElement.append(i); };
     if (SHOT) slow(1500);
     // How long each scene runs before the screenshot (ms after the scene starts).
-    const SHOT_AT = { celebrate: 450, celebrate_race: 450, story: 5200, card: 900, listen: 900, stats: 700, stats_de: 700, hold: 900, ask: 700, onboarding: 700, guard: 1100 };
+    const SCENE = location.hash.slice(1) || "onboarding";
+    const PEEK_SCENE = SCENE.startsWith("peek");
+    const SHOT_AT = { "peek-rest": 400, "peek-hover": 1700, "peek-open": 900, "peek-story": 9500, "peek-back": 3200, celebrate: 450, celebrate_race: 450, story: 5200, card: 900, listen: 900, stats: 700, stats_de: 700, hold: 900, ask: 700, onboarding: 700, guard: 1100 };
     if (params.has("reduce")) {
       const real = window.matchMedia.bind(window);
       window.matchMedia = (q) => q.includes("reduce") ? { matches: true, media: q, addEventListener() {}, removeEventListener() {} } : real(q);
@@ -61,11 +71,16 @@
     const rect = (x, y, w, h) => ({ x: Math.round(innerWidth * x * dpr()), y: Math.round(innerHeight * y * dpr()), w: Math.round(innerWidth * w * dpr()), h: Math.round(innerHeight * h * dpr()) });
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     let approve = null;
+    let approveSoon = false; // peek-story: every card says yes by itself after 700 ms
     window.__TAURI__ = {
       core: {
         invoke: async (cmd, args) => {
           if (cmd === "ui_strings") return S;
-          if (cmd === "overlay_info") return { x: 0, y: 0, w: innerWidth * dpr(), h: innerHeight * dpr(), scale: dpr(), windowed: false };
+          if (cmd === "overlay_info") return {
+            x: 0, y: 0, w: innerWidth * dpr(), h: innerHeight * dpr(), scale: dpr(), windowed: false,
+            mode: params.get("mode") || "peek", peek_secs: Number(params.get("peek") ?? (SCENE === "peek-story" || SCENE === "peek-back" ? 1 : 10)),
+            taskbar_css: PEEK_SCENE ? 48 : 0,
+          };
           if (cmd === "ui_ready") {
             if (SHOT) { const name = location.hash.slice(1) || "onboarding"; slow(SHOT_AT[name] ?? 1000); scene(); } else setTimeout(scene, 300);
             return;
@@ -98,6 +113,7 @@
     const press = (type) => document.getElementById("pip").dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 7, button: 0, isPrimary: true, clientX: 0, clientY: 0 }));
     async function card(title, yes) {
       ui({ type: "approval_request", card: { id: crypto.randomUUID(), title, what: "Was: deine Krankschreibung 20.10.–30.10.", to: "An: Evergreen Health (Kontaktformular)", attachments: ["krankschreibung_beispiel.pdf"], crop_png_b64: null, yes_label: yes, no_label: "Noch nicht" } });
+      if (approveSoon) setTimeout(() => document.getElementById("card-yes").click(), 700);
       return new Promise((r) => (approve = r));
     }
     async function story() {
@@ -114,8 +130,15 @@
       ui({ type: "bubble", text: "Erledigt. Ich merke mir: Krankschreibung ist bei Evergreen Health.", buttons: [], question_id: null });
       emit("app", { type: "acting", on: false }); await wait(2000); ui({ type: "pip", state: "idle" });
     }
+    // Where Pip is: "rest" | "hover" | "up", and whether his visible part ends above the taskbar.
+    const peekState = () => {
+      const pip = document.getElementById("pip");
+      const state = pip.classList.contains("peek-rest") ? "rest" : pip.classList.contains("peek-hover") ? "hover" : "up";
+      const r = pip.getBoundingClientRect();
+      return `${state} y=${Math.round(r.top)}`;
+    };
     function scene() {
-      const name = location.hash.slice(1) || "onboarding";
+      const name = SCENE;
       if (name === "onboarding") ui({ type: "onboarding", step: "ask_name" });
       if (name === "letter") ui({ type: "onboarding", step: "first_letter" });
       if (name === "story") story();
@@ -149,6 +172,39 @@
       if (name === "stats_de") ui({ type: "bubble", text: "Erledigt. Fertig in 14 s. Von Hand dauert das etwa 6 Minuten. Seit wir uns kennen, habe ich dir etwa 25 Minuten gespart. Zum 2. Mal auf dieser Seite: 14 s statt 41 s beim letzten Mal.", buttons: [], question_id: null });
       if (name === "sleep") { ui({ type: "pip", state: "sleeping" }); emit("app", { type: "paused", on: true }); ui({ type: "bubble", text: "Ich mache Pause. Klick mich an, dann bin ich wieder da.", buttons: [], question_id: null }); }
       if (name === "drag") emit("app", { type: "drag", state: "enter" });
+      if (name === "peek-rest") log(`peek: ${peekState()}`);
+      if (name === "peek-hover") {
+        const pip = document.getElementById("pip");
+        pip.dispatchEvent(new PointerEvent("pointerenter", { pointerId: 7, clientX: innerWidth - 60, clientY: innerHeight - 70 }));
+        // the cursor sits a little left of the head: the eyes look there
+        const move = () => document.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 7, clientX: innerWidth - 260, clientY: innerHeight - 140 }));
+        move(); setTimeout(move, 600); setTimeout(move, 1200);
+        setTimeout(() => log(`peek: ${peekState()}, tip: ${!document.getElementById("peek-tip").hidden}`), 1300);
+      }
+      if (name === "peek-open") { press("pointerdown"); setTimeout(() => { press("pointerup"); setTimeout(() => log(`peek: ${peekState()}`), 500); }, 80); }
+      if (name === "peek-back") {
+        // a short "Done." from the edge: up while it shows, back to rest 1 s after it is closed
+        ui({ type: "pip", state: "happy" });
+        ui({ type: "bubble", text: "Done.", buttons: [], question_id: null });
+        const up = peekState();
+        setTimeout(() => { document.getElementById("bubble").click(); ui({ type: "pip", state: "idle" }); }, 600);
+        setTimeout(() => log(`peek-back shown:${up} | after:${peekState()}`), 3000);
+      }
+      if (name === "peek-story") {
+        // the scripted demo from the edge: brief, card (approved by itself), done, then back to rest after 2 s
+        const seen = [];
+        const note = (what) => seen.push(`${what}:${peekState()}`);
+        approveSoon = true;
+        ui({ type: "pip", state: "happy" });
+        ui({ type: "bubble", text: "Good morning! Your sick note ends tomorrow.", buttons: [], question_id: null });
+        note("brief");
+        setTimeout(() => { ui({ type: "pip", state: "idle" }); document.getElementById("bubble").hidden = true; story(); }, 600);
+        const iv = setInterval(() => {
+          if (!document.getElementById("card").hidden && !seen.some((x) => x.startsWith("card"))) note("card");
+          if (/Erledigt/.test(document.getElementById("bubble-text").textContent) && !seen.some((x) => x.startsWith("done"))) note("done");
+        }, 100);
+        setTimeout(() => { clearInterval(iv); note("later"); log(`peek-story ${seen.join(" | ")}`); }, 9300);
+      }
       if (name === "guard") {
         // a lookalike page (invented): the core stops before typing and asks with an amber bubble
         emit("app", { type: "acting", on: true }); ui({ type: "pip", state: "asking" });
@@ -190,7 +246,7 @@
         add("send", .18, .60, .16, .065, "Confirm now", { background: "#d32f2f", fontWeight: "700" });
         const lab = (t, y) => { const l = document.createElement("label"); l.textContent = t; Object.assign(l.style, { left: "18%", top: (y - .03) * 100 + "%" }); desk.append(l); };
         lab("Member number", .40); lab("SMS code", .50);
-        const sc = document.createElement("script"); sc.src = "main.js"; document.body.append(sc);
+        loadScripts();
         return;
       }
       // fake form fields at the same screen fractions as the mock story
@@ -198,8 +254,20 @@
       add("f", .18, .30, .30, .05); add("f", .18, .40, .30, .05); add("file", .18, .50, .14, .05, "Datei auswählen"); add("send", .36, .62, .12, .06, "Absenden");
       const lab = (t, y) => { const l = document.createElement("label"); l.textContent = t; Object.assign(l.style, { left: "18%", top: (y - .03) * 100 + "%" }); desk.append(l); };
       lab("Name", .30); lab("Versichertennummer", .40); lab("Krankschreibung", .50);
-      const s = document.createElement("script"); s.src = "main.js"; document.body.append(s);
+      // the README pictures (peek-rest, -hover, -open) without the debug log
+      if (/[?&]shot=1/.test(location.search) && ["#peek-rest", "#peek-hover", "#peek-open"].includes(location.hash)) document.getElementById("log").hidden = true;
+      if (location.hash.startsWith("#peek")) {
+        const bar = document.createElement("div"); bar.className = "taskbar";
+        bar.innerHTML = "<i></i><i></i><i></i><i></i><i></i><span class=clock>09:41</span>";
+        desk.append(bar);
+      }
+      loadScripts();
     })();
+    function loadScripts() {
+      for (const src of ["peek.js", "main.js"]) {
+        const sc = document.createElement("script"); sc.src = src; sc.async = false; document.body.append(sc);
+      }
+    }
   </script>
 </body>
 </html>

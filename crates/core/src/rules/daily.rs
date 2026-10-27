@@ -9,6 +9,7 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Local};
 
 use super::text::{fmt_date, fmt_date_mid, join, tr};
+use super::tips::{self, Tip};
 use crate::agent::tools::truncate;
 use crate::i18n::{Lang, t};
 use crate::memory::{Deadline, Memory};
@@ -39,13 +40,17 @@ pub struct BriefOffer {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Brief {
-    /// Bubble and voice text: greeting, one or two deadlines, the offer.
+    /// Bubble and voice text: greeting, one or two deadlines, the "Good to know" tip, the offer.
     pub text: String,
     pub offer: Option<BriefOffer>,
+    /// The "Good to know" tip said in `text` (rule + source), at most once in tips::TIP_REPEAT_DAYS.
+    pub tip: Option<Tip>,
 }
 
 /// The brief for `now`, or None when nothing is due within BRIEF_DAYS (the app then says "welcome back").
 /// `services`: (page URL, its HTML) when the insurer's services page is known and readable.
+/// A "Good to know" tip (`tips::for_brief`) comes after the deadlines and before the offer (whose buttons follow
+/// it); its deadline then drops the sentence the tip says anyway. Saying it writes the event `tip_shown`.
 pub fn daily_brief(
     mem: &Memory,
     now: DateTime<Local>,
@@ -65,8 +70,14 @@ pub fn daily_brief(
         Some(n) => tr("brief_hi", lang, &[("name", n)]),
         None => tr("brief_hi_noname", lang, &[]),
     };
+    let tip = tips::for_brief(mem, now, lang)?;
+    let tip_deadline = tip.as_ref().and_then(|t| t.deadline_id);
     for dl in &items {
-        text = join(&text, &item_sentence(mem, dl, now, lang)?);
+        text = join(&text, &item_sentence(mem, dl, now, lang, tip_deadline == Some(dl.id))?);
+    }
+    if let Some(t) = &tip {
+        text = join(&text, &t.text);
+        tips::mark_shown(mem, t, now)?;
     }
 
     // A heading the user already said yes or "Not now" to is not offered again: no sentence, no button.
@@ -75,7 +86,7 @@ pub fn daily_brief(
     if let Some(o) = &offer {
         text = join(&text, &tr("brief_offer", lang, &[("quote", &o.heading)]));
     }
-    Ok(Some(Brief { text, offer }))
+    Ok(Some(Brief { text, offer, tip }))
 }
 
 /// The offer right after a finished task: the first open deadline (by due date, any distance) that shares a
@@ -215,8 +226,9 @@ fn is_asked(asked: &[String], heading: &str) -> bool {
     asked.iter().any(|a| a == &heading.trim().to_lowercase())
 }
 
-/// One or two sentences about one deadline, worded like the reminders.
-fn item_sentence(mem: &Memory, dl: &Deadline, now: DateTime<Local>, lang: Lang) -> Result<String> {
+/// One or two sentences about one deadline, worded like the reminders. `tip_says_due`: the brief's tip names
+/// this deadline's date, so the sick note's "you need a new one by …" is left out.
+fn item_sentence(mem: &Memory, dl: &Deadline, now: DateTime<Local>, lang: Lang, tip_says_due: bool) -> Result<String> {
     let today = now.date_naive();
     let due_mid = fmt_date_mid(dl.due, lang);
     if dl.due < today {
@@ -245,7 +257,12 @@ fn item_sentence(mem: &Memory, dl: &Deadline, now: DateTime<Local>, lang: Lang) 
             } else {
                 tr("rem_au_need_new", lang, &[("due", &due_mid)])
             };
-            if first.is_empty() { second } else { join(&first, &second) }
+            // The tip names the follow-up date: say it once (with no sick-note line, the tip is the sentence).
+            match (first.is_empty(), tip_says_due) {
+                (_, true) => first,
+                (true, false) => second,
+                (false, false) => join(&first, &second),
+            }
         }
         Some("widerspruch_bescheid") => {
             let first = if dl.due == today {
@@ -404,7 +421,9 @@ mod tests {
         let b = daily_brief(&mem, now, Lang::En, Some("Erika"), None).unwrap().unwrap();
         assert!(b.text.starts_with("Hi Erika! Here's what's coming up."), "{}", b.text);
         assert!(b.text.contains("Your sick note ends on Friday, October 30."), "{}", b.text);
-        assert!(b.text.contains("you need a new one by Monday, November 2."), "{}", b.text);
+        // The follow-up date is said once, by the "Good to know" tip (due within 7 days).
+        assert!(!b.text.contains("you need a new one"), "{}", b.text);
+        assert!(b.text.contains("issued by Monday, 2 November"), "{}", b.text);
         assert!(
             b.text.contains(
                 "The deadline \"Send the questionnaire back to Evergreen Health\" ends on Friday, November 13."
@@ -417,6 +436,10 @@ mod tests {
         assert_eq!(b.offer, None);
         assert!(!b.text.contains("I can fill in"), "{}", b.text);
 
+        // The tip was said: the next briefs on the same day name the follow-up date the old way.
+        let again = daily_brief(&mem, now, Lang::En, Some("Erika"), None).unwrap().unwrap();
+        assert_eq!(again.tip, None);
+        assert!(again.text.contains("you need a new one by Monday, November 2."), "{}", again.text);
         let de = daily_brief(&mem, now, Lang::De, Some("Erika"), None).unwrap().unwrap();
         assert!(de.text.starts_with("Hallo Erika!"), "{}", de.text);
         assert!(!de.text.contains('{'), "{}", de.text);
@@ -429,6 +452,71 @@ mod tests {
         let (mem, _) = erika();
         let b = daily_brief(&mem, local_at(d(2026, 10, 29), 9, 0), Lang::En, Some("Erika"), None).unwrap().unwrap();
         assert!(b.text.contains("Your sick note ends tomorrow."), "{}", b.text);
+    }
+
+    /// Sentences of a brief after its greeting ("Hi Erika! Here's what's coming up.").
+    fn body_sentences(text: &str) -> usize {
+        let body = text.split_once("coming up.").map_or(text, |(_, b)| b);
+        body.split_inclusive(['.', '!', '?']).filter(|s| !s.trim().is_empty()).count()
+    }
+
+    #[test]
+    fn brief_ends_with_the_good_to_know_tip_once() {
+        let (mem, _) = erika();
+        let now = local_at(d(2026, 10, 29), 9, 0);
+        let b = daily_brief(&mem, now, Lang::En, Some("Erika"), None).unwrap().unwrap();
+        let tip = b.tip.clone().expect("tip");
+        assert_eq!(tip.id, "au_gap");
+        assert_eq!(tip.source, "§ 46 Satz 2 SGB V");
+        assert!(b.text.ends_with(&tip.text), "{}", b.text);
+        assert!(tip.text.starts_with("Good to know"), "{}", tip.text);
+        assert!(tip.text.contains("Monday, 2 November"), "{}", tip.text);
+        assert!(b.text.contains("Your sick note ends tomorrow."), "{}", b.text);
+        assert!(b.text.contains("questionnaire"), "two deadlines and the tip: {}", b.text);
+        assert!(body_sentences(&b.text) < 4, "{}: {}", body_sentences(&b.text), b.text);
+        let ev = mem.recent_events(10).unwrap();
+        assert!(ev.iter().any(|e| e.kind == tips::EV_TIP_SHOWN && e.text == "au_gap"), "{ev:?}");
+
+        // The next day: no tip again, and the brief still names the follow-up date.
+        let next = daily_brief(&mem, now + Duration::days(1), Lang::En, Some("Erika"), None).unwrap().unwrap();
+        assert_eq!(next.tip, None, "{}", next.text);
+        assert!(!next.text.contains("Good to know"), "{}", next.text);
+        assert!(next.text.contains("you need a new one by Monday, November 2."), "{}", next.text);
+    }
+
+    #[test]
+    fn brief_tip_comes_before_the_offer_and_can_be_switched_off() {
+        let (mem, _) = erika();
+        let now = local_at(d(2026, 10, 29), 9, 0);
+        let b = daily_brief(&mem, now, Lang::En, Some("Erika"), Some((URL, SERVICES))).unwrap().unwrap();
+        assert!(b.tip.is_some() && b.offer.is_some());
+        assert!(b.text.ends_with("I can do \"Return your questionnaire online\" for you right now."), "{}", b.text);
+        assert!(b.text.contains("please check with your insurer. I can do"), "{}", b.text);
+
+        let (mem, _) = erika();
+        mem.profile_set("tips", "off").unwrap();
+        let b = daily_brief(&mem, now, Lang::En, Some("Erika"), None).unwrap().unwrap();
+        assert_eq!(b.tip, None);
+        assert!(!b.text.contains("Good to know"), "{}", b.text);
+        assert!(b.text.contains("you need a new one by Monday, November 2."), "{}", b.text);
+
+        let (mem, _) = erika();
+        let de = daily_brief(&mem, now, Lang::De, Some("Erika"), None).unwrap().unwrap();
+        assert!(de.text.contains("Gut zu wissen") && de.text.contains("Montag, 2. November"), "{}", de.text);
+        assert!(!de.text.contains('{'), "{}", de.text);
+    }
+
+    /// A sick-note deadline without its letter: the tip is the only sentence that names the follow-up date.
+    #[test]
+    fn brief_tip_says_the_follow_up_date_once_without_the_letter() {
+        let mem = Memory::open_in_memory().unwrap();
+        add(&mem, "New sick note, if you are still ill", d(2026, 11, 2), "au_lueckenlos", None);
+        let now = local_at(d(2026, 10, 29), 9, 0);
+        let b = daily_brief(&mem, now, Lang::En, Some("Erika"), None).unwrap().unwrap();
+        assert!(b.tip.is_some(), "{}", b.text);
+        assert!(!b.text.contains("you need a new one"), "{}", b.text);
+        assert_eq!(b.text.matches("2 November").count() + b.text.matches("November 2").count(), 1, "{}", b.text);
+        assert!(body_sentences(&b.text) < 4, "{}", b.text);
     }
 
     #[test]

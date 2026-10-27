@@ -180,10 +180,12 @@ sent. The full tables and the known weak spots are in [`eval/results.md`](eval/r
 | Cold memory (Pip knows nothing about the person) | 13 of 13 sent, about 1 question per run |
 | Two-step university form, memory without the playbook: 1st run → 2nd run | 8 steps, 29 s, 1 question → 5 steps, 17 s, no question |
 | Insurer upload page with cookie banner, cold memory: 1st run → 2nd run | 5 steps, 18 s, 1 question → 4 steps, 13 s, no question |
+| Click targets found from the picture alone (SAM 3.1 + Muse Spark), loop run 2 | 19 of 20 runs on 5 buttons × 4 runs (file buttons, cookie button, Yes radio, a button on a red page); 10 of 12 on a busy dark page; 37 of 40 in all |
+| Pages with nothing to do: Pip asked once and did nothing, loop run 2 | 5 of 6 runs (a weather page and a page that gives Pip orders, full and cold memory; the real pizza form 1 of 1); missed: the insurer's help page, where Pip went on to the contact form |
 
-The model does not answer the same way every time; each number is one run (Oct 26, 2026, loop run 1). 11 of 17
-repeated tasks were faster the second time, also without the playbook (4 of 5): the facts Pip remembered remove the
-question. The failures and earlier runs are listed in `eval/results.md`.
+The model does not answer the same way every time; each number is one run (Oct 26, 2026, loop run 1; the rows
+marked loop run 2: Oct 27, 2026). 11 of 17 repeated tasks were faster the second time, also without the playbook
+(4 of 5): the facts Pip remembered remove the question. The failures and earlier runs are listed in `eval/results.md`.
 
 ## Safe by design
 

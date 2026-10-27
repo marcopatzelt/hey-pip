@@ -17,7 +17,7 @@ use crate::meta::responses::data_url;
 use crate::meta::{
     Content, Effort, InputItem, MODEL_SPARK, MetaClient, MetaError, OpenWeightsClient, ResponseRequest, SamBox, ToolDef,
 };
-use crate::rules::RuleEngine;
+use crate::rules::{RuleEngine, Tip, tips};
 
 /// Tool the model calls with the result (strict schema = extract + `letter_text`).
 const SAVE_TOOL: &str = "save_letter";
@@ -106,6 +106,9 @@ pub struct IngestResult {
     pub unsure: bool,
     /// true if the letter was read in private mode (open-weights model, nothing sent to the cloud).
     pub private: bool,
+    /// "Good to know" rule with its source for this letter (`rules::tips`), at most one; NOT part of `bubble`
+    /// (the UI shows it on its own). None when no rule fits or the profile says `tips` = "off".
+    pub tip: Option<Tip>,
 }
 
 pub struct DocPipeline {
@@ -434,6 +437,7 @@ impl DocPipeline {
             let known = say("doc_known", lang, &[]);
             let bubble = format!("{known} {}", bubble_text(&row.extract, &deadlines, lang));
             let unsure = is_unsure(&row.extract) && !deadlines.is_empty();
+            let tip = self.tip_for(&row.extract, &deadlines, lang);
             return Ok(IngestResult {
                 doc_id: row.id,
                 extract: row.extract,
@@ -442,6 +446,7 @@ impl DocPipeline {
                 duplicate: true,
                 unsure,
                 private: self.is_private(),
+                tip,
             });
         }
 
@@ -482,7 +487,27 @@ impl DocPipeline {
             "letter ingested"
         );
         let unsure = is_unsure(&extract) && !deadlines.is_empty();
-        Ok(IngestResult { doc_id, extract, deadlines, bubble, duplicate: false, unsure, private: self.is_private() })
+        let tip = self.tip_for(&extract, &deadlines, lang);
+        Ok(IngestResult {
+            doc_id,
+            extract,
+            deadlines,
+            bubble,
+            duplicate: false,
+            unsure,
+            private: self.is_private(),
+            tip,
+        })
+    }
+
+    /// The "Good to know" tip for a letter, after its deadlines are applied. "Today" is the rule engine's clock,
+    /// so the tip and the deadlines agree (a demo clock keeps both). A memory error only loses the tip.
+    fn tip_for(&self, extract: &DocumentExtract, deadlines: &[Deadline], lang: Lang) -> Option<Tip> {
+        let today = self.rules.today();
+        tips::for_letter_in(&self.memory, extract, deadlines, today, lang).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "tip check failed");
+            None
+        })
     }
 
     /// Private mode: the open-weights model reads the PNG and answers with one JSON object

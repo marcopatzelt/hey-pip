@@ -1,0 +1,261 @@
+{
+ "note": "UI Automation outline of demo-insurer-questionnaire-v3.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-insurer/questionnaire-v3.html, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-insurer-questionnaire-v3.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "E Evergreen Health Your health insurer in Sampletown",
+   "value": null,
+   "rect": {
+    "x": 278,
+    "y": 50,
+    "w": 267,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "Benefits",
+   "value": null,
+   "rect": {
+    "x": 1089,
+    "y": 64,
+    "w": 61,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "Service",
+   "value": null,
+   "rect": {
+    "x": 1175,
+    "y": 64,
+    "w": 53,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "link",
+   "name": "Contact",
+   "value": null,
+   "rect": {
+    "x": 1252,
+    "y": 64,
+    "w": 58,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "text",
+   "name": "Questionnaire: your sick leave",
+   "value": null,
+   "rect": {
+    "x": 368,
+    "y": 136,
+    "w": 852,
+    "h": 45
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "text",
+   "name": "Before you start",
+   "value": null,
+   "rect": {
+    "x": 397,
+    "y": 214,
+    "w": 794,
+    "h": 32
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "edit",
+   "name": "Name of insured person",
+   "value": "",
+   "rect": {
+    "x": 397,
+    "y": 652,
+    "w": 388,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "edit",
+   "name": "Policy number",
+   "value": "",
+   "rect": {
+    "x": 803,
+    "y": 652,
+    "w": 388,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "edit",
+   "name": "First day of illness",
+   "value": "",
+   "rect": {
+    "x": 397,
+    "y": 754,
+    "w": 388,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 10,
+   "role": "text",
+   "name": "Your doctor",
+   "value": null,
+   "rect": {
+    "x": 397,
+    "y": 842,
+    "w": 794,
+    "h": 30
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 11,
+   "role": "edit",
+   "name": "Practice name (optional)",
+   "value": "",
+   "rect": {
+    "x": 397,
+    "y": 915,
+    "w": 388,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 12,
+   "role": "edit",
+   "name": "Doctor's name (optional)",
+   "value": "",
+   "rect": {
+    "x": 803,
+    "y": 915,
+    "w": 388,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 13,
+   "role": "text",
+   "name": "Your work",
+   "value": null,
+   "rect": {
+    "x": 397,
+    "y": 1003,
+    "w": 794,
+    "h": 30
+   },
+   "offscreen": true,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 14,
+   "role": "edit",
+   "name": "Employer (required)",
+   "value": "",
+   "rect": {
+    "x": 397,
+    "y": 1076,
+    "w": 794,
+    "h": 53
+   },
+   "offscreen": true,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 15,
+   "role": "radio",
+   "name": "No",
+   "value": "unchecked",
+   "rect": {
+    "x": 402,
+    "y": 1182,
+    "w": 22,
+    "h": 22
+   },
+   "offscreen": true,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 16,
+   "role": "radio",
+   "name": "Yes",
+   "value": "unchecked",
+   "rect": {
+    "x": 495,
+    "y": 1182,
+    "w": 22,
+    "h": 22
+   },
+   "offscreen": true,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 17,
+   "role": "button",
+   "name": "Submit",
+   "value": null,
+   "rect": {
+    "x": 1032,
+    "y": 1221,
+    "w": 159,
+    "h": 54
+   },
+   "offscreen": true,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

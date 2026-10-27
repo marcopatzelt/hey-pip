@@ -98,6 +98,11 @@ impl RuleEngine {
         Self { memory, clock }
     }
 
+    /// Today on the engine's clock (a demo clock counts), the same day the rules use for their deadlines.
+    pub fn today(&self) -> NaiveDate {
+        self.clock.now().date_naive()
+    }
+
     /// The user's language from the profile (default English), for stored deadline titles and reasons.
     fn lang(&self) -> Lang {
         self.memory.profile_get("lang").ok().flatten().map(|s| Lang::from_code(&s)).unwrap_or_default()

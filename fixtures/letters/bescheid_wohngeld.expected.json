@@ -12,5 +12,6 @@
       "due": "2026-11-18"
     }
   ],
+  "tip": "widerspruch_month",
   "note": "Widerspruch: 1 month after Bekanntgabe; Bekanntgabe = 14.10. + 4 days = 18.10. -> 18.11.2026. The letter itself names no date (model must not calculate one)."
 }

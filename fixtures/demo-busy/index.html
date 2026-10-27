@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beispielstadt Citizen Portal</title>
+<!-- INVENTED city portal for the click-target eval (picture-only grounding): a dark header with a small magnifier
+     icon button, a notice bar with a small "x", three similar grey buttons in a row and a link inside running text.
+     Nothing leaves the page. Switch (fixture screenshots only): ?mark paints the four targets in solid colours
+     (icon_button red, close_x green, print_button blue, text_link magenta). -->
+<style>
+  :root { --ink: #1f2933; --muted: #5f6b76; --line: #d5dbe1; --bg: #eef1f4; --dark: #1c2733; --dark2: #26364a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 17px/1.55 "Segoe UI", system-ui, -apple-system, Arial, sans-serif; color: var(--ink); background: var(--bg); }
+  header { background: var(--dark); color: #dfe7ef; }
+  .top { max-width: 1180px; margin: 0 auto; padding: 12px 24px; display: flex; align-items: center; gap: 28px; }
+  .crest { width: 38px; height: 38px; border-radius: 6px; background: #3d5a80; display: grid; place-items: center; font-weight: 700; color: #fff; }
+  .brand b { display: block; font-size: 20px; color: #fff; line-height: 1.1; }
+  .brand span { font-size: 12px; color: #9fb1c3; }
+  nav { display: flex; gap: 22px; margin-left: auto; }
+  nav a { color: #c9d6e3; text-decoration: none; font-size: 15px; }
+  .icon-btn { width: 32px; height: 32px; padding: 0; border: 0; border-radius: 6px; background: var(--dark2); color: #c9d6e3; display: grid; place-items: center; cursor: pointer; }
+  .icon-btn svg { width: 18px; height: 18px; }
+  .sub { background: var(--dark2); }
+  .sub .top { padding: 8px 24px; font-size: 14px; color: #9fb1c3; gap: 18px; }
+  .sub a { color: #c9d6e3; text-decoration: none; }
+  .notice { background: #fff3cd; border-bottom: 1px solid #e8d48b; color: #5c4700; }
+  .notice .in { max-width: 1180px; margin: 0 auto; padding: 8px 24px; display: flex; align-items: center; gap: 12px; font-size: 15px; }
+  .close-x { margin-left: auto; width: 22px; height: 22px; padding: 0; border: 0; background: transparent; color: #5c4700; font-size: 18px; line-height: 1; cursor: pointer; }
+  main { max-width: 1180px; margin: 0 auto; padding: 22px 24px 30px; display: grid; grid-template-columns: 260px 1fr; gap: 26px; }
+  aside { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 15px; }
+  aside h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 0 0 8px; }
+  aside a { display: block; color: #2b4c7e; text-decoration: none; padding: 5px 0; border-bottom: 1px solid #eef1f4; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 20px 24px; margin-bottom: 18px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  .meta { color: var(--muted); font-size: 14px; margin-bottom: 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; margin-bottom: 16px; }
+  td { padding: 7px 10px; border-bottom: 1px solid #eef1f4; }
+  td:first-child { color: var(--muted); width: 180px; }
+  .tools { display: flex; gap: 10px; }
+  .tool { font: inherit; font-size: 15px; padding: 7px 18px; border-radius: 6px; border: 1px solid #b9c2cb; background: #e4e8ec; color: var(--ink); cursor: pointer; }
+  p a { color: #2b4c7e; }
+  footer { text-align: center; font-size: 13px; color: var(--muted); padding: 0 24px 24px; }
+  .mark #search { background: #f00 !important; color: #f00 !important; }
+  .mark #close-notice { background: #0f0 !important; color: #0f0 !important; }
+  .mark #print { background: #00f !important; color: #00f !important; border-color: #00f !important; }
+  .mark #appointment-link { background: #f0f !important; color: #f0f !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <div class="crest">B</div>
+    <div class="brand"><b>Beispielstadt</b><span>Citizen Portal</span></div>
+    <nav><a href="#">Services</a><a href="#">Appointments</a><a href="#">Forms</a><a href="#">Contact</a></nav>
+    <button class="icon-btn" id="search" type="button" aria-label="Search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>
+    </button>
+  </div>
+  <div class="sub"><div class="top"><a href="#">Home</a> › <a href="#">My documents</a> › <span>Residence certificate</span></div></div>
+</header>
+<div class="notice" role="note"><div class="in">
+  <span>The town hall is closed on 1 November (public holiday). Online services work as usual.</span>
+  <button class="close-x" id="close-notice" type="button" aria-label="Close notice">×</button>
+</div></div>
+
+<main>
+  <aside>
+    <h2>My documents</h2>
+    <a href="#">Residence certificate</a>
+    <a href="#">Parking permit</a>
+    <a href="#">Waste collection calendar</a>
+    <a href="#">Dog tax notice</a>
+    <a href="#">Messages (2)</a>
+  </aside>
+  <section>
+    <div class="card">
+      <h1>Residence certificate</h1>
+      <div class="meta">Issued 21 October 2026 · Reference BS-MB-2026-40417</div>
+      <table>
+        <tr><td>Name</td><td>Erika Beispiel</td></tr>
+        <tr><td>Address</td><td>Musterweg 12, 12345 Beispielstadt</td></tr>
+        <tr><td>Registered since</td><td>1 March 2019</td></tr>
+        <tr><td>Valid for</td><td>3 months</td></tr>
+      </table>
+      <div class="tools">
+        <button class="tool" id="download" type="button">Download</button>
+        <button class="tool" id="print" type="button">Print</button>
+        <button class="tool" id="share" type="button">Share</button>
+      </div>
+    </div>
+    <div class="card">
+      <p style="margin:0">You need this certificate for your appointment on 4 November. If you want to move the date,
+      go to <a href="#" id="appointment-link">your appointment page</a> and pick a new time; the certificate stays valid.</p>
+    </div>
+  </section>
+</main>
+<footer>Beispielstadt is invented. Invented example for tests; no data leaves the computer.</footer>
+<script>
+  if (new URLSearchParams(location.search).has("mark")) document.body.classList.add("mark");
+</script>
+</body>
+</html>

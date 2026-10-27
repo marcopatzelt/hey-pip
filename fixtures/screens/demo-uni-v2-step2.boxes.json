@@ -11,8 +11,8 @@
         1126,
         354
       ],
-      "sam_query": "text input field",
-      "description": "programme field"
+      "sam_query": "dropdown",
+      "description": "Dropdown \"Programme\" showing \"Social Work (B.A.)\""
     },
     "fee_no_radio": {
       "box": [
@@ -21,8 +21,8 @@
         499,
         433
       ],
-      "sam_query": "text input field",
-      "description": "fee no radio"
+      "sam_query": "radio button",
+      "description": "Radio button \"No\" under \"Semester fee paid?\", left of \"Yes\""
     },
     "fee_yes_radio": {
       "box": [
@@ -31,8 +31,8 @@
         592,
         433
       ],
-      "sam_query": "text input field",
-      "description": "fee yes radio"
+      "sam_query": "radio button",
+      "description": "Radio button \"Yes\" under \"Semester fee paid?\", right of \"No\""
     },
     "submit_button": {
       "box": [
@@ -42,7 +42,7 @@
         537
       ],
       "sam_query": "button",
-      "description": "submit button"
+      "description": "Green button \"Submit re-registration\" bottom right of the form"
     }
   }
 }

@@ -15,7 +15,7 @@ use crate::docs::DocType;
 pub const DEFAULT_BUDGET: usize = 4500;
 /// Profile keys the model never needs.
 const HIDDEN_KEYS: &[&str] =
-    &["onboarded", "screen_notice_ok", PROFILE_TRUSTED_SEND, "brief_shown_on", PROFILE_SECONDS_SAVED];
+    &["onboarded", "screen_notice_ok", PROFILE_TRUSTED_SEND, "brief_shown_on", PROFILE_SECONDS_SAVED, "pip_mode"];
 /// Task kinds that may borrow the newest playbook of another site (the same job somewhere else).
 const SPECIFIC_KINDS: &[&str] = &["send_au", "send_letter"];
 

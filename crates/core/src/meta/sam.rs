@@ -87,7 +87,95 @@ fn rescale(b: SamBox, w: u32, h: u32) -> SamBox {
     SamBox { x1: s(b.x1, sx, w), y1: s(b.y1, sy, h), x2: s(b.x2, sx, w), y2: s(b.y2, sy, h), img_w: w, img_h: h }
 }
 
+/// A synonym's SAM call that takes longer than this is left out.
+const SYNONYM_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
+/// The query's own SAM call that takes longer than this counts as failed (SAM answers in 1-3 s; a stalled stream
+/// would otherwise hold the click until the HTTP timeout).
+const SAM_WAIT: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// Fixed synonyms per shape word: SAM misses some shapes under one name (an outlined button) and finds them under
+/// another. Matched on the whole query (lowercase, trimmed); at most 2 per query.
+const SYNONYMS: &[(&str, &[&str])] = &[
+    ("button", &["rounded button", "clickable button"]),
+    ("radio button", &["small circle"]),
+    ("checkbox", &["small square box"]),
+    ("text input field", &["input box"]),
+    ("link", &["underlined text"]),
+    ("icon", &["small icon"]),
+];
+
+/// The query plus at most 2 fixed synonyms ("button" -> "rounded button", "clickable button"). Unknown query: itself.
+pub fn phrases(sam_query: &str) -> Vec<String> {
+    let q = sam_query.trim();
+    let mut out = vec![q.to_string()];
+    let key = q.to_lowercase();
+    if let Some((_, more)) = SYNONYMS.iter().find(|(k, _)| *k == key) {
+        out.extend(more.iter().take(2).map(|m| m.to_string()));
+    }
+    out
+}
+
+/// Intersection over union of two boxes of the same image (0..1).
+pub fn iou(a: &SamBox, b: &SamBox) -> f64 {
+    let ix = a.x2.min(b.x2).saturating_sub(a.x1.max(b.x1));
+    let iy = a.y2.min(b.y2).saturating_sub(a.y1.max(b.y1));
+    let inter = u64::from(ix) * u64::from(iy);
+    let union = a.area() + b.area() - inter;
+    if union == 0 { 0.0 } else { inter as f64 / union as f64 }
+}
+
+/// Boxes of several phrases in one list, in phrase order: a box that overlaps an earlier one (IoU > 0.5) is the same
+/// element and is dropped.
+pub fn merge_boxes(lists: Vec<Vec<SamBox>>) -> Vec<SamBox> {
+    let mut out: Vec<SamBox> = Vec::new();
+    for b in lists.into_iter().flatten() {
+        if !out.iter().any(|o| iou(o, &b) > 0.5) {
+            out.push(b);
+        }
+    }
+    out
+}
+
 impl MetaClient {
+    /// `sam_segment` for the query and its synonyms (see `phrases`) at the same time, boxes merged. Fails only
+    /// when every phrase failed.
+    pub async fn sam_segment_all(&self, png: &[u8], sam_query: &str) -> Result<Vec<SamBox>> {
+        let list = phrases(sam_query);
+        // A synonym is extra help: a slow one is not waited for (the query itself is).
+        let calls = list.iter().take(3).enumerate().map(|(i, q)| async move {
+            let wait = if i == 0 { SAM_WAIT } else { SYNONYM_WAIT };
+            match tokio::time::timeout(wait, self.sam_segment(png, q)).await {
+                Ok(r) => r,
+                // A stalled answer stream must not hold the click: the query itself fails (the model's point is
+                // used), a synonym is just left out.
+                Err(_) if i == 0 => Err(anyhow::anyhow!("SAM did not answer within {} s", wait.as_secs())),
+                Err(_) => {
+                    tracing::warn!(phrase = %q, "sam synonym too slow, not waited for");
+                    Ok(Vec::new())
+                }
+            }
+        });
+        let results = futures_util::future::join_all(calls).await;
+        let mut lists = Vec::new();
+        let mut first_err = None;
+        for (q, r) in list.iter().zip(results) {
+            match r {
+                Ok(b) => {
+                    tracing::debug!(phrase = %q, n = b.len(), "sam phrase");
+                    lists.push(b);
+                }
+                Err(e) => {
+                    tracing::warn!(phrase = %q, error = %e, "sam phrase failed");
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
+        match (lists.is_empty(), first_err) {
+            (true, Some(e)) => Err(e),
+            _ => Ok(merge_boxes(lists)),
+        }
+    }
+
     /// Send PNG (or JPEG) + short noun phrase ("submit button", "sheet of paper"), collect all
     /// output_text deltas, parse boxes. No hit -> empty Vec. Boxes are in pixels of `png`
     /// (rescaled if SAM reports a different image size).
@@ -163,6 +251,31 @@ mod tests {
         // swapped corners are normalised
         let b = parse_sam_text("<|box;x1=50;y1=40;x2=10;y2=5;w=100;h=50|>");
         assert_eq!((b[0].x1, b[0].y1, b[0].x2, b[0].y2), (10, 5, 50, 40));
+    }
+
+    #[test]
+    fn phrases_add_fixed_synonyms() {
+        assert_eq!(phrases("button"), ["button", "rounded button", "clickable button"]);
+        assert_eq!(phrases(" Radio Button "), ["Radio Button", "small circle"]);
+        assert_eq!(phrases("checkbox"), ["checkbox", "small square box"]);
+        assert_eq!(phrases("text input field"), ["text input field", "input box"]);
+        assert_eq!(phrases("link"), ["link", "underlined text"]);
+        assert_eq!(phrases("icon"), ["icon", "small icon"]);
+        assert_eq!(phrases("blue button"), ["blue button"], "only the whole query is matched");
+        assert!(phrases("button").len() <= 3);
+    }
+
+    #[test]
+    fn merge_drops_overlapping_boxes() {
+        let b = |x1, y1, x2, y2| SamBox { x1, y1, x2, y2, img_w: 1000, img_h: 800 };
+        let first = vec![b(100, 100, 300, 140), b(700, 600, 900, 640)];
+        // The same button a little bigger (IoU ~0.8), a new one, and a box half over the first (IoU ~0.33).
+        let second = vec![b(98, 98, 304, 142), b(400, 300, 500, 340), b(200, 100, 400, 140)];
+        let m = merge_boxes(vec![first, second]);
+        assert_eq!(m, vec![b(100, 100, 300, 140), b(700, 600, 900, 640), b(400, 300, 500, 340), b(200, 100, 400, 140)]);
+        assert!((iou(&b(0, 0, 10, 10), &b(0, 0, 10, 10)) - 1.0).abs() < 1e-9);
+        assert_eq!(iou(&b(0, 0, 10, 10), &b(20, 20, 30, 30)), 0.0);
+        assert!(merge_boxes(vec![]).is_empty());
     }
 
     #[test]

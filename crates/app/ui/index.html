@@ -29,6 +29,9 @@
     <div id="zzz" class="zzz" aria-hidden="true"><span>z</span><span>z</span><span>z</span></div>
   </div>
 
+  <!-- peek mode: "Need help? Click me" beside the resting head (never clickable) -->
+  <div id="peek-tip" class="peek-tip" role="tooltip" hidden></div>
+
   <!-- confetti when a task is done (decoration only: never clickable, never in the hit rects) -->
   <div id="confetti" class="confetti" aria-hidden="true"></div>
 
@@ -94,6 +97,7 @@
     <button id="stop" class="btn stop" hidden><svg><use href="#i-stop"/></svg><span></span></button>
   </div>
 
+  <script src="peek.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

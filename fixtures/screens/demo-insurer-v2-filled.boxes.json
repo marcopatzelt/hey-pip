@@ -12,7 +12,7 @@
         331
       ],
       "sam_query": "text input field",
-      "description": "nr field"
+      "description": "Text field \"Versichertennummer\", the first field top left of the form"
     },
     "name_field": {
       "box": [
@@ -22,7 +22,7 @@
         331
       ],
       "sam_query": "text input field",
-      "description": "name field"
+      "description": "Text field \"Vor- und Nachname\", the middle field in the top row"
     },
     "phone_field": {
       "box": [
@@ -32,7 +32,7 @@
         331
       ],
       "sam_query": "text input field",
-      "description": "phone field"
+      "description": "Text field \"Telefon (freiwillig)\", the right field in the top row"
     },
     "message_field": {
       "box": [
@@ -41,8 +41,8 @@
         1286,
         460
       ],
-      "sam_query": "text input field",
-      "description": "message field"
+      "sam_query": "text area",
+      "description": "Large text field \"Ihre Nachricht\" across the form"
     },
     "file_button": {
       "box": [
@@ -52,7 +52,7 @@
         578
       ],
       "sam_query": "button",
-      "description": "file button"
+      "description": "Button \"Krankschreibung hochladen\" with a paper clip, left in the dashed upload box below \"Ihre Nachricht\""
     },
     "submit_button": {
       "box": [
@@ -62,7 +62,7 @@
         220
       ],
       "sam_query": "button",
-      "description": "submit button"
+      "description": "Green button \"Abschicken\" top right of the form"
     }
   }
 }

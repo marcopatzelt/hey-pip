@@ -12,7 +12,7 @@
         355
       ],
       "sam_query": "text input field",
-      "description": "name field"
+      "description": "Text field \"Full name\""
     },
     "nr_field": {
       "box": [
@@ -22,7 +22,7 @@
         463
       ],
       "sam_query": "text input field",
-      "description": "nr field"
+      "description": "Text field \"Student number\""
     },
     "next_button": {
       "box": [
@@ -32,7 +32,7 @@
         595
       ],
       "sam_query": "button",
-      "description": "next button"
+      "description": "Button \"Next\" below the fields"
     }
   }
 }

@@ -48,6 +48,8 @@ const MOCK_TALLY: pip_core::memory::Tally = pip_core::memory::Tally {
 const MOCK_SCAMS_STOPPED: u64 = 2;
 /// Memory event kind written by the guard each time it warned about a lookalike page.
 const EV_GUARD_WARNED: &str = "guard_warned";
+/// Memory event kind written when the user said "I'm sure, continue" after a warning: that page was not stopped.
+const EV_GUARD_OVERRIDDEN: &str = "guard_overridden";
 /// How many recent memory events are looked at for the card's "fake pages stopped" line.
 const GUARD_EVENTS_LOOKED_AT: u32 = 500;
 
@@ -67,9 +69,12 @@ fn scam_line(n: u64, lang: Lang) -> String {
     }
 }
 
-/// How many times the guard warned about a fake page (memory events of kind "guard_warned").
+/// How many fake pages the guard stopped: its warnings ("guard_warned") minus the ones the user went on with
+/// ("guard_overridden").
 fn scams_stopped(mem: &pip_core::memory::Memory) -> Result<u64> {
-    Ok(mem.recent_events(GUARD_EVENTS_LOOKED_AT)?.iter().filter(|e| e.kind == EV_GUARD_WARNED).count() as u64)
+    let events = mem.recent_events(GUARD_EVENTS_LOOKED_AT)?;
+    let count = |kind: &str| events.iter().filter(|e| e.kind == kind).count() as u64;
+    Ok(count(EV_GUARD_WARNED).saturating_sub(count(EV_GUARD_OVERRIDDEN)))
 }
 
 /// HTML escape for the line added to the card.
@@ -189,6 +194,7 @@ const UI_KEYS: &[&str] = &[
     "done_time_one",
     "done_total",
     "btn_my_card",
+    "peek_hint",
 ];
 
 /// Profile keys that are Pip's own settings, not something about the person ("What Pip knows" hides them).
@@ -201,7 +207,36 @@ const SETTING_KEYS: &[&str] = &[
     "insurer_services",
     "brief_shown_on",
     "seconds_saved_total",
+    PIP_MODE_KEY,
 ];
+
+/// Profile key of the overlay mode: "peek" (default: Pip rests as a head at the screen edge) or "always".
+const PIP_MODE_KEY: &str = "pip_mode";
+/// Seconds of nothing shown before Pip slides back to the edge (`PIP_PEEK_SECS`, 0 = never).
+const PEEK_SECS_DEFAULT: u64 = 10;
+
+/// "always" only when the profile says so; anything else (unset, typo) is the calm default.
+fn always_from_profile(v: Option<&str>) -> bool {
+    v.is_some_and(|v| v.trim().eq_ignore_ascii_case("always"))
+}
+
+fn mode_name(always: bool) -> &'static str {
+    if always { "always" } else { "peek" }
+}
+
+fn peek_secs_from(v: Option<&str>) -> u64 {
+    v.and_then(|v| v.trim().parse().ok()).unwrap_or(PEEK_SECS_DEFAULT)
+}
+
+/// What `overlay_info` gives the page: the screen, plus how Pip rests (peek mode).
+#[derive(Debug, Clone, Serialize)]
+struct PageInfo {
+    #[serde(flatten)]
+    screen: OverlayInfo,
+    /// "peek" | "always"
+    mode: &'static str,
+    peek_secs: u64,
+}
 
 /// After a finished task Pip waits this long before his offer, so the "Done." line can be read.
 const OFFER_AFTER_SECS: u64 = 4;
@@ -265,6 +300,10 @@ pub enum AppEvent {
         buttons: Vec<Button>,
         ttl_secs: u32,
     },
+    /// Tray "Always show Pip": "always" or "peek".
+    Mode {
+        mode: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -321,6 +360,8 @@ pub struct Ctx {
     ready: AtomicBool,
     onboarding: Mutex<OnboardingStep>,
     tray: Mutex<Option<tray::Tray>>,
+    /// Tray "Always show Pip" (profile key `pip_mode`); off = peek mode.
+    always_show: AtomicBool,
     ingest_lock: tokio::sync::Mutex<()>,
     started: Instant,
     /// The agent task behind "Yes, do it now" on the daily brief.
@@ -351,8 +392,12 @@ fn js_log(level: String, msg: String) {
 }
 
 #[tauri::command]
-fn overlay_info(ctx: tauri::State<'_, Shared>) -> OverlayInfo {
-    ctx.screen()
+fn overlay_info(ctx: tauri::State<'_, Shared>) -> PageInfo {
+    PageInfo {
+        screen: ctx.screen(),
+        mode: mode_name(ctx.always_show.load(Ordering::SeqCst)),
+        peek_secs: peek_secs_from(std::env::var("PIP_PEEK_SECS").ok().as_deref()),
+    }
 }
 
 #[tauri::command]
@@ -463,6 +508,7 @@ pub fn run() -> Result<()> {
             }
         })
         .setup(move |app| {
+            let always = always_from_profile(backend.profile_get(PIP_MODE_KEY).as_deref());
             let ctx: Shared = Arc::new(Ctx {
                 app: app.handle().clone(),
                 bus,
@@ -484,6 +530,7 @@ pub fn run() -> Result<()> {
                 ready: AtomicBool::new(false),
                 onboarding: Mutex::new(OnboardingStep::Done),
                 tray: Mutex::new(None),
+                always_show: AtomicBool::new(always),
                 ingest_lock: tokio::sync::Mutex::new(()),
                 started: Instant::now(),
                 brief_task: Mutex::default(),
@@ -504,7 +551,7 @@ pub fn run() -> Result<()> {
                 };
                 overlay::setup(&win, ctx.bus.clone(), windowed, mouse_stop)?;
             }
-            match tray::setup(app.handle(), ctx.lang()) {
+            match tray::setup(app.handle(), ctx.lang(), ctx.always_show.load(Ordering::SeqCst)) {
                 Ok(t) => *ctx.tray.lock().expect("tray lock") = Some(t),
                 Err(e) => tracing::warn!("tray not available: {e:#}"),
             }
@@ -696,6 +743,19 @@ pub fn toggle_pause(app: &AppHandle) {
     if let Some(ctx) = ctx_of(app) {
         let now = ctx.paused.load(Ordering::SeqCst);
         ctx.set_paused(!now);
+    }
+}
+
+/// Tray "Always show Pip": switch between peek and always, keep the choice in the profile, tell the page.
+pub fn toggle_always(app: &AppHandle) {
+    if let Some(ctx) = ctx_of(app) {
+        let on = !ctx.always_show.load(Ordering::SeqCst);
+        ctx.always_show.store(on, Ordering::SeqCst);
+        ctx.backend.profile_set(PIP_MODE_KEY, mode_name(on));
+        if let Some(t) = ctx.tray.lock().expect("tray lock").as_ref() {
+            t.set_always(on);
+        }
+        ctx.app_event(AppEvent::Mode { mode: mode_name(on) });
     }
 }
 
@@ -2060,6 +2120,9 @@ mod tests {
         mem.add_event(EV_GUARD_WARNED, "lookalike page warned").unwrap();
         let n = scams_stopped(&mem).unwrap();
         assert_eq!(n, 2);
+        mem.add_event(EV_GUARD_WARNED, "lookalike page warned").unwrap();
+        mem.add_event(EV_GUARD_OVERRIDDEN, "I'm sure, continue").unwrap();
+        assert_eq!(scams_stopped(&mem).unwrap(), 2, "a warning the user went on with is not a page stopped");
         let html = pip_core::memory::card_html(&MOCK_TALLY, Some("Erika"), Lang::En);
         let with = add_scam_line(html.clone(), &MOCK_TALLY, n, Lang::En);
         assert!(with.contains("<p class=\"scam\">2 fake pages stopped</p>"), "card line");
@@ -2093,6 +2156,31 @@ mod tests {
     #[test]
     fn seconds_saved_is_a_setting() {
         assert!(SETTING_KEYS.contains(&"seconds_saved_total"));
+        assert!(SETTING_KEYS.contains(&"pip_mode"));
+    }
+
+    #[test]
+    fn peek_is_the_default_mode() {
+        assert!(!always_from_profile(None));
+        assert!(!always_from_profile(Some("peek")));
+        assert!(!always_from_profile(Some("sometimes")));
+        assert!(always_from_profile(Some(" Always ")));
+        assert_eq!(mode_name(always_from_profile(Some(mode_name(true)))), "always");
+        assert_eq!(peek_secs_from(None), 10);
+        assert_eq!(peek_secs_from(Some(" 0 ")), 0);
+        assert_eq!(peek_secs_from(Some("x")), 10);
+        let ev = serde_json::to_value(AppEvent::Mode { mode: "always" }).unwrap();
+        assert_eq!(ev, serde_json::json!({"type": "mode", "mode": "always"}));
+        let info = PageInfo {
+            screen: OverlayInfo { x: 0, y: 0, w: 1920, h: 1032, scale: 1.0, windowed: false },
+            mode: "peek",
+            peek_secs: 10,
+        };
+        let v = serde_json::to_value(info).unwrap();
+        assert_eq!(
+            (v["h"].as_u64(), v["mode"].as_str(), v["peek_secs"].as_u64()),
+            (Some(1032), Some("peek"), Some(10))
+        );
     }
 
     #[test]

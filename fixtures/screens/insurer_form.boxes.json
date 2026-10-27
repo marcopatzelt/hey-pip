@@ -12,7 +12,7 @@
         530
       ],
       "sam_query": "text input field",
-      "description": "Eingabefeld Vor- und Nachname"
+      "description": "Text field \"Vor- und Nachname\", the left field below the \"Worum geht es?\" dropdown"
     },
     "nr_field": {
       "box": [
@@ -22,7 +22,7 @@
         530
       ],
       "sam_query": "text input field",
-      "description": "Eingabefeld Versichertennummer"
+      "description": "Text field \"Versichertennummer\", the right field next to \"Vor- und Nachname\""
     },
     "message_field": {
       "box": [
@@ -32,7 +32,7 @@
         692
       ],
       "sam_query": "text area",
-      "description": "Feld Ihre Nachricht"
+      "description": "Large text field \"Ihre Nachricht\" across the form"
     },
     "file_button": {
       "box": [
@@ -42,7 +42,7 @@
         820
       ],
       "sam_query": "button",
-      "description": "Knopf Datei auswählen"
+      "description": "Button \"Datei auswählen\" with a paper clip, left in the dashed box under \"Krankschreibung anhängen\""
     },
     "submit_button": {
       "box": [
@@ -52,7 +52,7 @@
         967
       ],
       "sam_query": "button",
-      "description": "Knopf Absenden"
+      "description": "Green button \"Absenden\" bottom right of the form"
     }
   }
 }

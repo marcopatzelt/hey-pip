@@ -16,6 +16,9 @@ const P = 96;          // Pip size (CSS px)
 const GAP = 24;        // distance between Pip and a target
 const EDGE = 8;        // keep this far from screen edges
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const Peek = window.Peek;  // ui/peek.js: rest / hover / up state machine and geometry
+const PIP_TITLE = "Click to ask me. Hold to talk to me.";
+let peekSecs = 10;         // PIP_PEEK_SECS from the app: quiet this long -> back to the edge (0 = never)
 
 let S = {};
 const s = (k) => S[k] || k;
@@ -45,6 +48,12 @@ const st = {
   card: null,
   lastSpoke: 0,
   flight: 0,
+  mode: "peek",         // "peek" (rests as a head at the screen edge) | "always" (tray "Always show Pip")
+  peek: "up",           // Peek state: "rest" | "hover" | "up"
+  quietSince: 0,        // performance.now() since nothing is shown and Pip is idle (0 = not quiet)
+  lastPointer: 0,       // last pointer event over the overlay (a hover whose leave never came ends anyway)
+  tipTimer: 0,
+  slideTimer: 0,
 };
 
 const el = {
@@ -60,7 +69,17 @@ const el = {
 
 // ---------- geometry ----------
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const homePos = () => ({ x: innerWidth - P - 28, y: innerHeight - P - 20 });
+// How much of the overlay's bottom the taskbar covers (0: the real overlay already is the work area).
+// The preview can say it (info.taskbar_css); no screen data at all -> NaN -> Peek.geometry's 48 px.
+function taskbarCss() {
+  if (Number.isFinite(info.taskbar_css)) return info.taskbar_css;
+  return Peek.taskbarOverlap(window.screen, window.screenY || 0, innerHeight);
+}
+const peekGeo = (state) => Peek.geometry(state, P, innerHeight, taskbarCss(), innerWidth);
+const workBottom = () => peekGeo("up").bottom;
+const homePos = () => { const g = peekGeo("up"); return { x: g.x, y: g.y }; };
+/** Where Pip sits at home in the current peek state (rest/hover: only the head above the work-area bottom). */
+const restPos = () => { const g = peekGeo(st.peek); return { x: g.x, y: g.y }; };
 function physRectToCss(r) {
   const k = dpr();
   return { x: (r.x - info.x) / k, y: (r.y - info.y) / k, w: r.w / k, h: r.h / k };
@@ -76,7 +95,7 @@ function besideTarget(r) {
   let x = r.x - GAP - P;
   if (x < EDGE) { side = "right"; x = r.x + r.w + GAP; }
   x = clamp(x, EDGE, innerWidth - P - EDGE);
-  const y = clamp(r.y + r.h / 2 - P * 0.55, EDGE, innerHeight - P - EDGE);
+  const y = clamp(r.y + r.h / 2 - P * 0.55, EDGE, workBottom() - P - EDGE);
   return { x, y, side };
 }
 
@@ -90,6 +109,7 @@ function placePip(x, y) {
 const easeOut = (t) => 1 - Math.pow(1 - t, 3);
 function flyTo(x, y, ms) {
   cancelAnimationFrame(st.flight);
+  endSlide();
   const p0 = { ...st.pos };
   const dist = Math.hypot(x - p0.x, y - p0.y);
   if (reduceMotion || dist < 2) { placePip(x, y); return Promise.resolve(); }
@@ -117,11 +137,103 @@ function flyHome() {
   hideTarget();
   st.colSide = null;
   el.pip.classList.remove("mirror", "away");
-  const h = homePos();
+  const h = restPos();
   const p = flyTo(h.x, h.y, st.home ? undefined : 500);
   st.home = true;
   return p;
 }
+
+// ---------- peek: Pip rests as a head at the screen edge ----------
+// Only at home: while he points at something he is "up" anyway. The slide is a CSS transition (400 ms ease-out,
+// none with reduced motion); the body below the work-area bottom is clipped (never over the taskbar).
+function endSlide() {
+  clearTimeout(st.slideTimer);
+  el.pip.classList.remove("sliding");
+}
+function updateClip() {
+  const low = st.home && st.peek !== "up";
+  const hidden = low ? Math.max(0, st.pos.y + P - workBottom()) : 0;
+  el.pip.style.clipPath = hidden > 0 ? `inset(-60px -60px ${hidden}px -60px)` : "";
+}
+function slideTo(x, y) {
+  cancelAnimationFrame(st.flight);
+  el.pip.classList.remove("flying");
+  el.pip.style.rotate = "";
+  endSlide();
+  const down = y > st.pos.y;
+  const animate = !reduceMotion && Math.hypot(x - st.pos.x, y - st.pos.y) >= 2;
+  if (animate) {
+    el.pip.classList.add("sliding");
+    // once he is there: cut the body, and report his real rect (the hits were taken mid-slide)
+    st.slideTimer = setTimeout(() => { el.pip.classList.remove("sliding"); updateClip(); scheduleHits(); }, 420);
+  }
+  placePip(x, y);
+  // going down, cut the body only once he is there (cutting early would clip him mid-slide)
+  if (!animate || !down) updateClip();
+}
+
+function setPeek(next) {
+  if (next === st.peek) return;
+  st.peek = next;
+  el.pip.classList.toggle("peek-rest", next === "rest");
+  el.pip.classList.toggle("peek-hover", next === "hover");
+  // the native "Click to ask me. Hold to talk to me." only when he is fully out (no second tooltip at the edge)
+  el.pip.title = next === "up" ? PIP_TITLE : "";
+  clearTimeout(st.tipTimer);
+  if (next === "hover") st.tipTimer = setTimeout(showPeekTip, 1000);
+  else { hidePeekTip(); el.img.style.translate = ""; }
+  if (next === "up") st.quietSince = 0;
+  if (!st.home) { updateClip(); return; }
+  const p = restPos();
+  slideTo(p.x, p.y);
+}
+
+/** Something is about to be shown: Pip comes fully out first (no-op when he is up). */
+function rise() {
+  st.quietSince = 0;
+  if (st.peek !== "up") setPeek(Peek.next(st.peek, "needs_attention"));
+}
+
+function showPeekTip() {
+  if (st.peek !== "hover") return;
+  const tip = $("peek-tip");
+  tip.textContent = s("peek_hint");
+  tip.hidden = false;
+  const g = peekGeo("hover");
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = `${clamp(st.pos.x - w - 12, EDGE, innerWidth - w - EDGE)}px`;
+  tip.style.top = `${clamp(g.y + g.visibleH / 2 - h / 2, EDGE, g.bottom - h - 4)}px`;
+}
+function hidePeekTip() {
+  clearTimeout(st.tipTimer);
+  $("peek-tip").hidden = true;
+}
+
+// Eyes follow the cursor: the whole picture moves up to 3 px toward it.
+function lookAt(x, y) {
+  const cx = st.pos.x + P / 2, cy = st.pos.y + P * 0.3;
+  el.img.style.translate = `${clamp((x - cx) / 30, -3, 3).toFixed(1)}px ${clamp((y - cy) / 30, -3, 3).toFixed(1)}px`;
+}
+
+function applyMode(mode) {
+  st.mode = mode === "always" ? "always" : "peek";
+  setPeek(Peek.next(st.peek, st.mode === "always" ? "mode_always" : "mode_peek"));
+  st.quietSince = 0;
+}
+
+const somethingShown = () => [el.bubble, el.card, el.ask, el.panel, el.progress, el.note, el.stop].some((n) => !n.hidden);
+// Peek clock: quiet (nothing shown, idle, at home) for peekSecs -> back to the edge. A hover whose leave never
+// arrived (the pointer left the hit rect too fast) ends after 5 s without a pointer event.
+setInterval(() => {
+  const now = performance.now();
+  if (st.peek === "hover" && press.id === null && now - st.lastPointer > 5000) setPeek(Peek.next(st.peek, "hover_out"));
+  if (st.mode !== "peek" || st.peek !== "up") { st.quietSince = 0; return; }
+  const quiet = st.pipState === "idle" && st.home && !somethingShown() && !st.acting && !st.card && !st.onboarding
+    && !st.dragging && !st.paused && !micDown && press.id === null && !el.pip.classList.contains("flying");
+  if (!quiet) { st.quietSince = 0; return; }
+  if (!st.quietSince) { st.quietSince = now; return; } // "quiet": the clock starts
+  if (peekSecs > 0 && now - st.quietSince >= peekSecs * 1000) setPeek(Peek.next(st.peek, "timeout"));
+}, 250);
 
 function showPose() {
   const name = st.pose || PNG[st.pipState] || "idle";
@@ -132,6 +244,7 @@ function showPose() {
 function setState(state) {
   const prev = st.pipState;
   st.pipState = state;
+  if (state !== "idle") rise();
   el.pip.className = el.pip.className.replace(/\bstate-\S+/g, "").trim() + ` state-${state}`;
   showPose();
   // A task just finished (the daily brief and a read letter are happy too, but never while acting): celebrate.
@@ -142,6 +255,7 @@ function setState(state) {
 }
 
 function hop(big) {
+  if (st.peek === "rest") return; // resting: only breathing
   // the done bubble arrives right before or after the celebration: its small hop must not cut the big one
   if (!big && el.body.getAnimations().some((a) => a.animationName === "hop-big" && a.playState === "running")) return;
   el.body.classList.remove("hop", "hop-big");
@@ -180,7 +294,7 @@ function celebrate() {
 
 (function blinkLoop() {
   setTimeout(() => {
-    if (st.pipState !== "sleeping" && !st.dragging) {
+    if (st.pipState !== "sleeping" && !st.dragging && st.peek !== "rest") {
       el.body.classList.add("blink");
       setTimeout(() => el.body.classList.remove("blink"), 120);
     }
@@ -196,6 +310,7 @@ function hideTarget() {
 
 async function pointAt(rect, label) {
   if (info.windowed) return; // corner fallback: Pip only says the target
+  rise();
   const r = physRectToCss(rect);
   const pad = 6;
   Object.assign(el.hl.style, { left: `${r.x - pad}px`, top: `${r.y - pad}px`, width: `${r.w + 2 * pad}px`, height: `${r.h + 2 * pad}px` });
@@ -221,6 +336,7 @@ async function pointAt(rect, label) {
 
 function flyNear(x, y) {
   if (info.windowed) return;
+  rise();
   const p = physPointToCss(x, y);
   const b = besideTarget({ x: p.x, y: p.y, w: 0, h: 0 });
   st.colSide = b.side;
@@ -249,7 +365,7 @@ function rectOf(node) {
 /** Pick the candidate spot (w x h) with the lowest cost: covering obstacles (weighted) + being pushed. */
 function placeBest(w, h, cands, obstacles) {
   const fitX = (x) => clamp(x, EDGE, innerWidth - EDGE - w);
-  const fitY = (y) => clamp(y, EDGE, innerHeight - EDGE - h);
+  const fitY = (y) => clamp(y, EDGE, workBottom() - EDGE - h);
   let best = null;
   for (const c of cands) {
     const r = { x: fitX(c.x), y: fitY(c.y), w, h };
@@ -308,7 +424,7 @@ function layout() {
     el.col.className = `column ${c.cls}`;
     el.col.style.left = `${c.x}px`;
     el.col.style.top = `${c.y}px`;
-    el.col.style.maxHeight = `${innerHeight - 2 * EDGE}px`;
+    el.col.style.maxHeight = `${workBottom() - 2 * EDGE}px`;
   }
   scheduleHits();
 }
@@ -330,6 +446,16 @@ function reportHits() {
   if (micDown) rects.push({ x: info.x, y: info.y, w: Math.round(innerWidth * k), h: Math.round(innerHeight * k) });
   for (const n of nodes) {
     if (n.hidden) continue;
+    if (n === el.pip && st.home && st.peek !== "up") {
+      // Resting: only the head is clickable (a wider margin while hovering, so the leave reaches us).
+      const g = peekGeo(st.peek), m = st.peek === "hover" ? 24 : 6;
+      const top = g.y - m, bottom = Math.min(g.bottom, g.y + g.visibleH + m);
+      rects.push({
+        x: Math.round(info.x + (g.x - m) * k), y: Math.round(info.y + top * k),
+        w: Math.round((P + 2 * m) * k), h: Math.round((bottom - top) * k),
+      });
+      continue;
+    }
     const r = n.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) continue;
     const m = 6;
@@ -395,6 +521,7 @@ function say(text, opts = {}) {
 }
 
 function showNote(text) {
+  rise();
   clearTimeout(st.noteTimer);
   el.note.textContent = text;
   el.note.hidden = false;
@@ -411,6 +538,7 @@ function showCount() {
 }
 
 function showBubble(text, opts = {}) {
+  rise();
   clearTimeout(st.bubbleTimer);
   // The same sentence again (core and app both confirm a stop): update quietly, no second pop.
   const same = !el.bubble.hidden && el.bText.textContent === text && st.bubbleKind === (opts.kind || "say");
@@ -572,6 +700,7 @@ function para(text, cls) {
 
 // ---------- progress + stop ----------
 function setProgress(text) {
+  if (text) rise();
   el.pText.textContent = text || "";
   el.progress.hidden = !text;
   if (text) st.lastSpoke = performance.now();
@@ -595,6 +724,7 @@ function stopNow() {
 
 // ---------- approval card ----------
 function showCard(card) {
+  rise();
   if (!st.bubbleSticky) hideBubble();
   closeAsk();
   st.card = card.id;
@@ -678,6 +808,7 @@ function showReminder(ev) {
 
 // ---------- ask box ----------
 function openAsk() {
+  rise();
   el.panel.hidden = true;
   if (st.bubbleKind === "say") hideBubble();
   el.ask.hidden = false;
@@ -753,6 +884,7 @@ el.askMic.addEventListener("pointercancel", micUp);
 
 // ---------- deadlines panel ----------
 function showPanel(items) {
+  rise();
   closeAsk();
   $("panel-title").textContent = s("deadlines_title");
   const list = $("panel-list");
@@ -785,6 +917,7 @@ $("panel-close").addEventListener("click", () => { el.panel.hidden = true; layou
 
 // ---------- "What Pip knows" (same panel) ----------
 function showKnowledge(ev) {
+  rise();
   closeAsk();
   $("panel-title").textContent = ev.title;
   const rows = [];
@@ -923,6 +1056,7 @@ let dragPrevBubble = false;
 function onApp(ev) {
   switch (ev.type) {
     case "acting":
+      if (ev.on) rise();
       st.acting = ev.on;
       if (!ev.on) st.actingEndedAt = performance.now();
       el.stop.hidden = !ev.on;
@@ -951,11 +1085,13 @@ function onApp(ev) {
       layout();
       break;
     case "paused":
+      if (ev.on) rise();
       st.paused = ev.on;
       if (ev.on) { closeAsk(); hideTarget(); if (!st.home) flyHome(); }
       break;
     case "drag":
       if (ev.state === "enter") {
+        rise();
         st.dragging = true;
         el.pip.classList.add("dragging");
         st.pose = "listen";
@@ -980,6 +1116,7 @@ function onApp(ev) {
       break;
     }
     case "setup": showSetup(ev.text); break;
+    case "mode": applyMode(ev.mode); break;
     default: break;
   }
 }
@@ -1010,6 +1147,7 @@ const HOLD_SLOP = 8;   // px the pointer may move before a press is no longer a 
 const press = { id: null, x: 0, y: 0, timer: 0, holding: false, used: false };
 function pipClick() {
   if (st.dragging) return;
+  if (st.peek !== "up") setPeek(Peek.next(st.peek, "click"));
   if (st.paused) { invoke("wake").catch(() => {}); return; }
   if (st.onboarding || st.acting || st.card) { hop(); return; }
   if (el.ask.hidden) openAsk(); else closeAsk();
@@ -1019,6 +1157,7 @@ function holdStart() {
   press.used = true;
   if (st.paused || st.onboarding || st.acting || st.card || st.dragging) { hop(); return; }
   press.holding = true;
+  rise(); // held at the edge: he comes out and listens
   micDown = true; // keep the release inside the overlay, like the mic button
   scheduleHits();
   closeAsk();
@@ -1057,6 +1196,24 @@ const pipUp = (e) => {
   } else if (wasTimer && e.type === "pointerup" && !press.used) pipClick();
 };
 el.pip.addEventListener("pointerup", pipUp);
+// Hover at the edge: the head rises a little, the eyes follow, "Need help? Click me" after 1 s.
+el.pip.addEventListener("pointerenter", () => {
+  st.lastPointer = performance.now();
+  if (st.mode === "peek" && st.home) setPeek(Peek.next(st.peek, "hover_in"));
+});
+el.pip.addEventListener("pointerleave", () => {
+  if (press.id !== null) return; // a held press keeps him where he is
+  setPeek(Peek.next(st.peek, "hover_out"));
+  el.img.style.translate = "";
+});
+document.addEventListener("pointermove", (e) => {
+  st.lastPointer = performance.now();
+  if (st.peek === "hover") lookAt(e.clientX, e.clientY);
+  // the 5 s fallback lowered him under a still cursor: the next move over the head raises him again
+  else if (st.peek === "rest" && st.mode === "peek" && st.home && e.target instanceof Element && e.target.closest("#pip")) {
+    setPeek(Peek.next(st.peek, "hover_in"));
+  }
+});
 el.pip.addEventListener("pointercancel", pipUp);
 el.pip.addEventListener("lostpointercapture", pipUp); // after a normal release this is a no-op (press.id is null)
 window.addEventListener("keydown", (e) => {
@@ -1096,20 +1253,24 @@ async function refreshInfo() {
 
 window.addEventListener("resize", async () => {
   await refreshInfo();
-  if (st.home) { const h = homePos(); placePip(h.x, h.y); } else layout();
+  if (st.home) { const h = restPos(); placePip(h.x, h.y); updateClip(); } else layout();
 });
 
 async function start() {
   try { S = await invoke("ui_strings"); } catch (e) { console.warn("ui_strings", e); }
   await refreshInfo();
+  if (Number.isFinite(info.peek_secs)) peekSecs = info.peek_secs;
   applyStaticText();
   await TAURI.event.listen("ui", ({ payload }) => onUi(payload));
   await TAURI.event.listen("app", ({ payload }) => onApp(payload));
-  // Pip flies in from the right edge.
-  const h = homePos();
-  placePip(innerWidth + 20, h.y - 30);
+  // Pip flies in from the right edge: to his resting place at the edge (peek) or home (always).
+  applyMode(info.mode);
+  if (st.mode === "peek") setPeek("rest");
+  const h = restPos();
+  placePip(innerWidth + 20, homePos().y - 30);
   setState("idle");
   await flyTo(h.x, h.y, 900);
+  updateClip();
   invoke("ui_ready").catch((e) => console.warn("ui_ready", e));
 }
 start();

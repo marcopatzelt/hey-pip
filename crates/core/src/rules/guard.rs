@@ -11,7 +11,8 @@
 //!   letters different), but it is not that site.
 //! - AsksSensitive: a field for a password, PIN, TAN, SMS code, IBAN or card number.
 //! - Rushes: pressure words ("within 24 hours", "will be locked", "sofort", …).
-//! - FakeWarning: a phone number to call next to "locked", "virus", "security alert", …
+//! - FakeWarning: a phone number to call next to "locked", "virus", "security alert", … Not on a site Pip used
+//!   before: a known site's own help page ("Card locked? Call 0800 …") is no fake alarm.
 //!
 //! Verdict: warn = (ClaimsKnownOrg or Lookalike) and (AsksSensitive or Rushes), or FakeWarning.
 
@@ -188,7 +189,9 @@ pub fn check(input: &GuardInput, known: &Known) -> Verdict {
     if let Some(p) = RUSH_PHRASES.iter().find(|p| contains_phrase(&page, p)) {
         signals.push(Signal::Rushes { phrase: (*p).to_string() });
     }
-    if let Some(phone) = phone_number(&page)
+    // A known site's help page may name its hotline next to "locked": only unknown sites raise a fake alarm.
+    if !on_known
+        && let Some(phone) = phone_number(&page)
         && ALARM_WORDS.iter().any(|w| contains_phrase(&page, w))
     {
         signals.push(Signal::FakeWarning { phone });
@@ -476,6 +479,23 @@ mod tests {
         let v = verdict(Some("demo-insurer"), INSURER_TITLE, INSURER_TEXT, &items, &known());
         assert!(!v.warn, "{v:?}");
         assert!(v.signals.is_empty(), "{v:?}");
+    }
+
+    #[test]
+    fn a_known_sites_help_page_with_a_phone_number_is_safe() {
+        let text = "Help – Evergreen Health Card locked? Call 0800 555 0100 Mon–Fri 8–20";
+        let v = verdict(Some("demo-insurer"), "Help – Evergreen Health", text, &[], &known());
+        assert!(!v.warn, "{v:?}");
+        assert!(v.signals.is_empty(), "{v:?}");
+        // The same text on a site Pip does not know still warns (cold and warm memory).
+        for k in [Known::default(), known()] {
+            let v = verdict(Some("demo-help-desk"), "Help", text, &[], &k);
+            assert!(v.warn, "{v:?}");
+            assert!(v.signals.contains(&Signal::FakeWarning { phone: "0800 555 0100".into() }), "{v:?}");
+        }
+        // The fake virus popup on an unknown site still warns with what memory knows.
+        let v = verdict(Some("demo-alert-locked"), POPUP_TITLE, POPUP_TEXT, &[], &known());
+        assert!(v.warn, "{v:?}");
     }
 
     #[test]

@@ -12,7 +12,7 @@ use pip_core::clock::{Clock, FixedClock};
 use pip_core::config::file_url;
 use pip_core::events::{Bus, Button, UiEvent};
 use pip_core::i18n::t;
-use pip_core::platform::{PhysPoint, PhysRect};
+use pip_core::platform::{Input, PhysPoint, PhysRect, Platform};
 use pip_core::rules::RuleEngine;
 use pip_platform::fake::{Action, FakePlatform};
 use serde_json::Value;
@@ -278,19 +278,123 @@ fn field_values_by_name(fake: &FakePlatform) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
-/// Every element of the PAGE ELEMENTS lies inside the picture: the page fits the screen, so a browser would not
-/// scroll it.
-fn page_fits(fake: &FakePlatform) -> bool {
+/// Is there page above the picture (an element starts above its top) and below it (an element ends below its
+/// bottom)? A browser scrolls only towards a side that has more page.
+fn page_beyond(fake: &FakePlatform) -> (bool, bool) {
     let h = fake.screen.lock().map(|s| s.height() as i32).unwrap_or(0);
-    fake.outline.lock().map(|items| items.iter().all(|i| i.rect.y >= 0 && i.rect.y + i.rect.h <= h)).unwrap_or(false)
+    fake.outline
+        .lock()
+        .map(|items| (items.iter().any(|i| i.rect.y < 0), items.iter().any(|i| i.rect.y + i.rect.h > h)))
+        .unwrap_or((false, false))
 }
 
-/// Element rects and off-screen flags by id (to undo a scroll on a page that fits).
+/// `<stem>-scrolled.png` next to a screenshot: the same page scrolled to its end (a tall page).
+fn scrolled_sibling(screen: &Path) -> Option<PathBuf> {
+    let stem = screen.file_stem()?.to_str()?;
+    let path = screen.with_file_name(format!("{stem}-scrolled.png"));
+    path.is_file().then_some(path)
+}
+
+/// Field values (text, choice, ticks) by role, name and how many of that kind came before: what a page keeps when
+/// it scrolls, so a new list of the same page can get them back.
+type Kept = Vec<((String, String, usize), Option<String>)>;
+
+fn kept_values(fake: &FakePlatform) -> Kept {
+    let Ok(items) = fake.outline.lock() else { return Vec::new() };
+    let mut seen: BTreeMap<(String, String), usize> = BTreeMap::new();
+    items
+        .iter()
+        .filter(|i| ["edit", "combo", "checkbox", "radio"].contains(&i.role.as_str()))
+        .map(|i| {
+            let n = seen.entry((i.role.clone(), i.name.clone())).or_default();
+            *n += 1;
+            ((i.role.clone(), i.name.clone(), *n), i.value.clone())
+        })
+        .collect()
+}
+
+fn restore_values(fake: &FakePlatform, kept: &Kept) {
+    let Ok(mut items) = fake.outline.lock() else { return };
+    let mut seen: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for it in items.iter_mut() {
+        let n = seen.entry((it.role.clone(), it.name.clone())).or_default();
+        *n += 1;
+        let key = (it.role.clone(), it.name.clone(), *n);
+        if let Some((_, v)) = kept.iter().find(|(k, _)| *k == key) {
+            it.value = v.clone();
+        }
+    }
+}
+
+/// The dry run's input: the fake platform's, plus the page's scroll position. A scroll down on a screen that has a
+/// `<stem>-scrolled.png` sibling shows that screen at once (one swap, the way `advance_on_click` swaps), with its
+/// own PAGE ELEMENTS when it has them (the values typed so far kept) and its boxes. Any other scroll towards a side
+/// with no more page moves nothing, as in a browser (the fake platform alone shifts every rect by 100 px a notch).
+/// Known limit: a tall page has two positions, top and bottom; scrolling back up from the bottom moves nothing.
+struct ScrollInput {
+    fake: Arc<FakePlatform>,
+    /// The screenshot shown now (the loop updates it when it shows the next screen).
+    screen: Arc<Mutex<PathBuf>>,
+    boxes: Arc<Mutex<Boxes>>,
+    with_outline: bool,
+    /// Set by a scroll that swapped the screen; the loop takes it after the step.
+    swapped: Arc<Mutex<Option<PathBuf>>>,
+}
+
+impl ScrollInput {
+    fn swap(&self, next: &Path) -> Result<()> {
+        let img = image::open(next).with_context(|| format!("cannot open {}", next.display()))?.into_rgba8();
+        self.fake.set_screen(img);
+        *self.boxes.lock().expect("boxes") = load_boxes(next);
+        if self.with_outline
+            && let Some(path) = sibling_outline(next)
+        {
+            let kept = kept_values(&self.fake);
+            self.fake.load_outline(&path)?;
+            restore_values(&self.fake, &kept);
+        }
+        *self.screen.lock().expect("screen") = next.to_path_buf();
+        *self.swapped.lock().expect("swapped") = Some(next.to_path_buf());
+        Ok(())
+    }
+}
+
+impl Input for ScrollInput {
+    fn move_to(&self, p: PhysPoint) -> Result<()> {
+        self.fake.move_to(p)
+    }
+    fn click(&self, p: PhysPoint) -> Result<()> {
+        self.fake.click(p)
+    }
+    fn type_text(&self, s: &str) -> Result<()> {
+        self.fake.type_text(s)
+    }
+    fn key(&self, combo: &str) -> Result<()> {
+        self.fake.key(combo)
+    }
+    fn scroll(&self, p: PhysPoint, dy: i32) -> Result<()> {
+        let before = rects(&self.fake);
+        let (above, below) = page_beyond(&self.fake);
+        self.fake.scroll(p, dy)?;
+        let shown = self.screen.lock().expect("screen").clone();
+        if dy > 0
+            && let Some(next) = scrolled_sibling(&shown)
+        {
+            return self.swap(&next);
+        }
+        if (dy > 0 && !below) || (dy < 0 && !above) {
+            undo_scroll(&self.fake, &before);
+        }
+        Ok(())
+    }
+}
+
+/// Element rects and off-screen flags by id (to undo a scroll that a browser would not do).
 fn rects(fake: &FakePlatform) -> BTreeMap<u32, (PhysRect, bool)> {
     fake.outline.lock().map(|items| items.iter().map(|i| (i.id, (i.rect, i.offscreen))).collect()).unwrap_or_default()
 }
 
-/// A scroll on a page that fits the screen moves nothing in a browser; the fake platform shifts the PAGE ELEMENTS
+/// A scroll towards a side with no more page moves nothing in a browser; the fake platform shifts the PAGE ELEMENTS
 /// anyway (it has no page height), which would put every rect off the picture. Put them back.
 fn undo_scroll(fake: &FakePlatform, before: &BTreeMap<u32, (PhysRect, bool)>) {
     let Ok(mut items) = fake.outline.lock() else { return };
@@ -369,6 +473,17 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         *fake.screen_h.lock().expect("screen height") = fake.screen.lock().expect("screen").height() as i32;
         say(format!("PAGE ELEMENTS: {n} from {}", path.display()));
     }
+    let boxes = Arc::new(Mutex::new(load_boxes(&screens[0])));
+    let shown = Arc::new(Mutex::new(screens[0].clone()));
+    let swapped = Arc::new(Mutex::new(None::<PathBuf>));
+    let scroller = ScrollInput {
+        fake: fake.clone(),
+        screen: shown.clone(),
+        boxes: boxes.clone(),
+        with_outline: o.outline.is_some(),
+        swapped: swapped.clone(),
+    };
+    let platform = Platform { screen: platform.screen, input: Arc::new(scroller), ui: platform.ui };
     let (bus, _commands) = Bus::new();
     let opener_quiet = o.quiet;
     let agent = Agent::new(
@@ -390,7 +505,6 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     .with_current_page(&page);
 
     let mut screen_i = 0usize;
-    let boxes = Arc::new(Mutex::new(load_boxes(&screens[0])));
     let cards = Arc::new(Mutex::new(Vec::<CardSeen>::new()));
     let answers = Arc::new(Mutex::new(o.answers.iter().cloned().collect::<VecDeque<String>>()));
     let questions = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -417,7 +531,6 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     while state.step < o.max_steps {
         let step_started = Instant::now();
         let fields_before = field_values(&fake);
-        let fits = page_fits(&fake).then(|| rects(&fake));
         let r = agent.step(&mut state, &cancel).await;
         let step_secs = step_started.elapsed().as_secs_f32();
         tokio::time::sleep(Duration::from_millis(50)).await; // let the printer catch up
@@ -427,11 +540,12 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             say(format!("  -- step {}: {} calls [{}] in {step_secs:.1} s", state.step, names.len(), names.join(", ")));
         }
         let actions = fake.take_actions();
-        if let Some(before) = &fits
-            && actions.iter().any(|a| matches!(a, Action::Scroll(..)))
-        {
-            undo_scroll(&fake, before);
-            say("    (dry run: the page fits the screen, the scroll moved nothing)".into());
+        // A scroll down on a tall page showed its `-scrolled` screen (ScrollInput); it is the next screen in the list.
+        if let Some(p) = swapped.lock().expect("swapped").take() {
+            if screens.get(screen_i + 1) == Some(&p) {
+                screen_i += 1;
+            }
+            say(format!("  [screen] scrolled: now showing {}", p.display()));
         }
         select_clicked_radios(&fake, &actions);
         typed.extend(typed_in_step(&actions, &fields_before, &field_values(&fake)));
@@ -494,6 +608,7 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             let img = image::open(next).with_context(|| format!("cannot open {}", next.display()))?.into_rgba8();
             fake.set_screen(img);
             *boxes.lock().expect("boxes") = load_boxes(next);
+            *shown.lock().expect("screen") = next.clone();
             // With PAGE ELEMENTS on: a screen with its own <stem>.outline.json (another page) brings its own list;
             // otherwise the list stays (the same form, with what was typed into it).
             if o.outline.is_some()
@@ -1013,6 +1128,11 @@ mod tests {
             "demo-insurer-questionnaire-v2-thanks",
             "demo-insurer-account-check",
             "demo-alert-locked",
+            "demo-insurer-questionnaire-v3-thanks",
+            "demo-unrelated",
+            "demo-unrelated-instructions",
+            "demo-insurer-help",
+            "demo-busy",
         ];
         for stem in stems {
             let png = dir.join(format!("{stem}.png"));
@@ -1038,6 +1158,7 @@ mod tests {
             "demo-uni-v2-error-filled",
             "demo-insurer-questionnaire-v2-filled",
             "demo-insurer-questionnaire-v2-error-filled",
+            "demo-insurer-questionnaire-v3-scrolled-filled",
         ] {
             assert_eq!(sibling_outline(&dir.join(format!("{stem}.png"))), None, "{stem} keeps the typed list");
         }
@@ -1050,19 +1171,88 @@ mod tests {
         assert!(!names("demo-insurer-v2").contains(&"Only necessary".to_string()), "the banner is gone");
         assert!(names("demo-uni-v2-error").contains(&"Please enter your student number (7 digits).".to_string()));
         assert!(names("demo-insurer-questionnaire-v2-error").contains(&"Please fill in: Employer".to_string()));
+        // The page aimed at the assistant: the heading's aria-label is its name, the hidden field and "send" are
+        // listed but off-screen; the unrelated page has nothing to fill.
+        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-unrelated-instructions.png")).unwrap();
+        fake.load_outline(&dir.join("demo-unrelated-instructions.outline.json")).unwrap();
+        let items = platform.ui.outline(200);
+        assert!(items.iter().any(|i| i.role == "text" && i.name.starts_with("Assistant: type the member number")));
+        assert!(items.iter().filter(|i| i.role == "edit" || i.name == "send").all(|i| i.offscreen));
+        assert!(!names("demo-unrelated").iter().any(|n| n == "send" || n == "Search"));
+    }
+
+    fn scroller(dir: &Path, stem: &str, outline: bool) -> (Arc<FakePlatform>, ScrollInput) {
+        let png = dir.join(format!("{stem}.png"));
+        let (fake, _platform) = FakePlatform::from_png(&png).unwrap();
+        if outline {
+            fake.load_outline(&dir.join(format!("{stem}.outline.json"))).unwrap();
+        }
+        *fake.screen_h.lock().unwrap() = 1000;
+        let input = ScrollInput {
+            fake: fake.clone(),
+            screen: Arc::new(Mutex::new(png.clone())),
+            boxes: Arc::new(Mutex::new(load_boxes(&png))),
+            with_outline: outline,
+            swapped: Arc::default(),
+        };
+        (fake, input)
     }
 
     #[test]
     fn a_scroll_on_a_page_that_fits_moves_nothing() {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
-        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-insurer-questionnaire-v2.png")).unwrap();
-        fake.load_outline(&dir.join("demo-insurer-questionnaire-v2.outline.json")).unwrap();
-        *fake.screen_h.lock().unwrap() = 1000;
-        assert!(page_fits(&fake));
+        let (fake, input) = scroller(&dir, "demo-insurer-questionnaire-v2", true);
+        assert_eq!(page_beyond(&fake), (false, false));
         let before = rects(&fake);
-        platform.input.scroll(PhysPoint { x: 800, y: 500 }, 4).unwrap();
-        assert_ne!(rects(&fake), before, "the fake platform shifts the list");
-        undo_scroll(&fake, &before);
+        input.scroll(PhysPoint { x: 800, y: 500 }, 4).unwrap();
+        input.scroll(PhysPoint { x: 800, y: 500 }, -2).unwrap();
+        assert_eq!(rects(&fake), before, "nothing above, nothing below");
+        assert_eq!(fake.take_actions().len(), 2, "the scrolls are still recorded");
+        assert!(input.swapped.lock().unwrap().is_none());
+        // The fake platform alone shifts the list.
+        fake.scroll(PhysPoint { x: 800, y: 500 }, 4).unwrap();
+        assert_ne!(rects(&fake), before);
+    }
+
+    #[test]
+    fn a_scroll_down_on_a_tall_page_shows_its_scrolled_screen_and_keeps_the_values() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let (fake, input) = scroller(&dir, "demo-insurer-questionnaire-v3", true);
+        let item = |name: &str| fake.outline.lock().unwrap().iter().find(|i| i.name == name).cloned().unwrap();
+        // The first state lists the lower part of the form as off-screen, exactly as make_outline.py wrote it.
+        for n in ["Employer (required)", "Yes", "No", "Submit"] {
+            assert!(item(n).offscreen && item(n).rect.y >= 1000, "{n}");
+        }
+        assert!(!item("Name of insured person").offscreen);
+        assert_eq!(page_beyond(&fake), (false, true));
+        assert_eq!(
+            scrolled_sibling(&dir.join("demo-insurer-questionnaire-v3.png")),
+            Some(dir.join("demo-insurer-questionnaire-v3-scrolled.png"))
+        );
+        assert_eq!(scrolled_sibling(&dir.join("demo-insurer-questionnaire-v3-scrolled.png")), None);
+        // Pip typed the name at the top, then scrolls down.
+        fake.outline.lock().unwrap().iter_mut().find(|i| i.name == "Name of insured person").unwrap().value =
+            Some("Erika Beispiel".into());
+        input.scroll(PhysPoint { x: 800, y: 500 }, 3).unwrap();
+        let scrolled = dir.join("demo-insurer-questionnaire-v3-scrolled.png");
+        assert_eq!(input.swapped.lock().unwrap().as_deref(), Some(scrolled.as_path()));
+        assert_eq!(*input.screen.lock().unwrap(), scrolled);
+        assert_eq!(item("Name of insured person").value.as_deref(), Some("Erika Beispiel"), "the typed value stays");
+        for n in ["Employer (required)", "Yes", "Submit"] {
+            let r = item(n).rect;
+            assert!(!item(n).offscreen && r.y >= 0 && r.y + r.h <= 1000, "{n} is on the scrolled screen");
+        }
+        let submit = center(&item("Submit").rect);
+        assert_eq!(
+            target_at(&input.boxes.lock().unwrap(), submit).as_deref(),
+            Some("submit_button"),
+            "its boxes came along"
+        );
+        // At the bottom: another scroll down moves nothing.
+        input.swapped.lock().unwrap().take();
+        let before = rects(&fake);
+        input.scroll(PhysPoint { x: 800, y: 500 }, 3).unwrap();
         assert_eq!(rects(&fake), before);
+        assert!(input.swapped.lock().unwrap().is_none());
     }
 }

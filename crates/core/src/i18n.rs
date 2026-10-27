@@ -641,6 +641,8 @@ static TABLE: &[(&str, &str, &str)] = &[
     ),
     ("share_scam_one", "1 falsche Seite gestoppt", "1 fake page stopped"),
     ("share_scam_many", "{n} falsche Seiten gestoppt", "{n} fake pages stopped"),
+    ("tray_always_show", "Pip immer zeigen", "Always show Pip"),
+    ("peek_hint", "Brauchst du Hilfe? Klick mich an", "Need help? Click me"),
 ];
 
 /// Lookup. Unknown key -> the key itself (visible in tests, never panics).

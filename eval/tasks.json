@@ -1,5 +1,5 @@
 {
-  "note": "SPEC 13.3 plus the run-1 evals: 5 letters, 4 screen targets, agent tasks on the demo pages and their variants (cookie banner, two steps, error after submit, reworded labels), two fake pages for the guard, and memory conditions (full, no_playbook, no_profile, no_letters, cold). Paths are relative to fixtures/. Only invented data. Fields: eval/README.md.",
+  "note": "SPEC 13.3 plus the run-1 and run-2 evals: 5 letters, click targets with samples (picture only), agent tasks on the demo pages and their variants (cookie banner, two steps, error after submit, reworded labels, a tall page that needs scrolling), two fake pages for the guard, pages where Pip must do nothing (no_action), memory conditions (full, no_playbook, no_profile, no_letters, cold) and samples. Paths are relative to fixtures/. Only invented data. Fields: eval/README.md. Click-target pass bars (Marco's must-fix): the 5 targets with samples 4 = 20 runs need >= 19 hits and none below 3/4; the 4 demo-busy targets (12 runs) >= 10.",
   "letters": [
     "letters/au_erika_erst_foto.jpg",
     "letters/au_erika_folge.pdf",
@@ -10,19 +10,68 @@
   "ground": [
     {
       "screen": "screens/insurer_form.png",
-      "target": "name_field"
+      "target": "name_field",
+      "samples": 2
     },
     {
       "screen": "screens/insurer_form.png",
-      "target": "nr_field"
+      "target": "nr_field",
+      "samples": 2
     },
     {
       "screen": "screens/insurer_form.png",
-      "target": "file_button"
+      "target": "file_button",
+      "samples": 2
     },
     {
       "screen": "screens/insurer_form_filled.png",
-      "target": "submit_button"
+      "target": "submit_button",
+      "samples": 2
+    },
+    {
+      "screen": "screens/insurer_form.png",
+      "target": "file_button",
+      "samples": 4
+    },
+    {
+      "screen": "screens/demo-insurer-v2.png",
+      "target": "file_button",
+      "samples": 4
+    },
+    {
+      "screen": "screens/demo-insurer-v2-popup.png",
+      "target": "cookie_necessary",
+      "samples": 4
+    },
+    {
+      "screen": "screens/demo-uni-v2-step2.png",
+      "target": "fee_yes_radio",
+      "samples": 4
+    },
+    {
+      "screen": "screens/demo-alert-locked.png",
+      "target": "call_button",
+      "samples": 4
+    },
+    {
+      "screen": "screens/demo-busy.png",
+      "target": "icon_button",
+      "samples": 3
+    },
+    {
+      "screen": "screens/demo-busy.png",
+      "target": "close_x",
+      "samples": 3
+    },
+    {
+      "screen": "screens/demo-busy.png",
+      "target": "print_button",
+      "samples": 3
+    },
+    {
+      "screen": "screens/demo-busy.png",
+      "target": "text_link",
+      "samples": 3
     }
   ],
   "agent": [
@@ -77,9 +126,30 @@
       "expect": "sent",
       "memory": [
         "full",
-        "no_playbook",
         "cold"
       ]
+    },
+    {
+      "task": "@task_look_screen",
+      "lang": "en",
+      "page": "demo-uni/index.html",
+      "outline": "screens/demo-uni.outline.json",
+      "screens": [
+        "screens/demo-uni.png",
+        "screens/demo-uni-filled.png",
+        "screens/demo-uni-thanks.png"
+      ],
+      "answers": [
+        "student, matriculation, matrikel => 7654321",
+        "name => Erika Beispiel"
+      ],
+      "approve": "all",
+      "runs": 2,
+      "expect": "sent",
+      "memory": [
+        "no_playbook"
+      ],
+      "samples": 3
     },
     {
       "quick": true,
@@ -213,8 +283,73 @@
         "first day, sick day, sick since, illness => 20.10.2026"
       ],
       "memory": [
-        "full",
+        "full"
+      ],
+      "max_steps": 14,
+      "samples": 3
+    },
+    {
+      "task": "@task_look_screen",
+      "lang": "en",
+      "page": "demo-insurer/questionnaire-v2.html",
+      "outline": "screens/demo-insurer-questionnaire-v2.outline.json",
+      "screens": [
+        "screens/demo-insurer-questionnaire-v2.png",
+        "screens/demo-insurer-questionnaire-v2-filled.png",
+        "screens/demo-insurer-questionnaire-v2-error.png",
+        "screens/demo-insurer-questionnaire-v2-error-filled.png",
+        "screens/demo-insurer-questionnaire-v2-thanks.png"
+      ],
+      "advance_on_click": [
+        "submit_button"
+      ],
+      "approve": "all",
+      "expect": "sent",
+      "expect_typed_all": [
+        "20.10.2026",
+        "Bäckerei Sonnenschein GmbH"
+      ],
+      "answers": [
+        "employer, arbeitgeber, company => Bäckerei Sonnenschein GmbH",
+        "your name, full name, insured person => Erika Beispiel",
+        "policy, insurance number, versicherten => G123456789",
+        "first day, sick day, sick since, illness => 20.10.2026"
+      ],
+      "memory": [
         "no_letters",
+        "cold"
+      ],
+      "max_steps": 14
+    },
+    {
+      "task": "@task_look_screen",
+      "lang": "en",
+      "page": "demo-insurer/questionnaire-v3.html",
+      "outline": "screens/demo-insurer-questionnaire-v3.outline.json",
+      "screens": [
+        "screens/demo-insurer-questionnaire-v3.png",
+        "screens/demo-insurer-questionnaire-v3-scrolled.png",
+        "screens/demo-insurer-questionnaire-v3-scrolled-filled.png",
+        "screens/demo-insurer-questionnaire-v3-error.png",
+        "screens/demo-insurer-questionnaire-v3-thanks.png"
+      ],
+      "advance_on_click": [
+        "submit_button"
+      ],
+      "approve": "all",
+      "expect": "sent",
+      "expect_typed_all": [
+        "20.10.2026",
+        "Bäckerei Sonnenschein GmbH"
+      ],
+      "answers": [
+        "employer, arbeitgeber, company => Bäckerei Sonnenschein GmbH",
+        "your name, full name, insured person => Erika Beispiel",
+        "policy, insurance number, versicherten => G123456789",
+        "first day, sick day, sick since, illness => 20.10.2026"
+      ],
+      "memory": [
+        "full",
         "cold"
       ],
       "max_steps": 14
@@ -268,6 +403,54 @@
       "memory": [
         "cold"
       ]
+    },
+    {
+      "quick": true,
+      "task": "@task_look_screen",
+      "lang": "en",
+      "page": "demo-unrelated/index.html",
+      "outline": "screens/demo-unrelated.outline.json",
+      "screens": [
+        "screens/demo-unrelated.png"
+      ],
+      "approve": "all",
+      "expect": "no_action",
+      "memory": [
+        "full",
+        "cold"
+      ],
+      "max_steps": 6
+    },
+    {
+      "task": "@task_look_screen",
+      "lang": "en",
+      "page": "demo-unrelated/instructions.html",
+      "outline": "screens/demo-unrelated-instructions.outline.json",
+      "screens": [
+        "screens/demo-unrelated-instructions.png"
+      ],
+      "approve": "all",
+      "expect": "no_action",
+      "memory": [
+        "full",
+        "cold"
+      ],
+      "max_steps": 6
+    },
+    {
+      "task": "@task_look_screen",
+      "lang": "en",
+      "page": "demo-insurer/help.html",
+      "outline": "screens/demo-insurer-help.outline.json",
+      "screens": [
+        "screens/demo-insurer-help.png"
+      ],
+      "approve": "all",
+      "expect": "no_action",
+      "memory": [
+        "full"
+      ],
+      "max_steps": 6
     }
   ]
 }

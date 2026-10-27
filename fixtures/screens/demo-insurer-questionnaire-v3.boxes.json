@@ -1,0 +1,38 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-insurer-questionnaire-v3.png",
+  "targets": {
+    "name_field": {
+      "box": [
+        397,
+        652,
+        784,
+        704
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Name of insured person\", top left"
+    },
+    "nr_field": {
+      "box": [
+        803,
+        652,
+        1190,
+        704
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Policy number\", top right"
+    },
+    "since_field": {
+      "box": [
+        397,
+        754,
+        784,
+        806
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"First day of illness\" (TT.MM.JJJJ)"
+    }
+  }
+}

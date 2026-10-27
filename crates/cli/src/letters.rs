@@ -65,8 +65,22 @@ pub async fn read(ctx: &Ctx, file: &Path, crop: Option<&Path>) -> Result<()> {
     println!("Pip says: {}", r.bubble);
     println!("\nDocumentExtract:\n{}", serde_json::to_string_pretty(&r.extract)?);
     print_deadlines(&r.deadlines);
+    // Not part of Pip's bubble: the rule with its source, said on its own.
+    if let Some(tip) = &r.tip {
+        println!("\n{} (source: {}, {})", tip.text, tip.source, tip.url);
+    }
     if let Some(xp) = expected::path_for(file) {
-        let checks = expected::check(&expected::load(&xp)?, &r.extract, &r.deadlines);
+        let x = expected::load(&xp)?;
+        let mut checks = expected::check(&x, &r.extract, &r.deadlines);
+        // "tip": the id of the "Good to know" rule the letter must give (null = none).
+        if let Some(want) = x.get("tip") {
+            let got = r.tip.as_ref().map(|t| t.id);
+            checks.push(expected::Check {
+                name: "tip",
+                ok: got == want.as_str(),
+                got: got.unwrap_or("none").to_string(),
+            });
+        }
         let ok = checks.iter().filter(|c| c.ok).count();
         println!("\nCheck against {}: {ok}/{} fields", xp.display(), checks.len());
         for c in &checks {

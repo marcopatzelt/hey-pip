@@ -1,5 +1,6 @@
 //! Deadline rules (Rust code with source + tests, never invented by the model),
-//! NRW holidays 2026/27, reminder engine, and the page guard (`guard`: warning signs, no model call).
+//! NRW holidays 2026/27, reminder engine, the page guard (`guard`: warning signs, no model call) and
+//! "Good to know" tips with sources (`tips`).
 //!
 //! OWNER: agent "memory-rules".
 
@@ -10,6 +11,7 @@ pub mod daily;
 pub mod engine;
 pub mod guard;
 pub mod text;
+pub mod tips;
 pub mod widerspruch;
 
 use chrono::{DateTime, Local, LocalResult, NaiveDate, NaiveTime, TimeZone};
@@ -25,6 +27,7 @@ pub use daily::{
     offer_after_task,
 };
 pub use engine::RuleEngine;
+pub use tips::Tip;
 pub use widerspruch::WiderspruchBescheid;
 
 #[derive(Debug, Clone, PartialEq)]

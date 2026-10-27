@@ -1,0 +1,48 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-busy.png",
+  "targets": {
+    "icon_button": {
+      "box": [
+        1334,
+        20,
+        1365,
+        51
+      ],
+      "sam_query": "icon button",
+      "description": "Small magnifier icon button \"Search\" at the right end of the dark header"
+    },
+    "close_x": {
+      "box": [
+        1344,
+        119,
+        1365,
+        140
+      ],
+      "sam_query": "close button",
+      "description": "Small \"×\" close button at the right end of the yellow notice bar"
+    },
+    "print_button": {
+      "box": [
+        664,
+        444,
+        735,
+        483
+      ],
+      "sam_query": "button",
+      "description": "Grey button \"Print\", the middle one of \"Download\", \"Print\", \"Share\" below the table"
+    },
+    "text_link": {
+      "box": [
+        545,
+        571,
+        733,
+        594
+      ],
+      "sam_query": "link",
+      "description": "Link \"your appointment page\" inside the text of the lower white card"
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-insurer-questionnaire-v3-error.png",
+  "targets": {
+    "employer_field": {
+      "box": [
+        397,
+        685,
+        1190,
+        737
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Employer (required)\""
+    },
+    "still_no_radio": {
+      "box": [
+        402,
+        791,
+        423,
+        812
+      ],
+      "sam_query": "radio button",
+      "description": "Radio button \"No\" under \"Are you still unable to work?\", left of \"Yes\""
+    },
+    "still_yes_radio": {
+      "box": [
+        495,
+        791,
+        516,
+        812
+      ],
+      "sam_query": "radio button",
+      "description": "Radio button \"Yes\" under \"Are you still unable to work?\", right of \"No\""
+    },
+    "submit_button": {
+      "box": [
+        1032,
+        830,
+        1190,
+        883
+      ],
+      "sam_query": "button",
+      "description": "Green button \"Submit\" bottom right of the form"
+    }
+  }
+}

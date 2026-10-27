@@ -225,7 +225,13 @@ impl Respond for Responder {
             }
         }
         if body["model"] == "sam-3.1" {
-            let text = s.sam.lock().unwrap().pop_front().unwrap_or_default();
+            // The synonyms SAM is asked at the same time ("input box" next to "text input field") find nothing here:
+            // the scripted boxes belong to the model's own query.
+            let query = body["input"][0]["content"][0]["text"].as_str().unwrap_or_default();
+            let synonym = ["button", "radio button", "checkbox", "text input field", "link", "icon"]
+                .iter()
+                .any(|k| pip_core::meta::sam::phrases(k)[1..].iter().any(|p| p == query));
+            let text = if synonym { String::new() } else { s.sam.lock().unwrap().pop_front().unwrap_or_default() };
             return ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(sse(&text));
@@ -3064,4 +3070,119 @@ async fn guard_is_silent_on_the_real_insurer_and_on_a_new_harmless_site() {
         assert!(questions(&x.h.drain()).is_empty(), "{open}");
         assert!(guard_events(&x.h.memory).is_empty(), "{open}");
     }
+}
+
+// ---------- steady end: no offer loop, no scroll burn ----------
+
+#[tokio::test]
+async fn a_second_offer_with_nothing_done_in_between_ends_the_run() {
+    let mut h = Harness::new(false).await;
+    let offer = |id: &str, q: &str| calls(id, &[("ask_user", json!({"question": q, "options": ["Ja", "Nein"]}))]);
+    h.agent_turns(vec![
+        offer("r1", "Hier gibt es nichts zu tun. Soll ich etwas anderes machen?"),
+        offer("r2", "Soll ich dir bei etwas anderem helfen?"),
+        calls("r3", &[done("never reached")]),
+    ]);
+    h.auto_answer(ApprovalAnswer::No, "Nein");
+    let out = h.run("Look at my screen").await;
+    assert_eq!(out, AgentOutcome::Done("Soll ich dir bei etwas anderem helfen?".into()));
+    assert_eq!(h.requests().len(), 2, "the run ends at the second offer");
+    let ev = h.drain();
+    assert_eq!(questions(&ev).len(), 1, "asked once, not twice");
+    assert!(bubbles(&ev).contains(&"Soll ich dir bei etwas anderem helfen?".to_string()), "closing bubble");
+    assert!(h.platform.typed().is_empty());
+}
+
+#[tokio::test]
+async fn an_offer_after_an_action_is_asked_again() {
+    let mut h = Harness::new(false).await;
+    let offer = |id: &str| calls(id, &[("ask_user", json!({"question": "Was jetzt?", "options": ["A", "B"]}))]);
+    h.agent_turns(vec![
+        offer("r1"),
+        calls("r2", &[click("den Knopf „Weiter“", false)]),
+        offer("r3"),
+        calls("r4", &[done("ok")]),
+    ]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+    // The click opens another page (other PAGE ELEMENTS): a new situation, a new offer is fine.
+    h.platform.on_click_outline.lock().unwrap().push_back(vec![el(1, "button", "Neue Seite", (100, 100, 200, 40))]);
+    h.auto_answer(ApprovalAnswer::No, "A");
+    let out = h.run("Hilf mir").await;
+    assert_eq!(out, AgentOutcome::Done("ok".into()));
+    assert_eq!(questions(&h.drain()).len(), 2);
+}
+
+#[tokio::test]
+async fn an_offer_after_an_action_that_changed_nothing_ends_the_run() {
+    let mut h = Harness::new(false).await;
+    let offer = |id: &str| calls(id, &[("ask_user", json!({"question": "Was jetzt?", "options": ["A", "B"]}))]);
+    h.agent_turns(vec![
+        offer("r1"),
+        calls("r2", &[("open_url", json!({"url": "https://www.evergreen-health.example/kontakt"}))]),
+        offer("r3"),
+        calls("r4", &[done("never reached")]),
+    ]);
+    h.auto_answer(ApprovalAnswer::No, "A");
+    let out = h.run("Look at my screen").await;
+    assert_eq!(out, AgentOutcome::Done("Was jetzt?".into()), "the same screen as at the first offer");
+    assert_eq!(questions(&h.drain()).len(), 1);
+}
+
+#[tokio::test]
+async fn no_offer_after_a_send() {
+    let mut h = Harness::new(false).await;
+    h.agent_turns(vec![
+        calls("r1", &[click("den Knopf „Absenden“", true)]),
+        calls("r2", &[("ask_user", json!({"question": "Was möchtest du als Nächstes?", "options": ["A", "B"]}))]),
+        calls("r3", &[done("Abgeschickt.")]),
+    ]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+    h.auto_answer(ApprovalAnswer::Yes, "A");
+    let out = h.run("Schick es ab").await;
+    assert_eq!(out, AgentOutcome::Done("Abgeschickt.".into()));
+    let r = h.requests();
+    assert!(
+        outputs(&r[1])[0].ends_with(
+            "Sent. Look once at the page; if it confirms, call done with one sentence. Do not offer anything else."
+        ),
+        "{:?}",
+        outputs(&r[1])
+    );
+    assert!(outputs(&r[2])[0].starts_with("not asked: the form was sent."), "{:?}", outputs(&r[2]));
+    let ev = h.drain();
+    assert!(questions(&ev).is_empty(), "no question bubble after the send");
+    assert!(!bubbles(&ev).iter().any(|b| b.contains("Nächstes")));
+}
+
+#[tokio::test]
+async fn a_scroll_that_moves_nothing_is_said_and_the_third_hit_ends_the_run() {
+    let h = Harness::new(false).await;
+    let scroll = |id: &str| calls(id, &[("scroll", json!({"direction": "down", "amount": 3}))]);
+    h.agent_turns(vec![scroll("r1"), scroll("r2"), scroll("r3"), calls("r4", &[done("never reached")])]);
+    let out = h.run("Fill the form").await;
+    let stuck = AgentOutcome::NeedsUser(pip_core::i18n::t("loop_stuck", pip_core::i18n::Lang::De).to_string());
+    assert_eq!(out, stuck);
+    let r = h.requests();
+    assert_eq!(r.len(), 3, "the third scroll ends the run instead of burning steps");
+    let o = &outputs(&r[1])[0];
+    assert!(
+        o.starts_with("scrolled, but nothing moved: the whole page is already visible. Do not scroll again."),
+        "{o}"
+    );
+    assert!(o.contains("click the send button now (is_commit=true)"), "{o}");
+    assert_eq!(h.platform.actions().iter().filter(|a| a.starts_with("scroll")).count(), 3);
+}
+
+#[tokio::test]
+async fn already_done_tells_the_model_to_send() {
+    let h = Harness::new(false).await;
+    h.platform.set_outline(employer_outline());
+    *h.platform.allow_set_value.lock().unwrap() = true;
+    let same = || calls("r", &[type_el("Erika Beispiel", "your name", 1)]);
+    h.agent_turns(vec![same(), same(), same(), same(), same(), calls("r6", &[done("never reached")])]);
+    let out = h.run("Fill in my name").await;
+    assert!(matches!(out, AgentOutcome::NeedsUser(_)), "the third 'already done' ends the run: {out:?}");
+    let o = &outputs(&h.requests()[3])[0];
+    assert!(o.contains("If every required field shows a value, click the send button now"), "{o}");
+    assert!(o.contains("Do not scroll for an upload field"), "{o}");
 }

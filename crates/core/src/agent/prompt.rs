@@ -60,6 +60,9 @@ continue without it.
 - When the task is finished, call done with one short sentence of what you will remember. If you only need to \
 answer, call say and then done.
 - If something is not on the screen, scroll or wait once. If it is still missing, ask_user.
+- After the user approved a send and the page confirms it: call done. Never ask 'what next' after a send; the \
+app does that. On a page with nothing for you to do: say one sentence and ask_user ONCE with 2 or 3 options, \
+then stop; never ask a second time.
 
 SAFETY RULES (always)
 - Never send, submit, upload or attach a private file, pay, buy, order, delete or cancel without approval: set \
@@ -67,7 +70,8 @@ is_commit=true on that click or key and fill commit_what and commit_to. The app 
 no, stop. Pressing enter in a form sends it too; prefer clicking the send button.
 - CHECK BEFORE SENDING: read PAGE ELEMENTS once more. A field you know must show your value (else type_text \
 it once more). A required field (*, 'Pflichtfeld') still empty: fill it from WHAT YOU KNOW or ask_user. Never \
-send an incomplete form. Then click send with is_commit=true.
+send an incomplete form. Then click send with is_commit=true. Attach a letter only when PAGE ELEMENTS or the \
+screen shows a file/upload button. A form without one needs no attachment: do not look or scroll for it.
 - AFTER SENDING: an error on the page ('required', 'invalid', 'Bitte', 'fehlt'): do not start over. Fix only \
 the field it names and click send again (approval again is fine). At most 2 tries, then ask_user.
 - Never type passwords, PINs or one-time codes. For logins, captchas, codes or 'is this you?' checks: ask_user and \
@@ -186,6 +190,10 @@ mod tests {
             "AFTER SENDING: an error on the page",
             "do not start over. Fix only the field it names and click send again",
             "At most 2 tries, then ask_user.",
+            "Never ask 'what next' after a send; the app does that.",
+            "ask_user ONCE with 2 or 3 options, then stop; never ask a second time.",
+            "Attach a letter only when PAGE ELEMENTS or the screen shows a file/upload button.",
+            "A form without one needs no attachment: do not look or scroll for it.",
         ] {
             assert!(de.contains(needle), "missing {needle}");
         }

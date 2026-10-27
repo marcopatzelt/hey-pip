@@ -1,13 +1,15 @@
-//! Tray menu: Pause / My deadlines / What Pip knows / What Pip did for me / Quit (strings via core::i18n).
+//! Tray menu: Pause / Always show Pip / My deadlines / What Pip knows / What Pip did for me / Quit
+//! (strings via core::i18n).
 
 use anyhow::Result;
 use pip_core::i18n::{Lang, t, tf};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Wry};
 
 pub struct Tray {
     pause: MenuItem<Wry>,
+    always: CheckMenuItem<Wry>,
     icon: TrayIcon<Wry>,
     lang: Lang,
 }
@@ -17,6 +19,11 @@ impl Tray {
     pub fn set_paused(&self, paused: bool) {
         let key = if paused { "tray_resume" } else { "tray_pause" };
         let _ = self.pause.set_text(t(key, self.lang));
+    }
+
+    /// The check mark of "Always show Pip" follows the stored mode (the menu toggles it on its own too).
+    pub fn set_always(&self, on: bool) {
+        let _ = self.always.set_checked(on);
     }
 
     /// Tooltip: "Pip – nächste Erinnerung: Donnerstag, 29. Oktober, 18:00" (or just "Pip").
@@ -29,13 +36,15 @@ impl Tray {
     }
 }
 
-pub fn setup(app: &AppHandle, lang: Lang) -> Result<Tray> {
+/// `always`: the stored mode is "always" (Pip never rests at the edge), so the item starts checked.
+pub fn setup(app: &AppHandle, lang: Lang, always: bool) -> Result<Tray> {
     let pause = MenuItem::with_id(app, "pause", t("tray_pause", lang), true, None::<&str>)?;
+    let always_item = CheckMenuItem::with_id(app, "always", t("tray_always_show", lang), true, always, None::<&str>)?;
     let deadlines = MenuItem::with_id(app, "deadlines", t("tray_deadlines", lang), true, None::<&str>)?;
     let knowledge = MenuItem::with_id(app, "knowledge", t("tray_knowledge", lang), true, None::<&str>)?;
     let card = MenuItem::with_id(app, "card", t("btn_my_card", lang), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", t("tray_quit", lang), true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&pause, &deadlines, &knowledge, &card, &quit])?;
+    let menu = Menu::with_items(app, &[&pause, &always_item, &deadlines, &knowledge, &card, &quit])?;
     let mut builder = TrayIconBuilder::with_id("pip").tooltip("Pip").menu(&menu).show_menu_on_left_click(true);
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
@@ -43,6 +52,7 @@ pub fn setup(app: &AppHandle, lang: Lang) -> Result<Tray> {
     let icon = builder
         .on_menu_event(|app, ev| match ev.id().as_ref() {
             "pause" => crate::bridge::toggle_pause(app),
+            "always" => crate::bridge::toggle_always(app),
             "deadlines" => crate::bridge::show_deadlines(app),
             "knowledge" => crate::bridge::show_knowledge(app),
             "card" => crate::bridge::show_card(app),
@@ -50,5 +60,5 @@ pub fn setup(app: &AppHandle, lang: Lang) -> Result<Tray> {
             _ => {}
         })
         .build(app)?;
-    Ok(Tray { pause, icon, lang })
+    Ok(Tray { pause, always: always_item, icon, lang })
 }

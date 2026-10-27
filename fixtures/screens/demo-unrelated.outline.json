@@ -1,0 +1,81 @@
+{
+ "note": "UI Automation outline of demo-unrelated.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-unrelated/index.html, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-unrelated.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "text",
+   "name": "Weather this week",
+   "value": null,
+   "rect": {
+    "x": 307,
+    "y": 109,
+    "w": 482,
+    "h": 43
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "text",
+   "name": "Our newsletter",
+   "value": null,
+   "rect": {
+    "x": 307,
+    "y": 480,
+    "w": 482,
+    "h": 33
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "text",
+   "name": "Farmers' market moves to Saturday",
+   "value": null,
+   "rect": {
+    "x": 859,
+    "y": 109,
+    "w": 434,
+    "h": 33
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "text",
+   "name": "New benches in the town park",
+   "value": null,
+   "rect": {
+    "x": 859,
+    "y": 353,
+    "w": 434,
+    "h": 33
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "link",
+   "name": "Read more",
+   "value": null,
+   "rect": {
+    "x": 929,
+    "y": 478,
+    "w": 92,
+    "h": 26
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

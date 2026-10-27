@@ -3,6 +3,7 @@
 
 Run: python3 fixtures/screens/make_outline.py <page-url-or-file> <stem> [?query] [--target name=#css ...]
                                               [--out DIR] [--no-outline] [--note TEXT] [--click #css]
+                                              [--scroll-bottom]
 
 Drives headless Firefox through /snap/bin/geckodriver (plain WebDriver over urllib, no selenium). The viewport is
 exactly 1600x1000; the PNG is the viewport, so the rects in the outline are the same pixels as the picture.
@@ -13,6 +14,12 @@ Writes into DIR (default: this folder):
                        keeps the list Pip typed into, so it must not bring its own)
   <stem>.boxes.json    {name: box xyxy} for every --target name=<css selector> (fit tests, click targets)
 --click <css> clicks that element before the capture (a cookie button, a "Next" button). One page load per call.
+--scroll-bottom scrolls the page to its end before the capture (the `-scrolled` states of a tall page): the rects are
+then those of the scrolled viewport, elements above it are negative and `offscreen`.
+An element that is laid out but `visibility:hidden` is listed with `offscreen: true` (UI Automation lists it, the
+picture does not show it); a heading's `aria-label` is its name.
+`capture(..., labels={name: (sam_query, description)})` writes those into the boxes (make_screens.py does this);
+without, the boxes get a generic query and the target name as description.
 """
 
 import base64
@@ -41,11 +48,9 @@ const textOf = (el) => {
   }
   return clean(s);
 };
-const visible = (el) => {
-  if (!el.getClientRects().length) return false;
-  const cs = getComputedStyle(el);
-  return cs.visibility !== "hidden" && cs.display !== "none";
-};
+const visible = (el) => el.getClientRects().length > 0 && getComputedStyle(el).display !== "none";
+// In the DOM and laid out, but not drawn (visibility:hidden): UI Automation still lists it, as off-screen.
+const hidden = (el) => getComputedStyle(el).visibility === "hidden";
 const labelFor = (el) => {
   if (el.id) {
     const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
@@ -85,7 +90,8 @@ for (const el of document.querySelectorAll(sel)) {
   } else if (tag === "A") {
     role = "link"; name = textOf(el);
   } else if (/^H[1-3]$/.test(tag) || el.classList.contains("error") || el.getAttribute("role") === "alert") {
-    role = "text"; name = textOf(el);
+    // A heading's aria-label is its UI Automation name (what a page aimed at the assistant hides there).
+    role = "text"; name = clean(el.getAttribute("aria-label")) || textOf(el);
     if (!name) continue;
   }
   if (!role || !visible(box)) continue;
@@ -95,7 +101,7 @@ for (const el of document.querySelectorAll(sel)) {
   }
   const r = box.getBoundingClientRect();
   const rect = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
-  const offscreen = r.bottom <= 0 || r.top >= H || r.right <= 0 || r.left >= W;
+  const offscreen = r.bottom <= 0 || r.top >= H || r.right <= 0 || r.left >= W || hidden(box);
   out.push({ role, name, value: role === "text" ? null : value, rect, offscreen, enabled: !el.disabled, is_password: isPw, _sel: null });
 }
 return out;
@@ -175,7 +181,8 @@ def page_url(page: str, query: str) -> str:
 
 
 def capture(page: str, stem: str, query: str = "", targets: dict | None = None, out: pathlib.Path = OUT,
-            outline: bool = True, note: str = "", clicks: list | None = None) -> dict:
+            outline: bool = True, note: str = "", clicks: list | None = None, scroll_bottom: bool = False,
+            labels: dict | None = None) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     d = Driver()
     try:
@@ -185,6 +192,9 @@ def capture(page: str, stem: str, query: str = "", targets: dict | None = None, 
             d.js("document.querySelector(arguments[0]).click();", c)
         time.sleep(0.4)  # fonts and layout settle
         d.viewport()  # a scrollbar that appeared after load changes nothing: innerWidth includes it
+        if scroll_bottom:
+            d.js("window.scrollTo(0, document.documentElement.scrollHeight);")
+            time.sleep(0.2)
         png = base64.b64decode(d.s("GET", "/screenshot"))
         (out / f"{stem}.png").write_bytes(png)
         items = d.js(WALK_JS, W, H)
@@ -211,8 +221,10 @@ def capture(page: str, stem: str, query: str = "", targets: dict | None = None, 
     if targets is not None:
         meta = {"note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
                 "w": W, "h": H, "image": f"{stem}.png"}
+        def label(k: str) -> tuple:
+            return (labels or {}).get(k) or ("button" if "button" in k else "text input field", k.replace("_", " "))
         (out / f"{stem}.boxes.json").write_text(json.dumps({**meta, "targets": {
-            k: {"box": v, "sam_query": "button" if "button" in k else "text input field", "description": k.replace("_", " ")}
+            k: {"box": v, "sam_query": label(k)[0], "description": label(k)[1]}
             for k, v in boxes.items()}}, indent=2, ensure_ascii=False) + "\n")
     print(f"{out / stem}.png: {len(items)} elements, {len(boxes)} targets")
     return {"items": items, "boxes": boxes}
@@ -221,7 +233,8 @@ def capture(page: str, stem: str, query: str = "", targets: dict | None = None, 
 def parse(argv: list) -> dict:
     if len(argv) < 2:
         sys.exit(__doc__)
-    a = {"page": argv[0], "stem": argv[1], "query": "", "targets": None, "out": OUT, "outline": True, "note": "", "clicks": []}
+    a = {"page": argv[0], "stem": argv[1], "query": "", "targets": None, "out": OUT, "outline": True, "note": "", "clicks": [],
+         "scroll_bottom": False}
     rest = argv[2:]
     if rest and rest[0].startswith("?"):
         a["query"] = rest.pop(0)
@@ -238,6 +251,8 @@ def parse(argv: list) -> dict:
             a["note"] = rest.pop(0)
         elif flag == "--click":
             a["clicks"].append(rest.pop(0))
+        elif flag == "--scroll-bottom":
+            a["scroll_bottom"] = True
         else:
             sys.exit(f"unknown argument {flag}\n{__doc__}")
     return a

@@ -11,8 +11,8 @@
         934,
         583
       ],
-      "sam_query": "text input field",
-      "description": "cookie necessary"
+      "sam_query": "button",
+      "description": "Button \"Only necessary\" in the cookie banner, left of the green \"Accept all\""
     },
     "cookie_all": {
       "box": [
@@ -21,8 +21,8 @@
         1087,
         583
       ],
-      "sam_query": "text input field",
-      "description": "cookie all"
+      "sam_query": "button",
+      "description": "Green button \"Accept all\" in the cookie banner, right of \"Only necessary\""
     }
   }
 }

@@ -58,6 +58,13 @@ flowchart LR
    To find a target, **SAM 3.1 and Muse Spark run in parallel**: SAM proposes exact element boxes, Spark points at
    the described target; if Spark's point lies in a SAM box, Pip clicks the center of that box. If they disagree,
    Spark picks one of the numbered boxes; if none fits, Spark's own point is used.
+   **Target finding in two stages.** Stage 1 asks SAM 3.1 for the shape word and up to two fixed synonyms at once
+   (`button` → `rounded button`, `clickable button`; overlapping boxes merged), because SAM misses some shapes under
+   one name, such as an outlined button. When all candidates sit close together, Spark picks on an enlarged cut-out
+   with bigger numbers. Stage 2 is a zoom: a 480 × 300 px cut-out around the first candidate, enlarged 2×, goes to
+   Spark again. A point in a SAM box gives that box; a point within 24 px keeps the first candidate; a point far away
+   gets one more zoomed look around it to decide. A very wide box around a labelled button (a file input row
+   "Datei auswählen · Keine ausgewählt") is split into two halves, and the zoom decides which one is meant.
 4. **The approval gate** – a commit (send, submit, attach a private file, pay, buy, delete, cancel a contract) is
    detected in three independent ways, and any one is enough: the model says so, a German/English word list on the
    target, or the button's name from Windows UI Automation. Enter in a form always counts as sending. The card waits
