@@ -2578,7 +2578,7 @@ mod tests {
         assert_eq!(
             brief.text_on(Lang::En, Some("file:///x/demo-air/index.html")),
             "Open file:///x/demo-air/index.html and claim EUR 400 from Beispiel Air for flight BX 2041 on 3 October \
-             2026 (deadline #1). Fill in what you know about me, attach my boarding pass, and stop at the send button."
+             2026 (deadline #1). Fill in what you know about me, attach my boarding pass, then click the send button: the card lets me decide."
         );
         assert_eq!(
             (brief.memory.as_slice(), brief.expect_attach.as_deref()),

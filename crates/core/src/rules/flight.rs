@@ -289,11 +289,11 @@ pub fn brief_line(f: &FlightInfo, c: &Claim, lang: Lang) -> String {
     }
 }
 
-/// The agent's task for the claim page: fill from memory, attach the boarding pass, stop at the send button.
+/// The agent's task for the claim page: fill from memory, attach the boarding pass, click send (the card asks first).
 pub fn claim_task(url: &str, f: &FlightInfo, c: &Claim, deadline_id: i64) -> String {
     format!(
         "Open {url} and claim EUR {} from {} for flight {} on {} (deadline #{deadline_id}). Fill in what you know \
-         about me, attach my boarding pass, and stop at the send button.",
+         about me, attach my boarding pass, then click the send button: the card lets me decide.",
         c.amount.text(Lang::En),
         airline_name(f, Lang::En),
         f.flight_no,
@@ -465,8 +465,8 @@ pub(crate) mod tests {
         assert_eq!(
             t,
             "Open file:///C:/Pip/fixtures/demo-air/index.html and claim EUR 400 from Beispiel Air for flight BX 2041 \
-             on 3 October 2026 (deadline #7). Fill in what you know about me, attach my boarding pass, and stop at the \
-             send button."
+             on 3 October 2026 (deadline #7). Fill in what you know about me, attach my boarding pass, then click the \
+             send button: the card lets me decide."
         );
     }
 }

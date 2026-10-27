@@ -89,7 +89,7 @@ fn demo_profile_brief_offers_the_questionnaire() {
         offer.task,
         format!(
             "Open {form} and claim EUR 400 from Beispiel Air for flight BX 2041 on 3 October 2026 (deadline #{}). \
-             Fill in what you know about me, attach my boarding pass, and stop at the send button.",
+             Fill in what you know about me, attach my boarding pass, then click the send button: the card lets me decide.",
             claim.id
         )
     );
