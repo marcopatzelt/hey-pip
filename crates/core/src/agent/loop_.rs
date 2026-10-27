@@ -73,6 +73,10 @@ const TOGGLE_REACH: u32 = 160;
 const SAM_CACHE_MAX: usize = 32;
 /// Characters typed per chunk (cancel is checked between chunks).
 const TYPE_CHUNK: usize = 16;
+/// The model answered with text only while nothing was sent yet.
+const TEXT_ONLY_BEFORE_SEND: &str = "You answered with text only; nothing was sent yet. If the task's form is \
+     complete, click its send button now (the user gets a card first). If something is missing, ask_user once. If \
+     the task is really finished, call done with a short sentence for the user.";
 /// A date input's first part (day in TT.mm.jjjj): this far (physical px) inside the field's left edge.
 const DATE_FIRST_PART_X: i32 = 12;
 /// An open card or question that nobody answers gets a Windows notification after this long.
@@ -256,6 +260,8 @@ pub struct RunState {
     pub enter_after_attach: bool,
     /// What was really sent in this run (approved send commits that were executed).
     pub sent: Vec<String>,
+    /// A text-only answer before anything was sent was sent back once (`text_only_before_send`).
+    pub text_reasked: bool,
     /// The playbook for this site and task before the run: (runs, seconds of the last run).
     pub prior: Option<(i64, i64)>,
     /// Page opened with open_url in THIS run (DEMO_MODE commits need it when the address bar is unreadable).
@@ -451,6 +457,7 @@ impl RunState {
             doc_path: None,
             enter_after_attach: false,
             sent: Vec::new(),
+            text_reasked: false,
             last_url: None,
             prior: None,
             typed: Vec::new(),
@@ -1194,6 +1201,17 @@ impl Agent {
                 });
                 return Ok(StepResult::Continue);
             }
+            // VM 27.10.: the claim was complete, the send button unpressed, and the model answered with text
+            // only; that ended the run as "done" with no card. Once per run, after Pip acted (a plain answer to
+            // a question in the first step still ends the run): back to the model.
+            if state.phase == Phase::Act && state.step > 1 && state.sent.is_empty() && !state.text_reasked {
+                state.text_reasked = true;
+                tracing::info!(text = %truncate(text, 120), "text-only answer before a send: asked again");
+                state
+                    .pending_input
+                    .push(InputItem::Message { role: Role::User, content: vec![Content::text(TEXT_ONLY_BEFORE_SEND)] });
+                return Ok(StepResult::Continue);
+            }
             self.bubble(text, true);
             state.answered = true;
             return Ok(StepResult::Finished(AgentOutcome::Done(text.to_string())));
@@ -1856,13 +1874,23 @@ impl Agent {
         let file = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
         // A slow dialog is in front before its name box has the keyboard: the first letters went nowhere
         // (VM: ":\Users\…" without the "C"). Wait for the box, then type.
-        if !self.wait_for_text_focus(cancel).await {
-            return Ok(None);
+        // First straight into the dialog's name box (no keys, so nothing can get lost); else wait for the box and type.
+        let ui = self.platform.ui.clone();
+        let p = path.clone();
+        let set = tokio::task::spawn_blocking(move || ui.set_file_name(&p)).await.unwrap_or(false);
+        if set {
+            tracing::info!("attach: path set in the file dialog's name box, Open pressed");
+        } else {
+            if !self.wait_for_text_focus(cancel).await {
+                return Ok(None);
+            }
+            if !self.type_chunks(&path, cancel).await? {
+                return Ok(None);
+            }
         }
-        if !self.type_chunks(&path, cancel).await? {
-            return Ok(None);
+        if !set {
+            self.blocking(|pl| pl.input.key("enter")).await?;
         }
-        self.blocking(|pl| pl.input.key("enter")).await?;
         state.doc_file = Some(file.clone());
         state.doc_id = Some(doc.id);
         state.doc_path = Some(doc.path.clone());
@@ -1879,7 +1907,14 @@ impl Agent {
             0,
         );
         let _ = self.pause(self.batch_pace(), cancel).await;
-        let still_open = self.foreground().await.is_some_and(|w| w.is_file_dialog());
+        // A slow PC (VM) closes the dialog a moment after the enter: wait for it, or the attach counts as failed
+        // and the next planned click opens the dialog again (its cancel clears the picked file).
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut still_open = self.foreground().await.is_some_and(|w| w.is_file_dialog());
+        while still_open && Instant::now() < deadline && !cancel.is_cancelled() {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            still_open = self.foreground().await.is_some_and(|w| w.is_file_dialog());
+        }
         state.attached_done = !still_open;
         Ok(Some(if still_open {
             format!(

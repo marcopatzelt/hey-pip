@@ -1359,6 +1359,14 @@ async function start() {
   applyStaticText();
   await TAURI.event.listen("ui", ({ payload }) => onUi(payload));
   await TAURI.event.listen("app", ({ payload }) => onApp(payload));
+  // The hook's copy of a person's press: if the webview dropped it, press the button under it (ui/bubble.js).
+  await TAURI.event.listen("press", ({ payload }) => {
+    const since = performance.now() - Bubble.PRESS_MS;
+    setTimeout(() => {
+      const btn = Bubble.missedPress(payload.x, payload.y, since, (x, y) => document.elementFromPoint(x, y));
+      if (btn) { console.info("press rescued", btn.textContent); btn.click(); }
+    }, 250);
+  });
   // Pip flies in from the right edge: to his resting place at the edge (peek) or home (always).
   applyMode(info.mode);
   if (st.mode === "peek") setPeek("rest");

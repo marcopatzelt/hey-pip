@@ -331,3 +331,14 @@ test("a second card with another id gets fresh buttons", () => {
   assert.ok(!Bubble.sameCard(null, Bubble.cardSignature(sendCard("a"))));
   assert.ok(!Bubble.sameCard(Bubble.cardSignature({}), Bubble.cardSignature({})), "a card without an id is never the same");
 });
+
+test("a press the webview dropped is pressed once, a press that fired is not pressed again", () => {
+  const clock = Bubble.pressClock();
+  const btn = { disabled: false, pressClock: clock, closest: () => btn };
+  const at = () => btn;
+  clock.at = 1000;
+  assert.equal(Bubble.missedPress(5, 5, 900, at), null); // fired on its own after the press
+  assert.equal(Bubble.missedPress(5, 5, 1100, at), btn); // nothing fired since: press it
+  const plain = { disabled: false, closest: () => plain };
+  assert.equal(Bubble.missedPress(5, 5, 1100, () => plain), null); // not a guarded button
+});

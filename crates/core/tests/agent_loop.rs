@@ -939,6 +939,21 @@ async fn plain_text_answer_ends_the_run() {
 }
 
 #[tokio::test]
+async fn text_only_after_acting_and_before_a_send_is_asked_again_once() {
+    let h = Harness::new(false).await;
+    h.agent_turns(vec![
+        calls("r1", &[click("das Feld „Name“", false)]),
+        text_reply("r2", "The form is filled in."),
+        calls("r3", &[done("Sent nothing; the form is ready.")]),
+    ]);
+    h.sam(&[String::new()]);
+    h.locate(0.25, 0.5);
+    let out = h.run("Fill in the form").await;
+    assert_eq!(out, AgentOutcome::Done("Sent nothing; the form is ready.".into()));
+    assert_eq!(h.requests().len(), 3, "the text-only answer went back to the model once");
+}
+
+#[tokio::test]
 async fn step_limit_ends_the_run() {
     let mut h = Harness::new(false).await;
     // empty script -> the model keeps calling `wait 0`

@@ -195,6 +195,90 @@ const ADDRESS_BAR_NAMES: &[&str] = &[
     "search with google or enter address",
 ];
 
+/// Put `path` into the "File name" box of the file dialog in front with WM_SETTEXT and press Open: no keys, so no letter is lost
+/// and the box's suggestion list never opens (typed paths came out as ":\Users\…" or cut at "…\Roami").
+/// The box is the Edit inside the combo box with control id 1148 (the same in every language).
+fn set_file_dialog_name(path: &str) -> Result<(), String> {
+    // The dialog keeps only the name of a full path and looks for it in the folder it shows (VM: "file not
+    // found" in an old folder). So: the folder first (Open on a folder moves into it), then the name.
+    let Some((hwnd, _, class)) = foreground_window() else { return Err("no foreground window".into()) };
+    if class != "#32770" {
+        return Err(format!("foreground is {class}"));
+    }
+    if let Some((dir, name)) = path.rsplit_once(['\\', '/']).filter(|(d, n)| !d.is_empty() && !n.is_empty()) {
+        set_and_open(hwnd, dir)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        // Moving into the folder keeps the same dialog in front; wait until its box is empty again.
+        loop {
+            sleep(Duration::from_millis(150));
+            if name_box(hwnd).is_some_and(|e| text_of(e).is_empty()) || std::time::Instant::now() >= deadline {
+                break;
+            }
+        }
+        if foreground_window().map(|w| w.0) != Some(hwnd) {
+            return Err("the dialog closed after the folder".into());
+        }
+        return set_and_open(hwnd, name);
+    }
+    set_and_open(hwnd, path)
+}
+
+/// The Edit inside the combo box with control id 1148 of this dialog (the "File name" box in every language).
+fn name_box(dialog: isize) -> Option<windows_sys::Win32::Foundation::HWND> {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumChildWindows, GetDlgCtrlID, GetParent};
+    const NAME_BOX_ID: i32 = 1148;
+    unsafe extern "system" fn visit(child: HWND, found: LPARAM) -> i32 {
+        let mut buf = [0u16; 32];
+        let n = unsafe { GetClassNameW(child, buf.as_mut_ptr(), buf.len() as i32) }.max(0) as usize;
+        if String::from_utf16_lossy(&buf[..n]) != "Edit" {
+            return 1;
+        }
+        // Edit -> ComboBox -> ComboBoxEx32 (id 1148); older dialogs: Edit -> ComboBox (id 1148).
+        let mut up = child;
+        for _ in 0..3 {
+            if unsafe { GetDlgCtrlID(up) } == NAME_BOX_ID {
+                unsafe { *(found as *mut HWND) = child };
+                return 0;
+            }
+            up = unsafe { GetParent(up) };
+            if up.is_null() {
+                break;
+            }
+        }
+        1
+    }
+    let mut edit: HWND = std::ptr::null_mut();
+    unsafe { EnumChildWindows(dialog as HWND, Some(visit), &mut edit as *mut HWND as LPARAM) };
+    (!edit.is_null()).then_some(edit)
+}
+
+fn text_of(edit: windows_sys::Win32::Foundation::HWND) -> String {
+    use windows_sys::Win32::Foundation::LPARAM;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_GETTEXT};
+    let mut back = vec![0u16; 1024];
+    let n = unsafe { SendMessageW(edit, WM_GETTEXT, back.len(), back.as_mut_ptr() as LPARAM) }.max(0) as usize;
+    String::from_utf16_lossy(&back[..n.min(back.len())])
+}
+
+/// WM_SETTEXT into the name box, read it back, then press "Open" (IDOK) like its button does; posted, so an
+/// error box of the dialog cannot block Pip.
+fn set_and_open(dialog: isize, text: &str) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDOK, PostMessageW, SendMessageW, WM_COMMAND, WM_SETTEXT};
+    let edit = name_box(dialog).ok_or("no name box (id 1148)")?;
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    unsafe { SendMessageW(edit, WM_SETTEXT, 0, wide.as_ptr() as LPARAM) };
+    let now = text_of(edit);
+    if now != text {
+        return Err(format!("the box shows {now:?}"));
+    }
+    if unsafe { PostMessageW(dialog as HWND, WM_COMMAND, IDOK as usize, 0) } == 0 {
+        return Err("could not press Open".into());
+    }
+    Ok(())
+}
+
 /// The text in the browser's address bar (Edit control, read via the Value pattern).
 fn address_bar(uia: &UIAutomation, hwnd: isize) -> Option<String> {
     let root = uia.element_from_handle(Handle::from(hwnd)).ok()?;
@@ -616,6 +700,19 @@ impl UiTree for WinPlatform {
             Ok(false)
         })
         .unwrap_or(false)
+    }
+
+    fn set_file_name(&self, path: &str) -> bool {
+        match set_file_dialog_name(path) {
+            Ok(()) => {
+                acted();
+                true
+            }
+            Err(why) => {
+                tracing::info!("file dialog: name box not set: {why}");
+                false
+            }
+        }
     }
 
     fn value_at(&self, p: PhysPoint) -> Option<String> {

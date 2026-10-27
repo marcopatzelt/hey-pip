@@ -91,6 +91,7 @@
   function attach(node, onPress, opts) {
     const g = pressGuard(onPress, opts);
     for (const ev of ["pointerdown", "pointerup", "click", "keydown"]) node.addEventListener(ev, g[ev]);
+    node.pressClock = (opts && opts.clock) || shared; // missedPress: did this button fire on its own?
     return g;
   }
 
@@ -106,7 +107,21 @@
     return { queue: rest, keep };
   }
 
-  const Bubble = { PRESS_MS, signature, sameBubble, cardSignature, sameCard, pressClock, pressGuard, attach, afterRun };
+  /**
+   * The mouse hook saw a person press at (x, y) (CSS px) on Pip's window. Returns the guarded button there
+   * (attach) if it has not fired since `since` (ms, its press clock): the webview dropped the press as an
+   * activation click. Else null. at(x, y) = document.elementFromPoint.
+   */
+  function missedPress(x, y, since, at) {
+    const hit = at(x, y);
+    const btn = hit && typeof hit.closest === "function" ? hit.closest("button") : null;
+    if (!btn || btn.disabled || !btn.pressClock) return null;
+    return btn.pressClock.at >= since ? null : btn;
+  }
+
+  const Bubble = {
+    PRESS_MS, signature, sameBubble, cardSignature, sameCard, pressClock, pressGuard, attach, afterRun, missedPress,
+  };
   root.Bubble = Bubble;
   if (typeof module !== "undefined" && module.exports) module.exports = Bubble;
 })(typeof window !== "undefined" ? window : globalThis);

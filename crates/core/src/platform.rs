@@ -481,6 +481,11 @@ pub trait UiTree: Send + Sync {
     fn set_value_at(&self, _p: PhysPoint, _text: &str) -> bool {
         false
     }
+    /// Put this path into the "File name" box of the file dialog in front (no typing), read it back and press
+    /// Open. False = no file dialog in front, no such box, or the box shows something else (nothing pressed).
+    fn set_file_name(&self, _path: &str) -> bool {
+        false
+    }
     /// The day, month and year parts (role "spinner") of a date input of the last outline, in visual order
     /// (left to right). Each part takes digits only and moves on to the next by itself once full; the year
     /// part takes up to six digits. Empty = no parts or unknown.

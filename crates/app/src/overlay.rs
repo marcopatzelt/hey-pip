@@ -238,6 +238,12 @@ pub fn setup(win: &WebviewWindow, bus: Bus, windowed: bool, mouse_stop: MouseSto
             if let Some(h) = direct {
                 while let Ok(c) = clicks.try_recv() {
                     hook::log_click(h, &c);
+                    // A person's press on Pip, a bubble or the card: the webview of a window that never had the
+                    // keyboard may drop it as an activation click (VM: "Yes", "Not yet" and Stop needed two
+                    // presses). The page presses the button itself if no press of its own came (ui/bubble.js).
+                    if c.inside && !c.agent && !c.rescued {
+                        emit_press(&win, c.at);
+                    }
                 }
                 // The hook follows mouse moves; this catches rects that change under a resting cursor.
                 // `want` first, then the style: a reader seeing the new bit never compares it with the old wish.
@@ -489,6 +495,16 @@ impl SyncCheck {
             _ => StyleSync::InStep,
         }
     }
+}
+
+/// Tell the page where a person pressed, in CSS pixels of the overlay window.
+#[cfg(windows)]
+fn emit_press(win: &WebviewWindow, at: PhysPoint) {
+    use tauri::Emitter;
+    let (Ok(origin), Ok(scale)) = (win.inner_position(), win.scale_factor()) else { return };
+    let x = f64::from(at.x - origin.x) / scale;
+    let y = f64::from(at.y - origin.y) / scale;
+    let _ = win.emit("press", serde_json::json!({ "x": x, "y": y }));
 }
 
 /// One left press by a person or the agent (never Pip's own rescue), as the hook saw it (logged by the poll, so the hook itself stays fast).
