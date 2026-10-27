@@ -120,10 +120,13 @@ function flyTo(x, y, ms) {
   el.pip.style.rotate = `${clamp((x - p0.x) / 40, -8, 8)}deg`;
   return new Promise((done) => {
     const t0 = performance.now();
+    let hitsAt = -Infinity;
     const frame = (now) => {
       const t = easeOut(Math.min(1, (now - t0) / dur));
       const u = 1 - t;
       placePip(u * u * p0.x + 2 * u * t * c.x + t * t * x, u * u * p0.y + 2 * u * t * c.y + t * t * y);
+      // mid-flight too (every 100 ms): a bubble that pops up while he flies home takes clicks at once
+      if (t < 1 && window.Hits.flightDue(hitsAt, now)) { hitsAt = now; reportHits(); }
       if (t < 1) { st.flight = requestAnimationFrame(frame); return; }
       el.pip.classList.remove("flying");
       el.pip.style.rotate = "";

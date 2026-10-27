@@ -72,13 +72,19 @@ const DATE_WORDS: &[&str] = &[
 ];
 
 /// The date field behind an outline item: its value shows a placeholder mask or a date already (a date input),
-/// its name carries a mask, or its name says "date" and it is empty (a text field). None for every other field.
+/// the platform says it is a date input (Edge exposes an empty value there), its name carries a mask, or its
+/// name says "date" and it is empty (a text field). None for every other field.
 pub fn date_field(item: &OutlineItem) -> Option<DateField> {
     if !item.takes_text() || item.is_password {
         return None;
     }
     let value = item.value.as_deref().unwrap_or("").trim();
-    if let Some((mask, sep)) = mask_in(value).or_else(|| shape_of(value)) {
+    if let Some((mask, sep)) = mask_in(value).or_else(|| shape_of(value)).or_else(|| half_filled(value)) {
+        return Some(DateField { mask, input: true, sep });
+    }
+    if item.looks_like_date() {
+        // A date input whose value says nothing: its name may still carry the order, else dd.mm.yyyy.
+        let (mask, sep) = mask_in(&item.name).unwrap_or((Mask::Dmy, '.'));
         return Some(DateField { mask, input: true, sep });
     }
     if let Some((mask, sep)) = mask_in(&item.name) {
@@ -118,6 +124,13 @@ fn mask_in(text: &str) -> Option<(Mask, char)> {
         }
     }
     None
+}
+
+/// A date input caught half filled ("TT.mm.102026", "19.mm.jjjj"): its order and separator.
+fn half_filled(value: &str) -> Option<(Mask, char)> {
+    let mask = shows_mask(value)?;
+    let sep = value.chars().find(|c| !c.is_alphanumeric())?;
+    Some((mask, sep))
 }
 
 /// A value that is a date already ("20.10.2026", "10/20/2026", "2026-10-20"): its order and separator. A slash
@@ -301,6 +314,8 @@ mod tests {
             offscreen: false,
             enabled: true,
             is_password: false,
+            localized_role: None,
+            is_date: false,
         }
     }
 
@@ -378,6 +393,48 @@ mod tests {
         for name in ["Vertragsnummer", "Betrag", "Antragsnummer", "Employer"] {
             assert_eq!(date_field(&field(name, "")), None, "{name}");
         }
+    }
+
+    #[test]
+    fn date_inputs_known_by_the_platform_even_when_empty() {
+        let x = d(2026, 10, 19);
+        // Edge gives no value for an empty <input type=date>; the platform flag or the localized role tells.
+        let mut f = field("Your answer", "");
+        assert_eq!(date_field(&f), None, "an empty plain field without a date word");
+        f.is_date = true;
+        let df = date_field(&f).unwrap();
+        assert_eq!(df, DateField { mask: Mask::Dmy, input: true, sep: '.' });
+        assert_eq!((df.value(x), df.keys(x)), ("2026-10-19".into(), "19102026".into()));
+        let mut g = field("Beginn", "");
+        g.value = None;
+        g.localized_role = Some("Datumsauswahl".into());
+        assert_eq!(date_field(&g).unwrap(), DateField { mask: Mask::Dmy, input: true, sep: '.' });
+        // Without the role the same field is only a date text field (written date).
+        g.localized_role = Some("Eingabefeld".into());
+        assert!(!date_field(&g).unwrap().input);
+        // The name may carry the order of a flagged input.
+        let mut us = field("Start (mm/dd/yyyy)", "");
+        us.localized_role = Some("date picker".into());
+        assert_eq!(date_field(&us).unwrap(), DateField { mask: Mask::Mdy, input: true, sep: '/' });
+        // A flagged field holding a date keeps the order its value shows.
+        let mut held = field("Since", "10/19/2026");
+        held.is_date = true;
+        assert_eq!(date_field(&held).unwrap().mask, Mask::Mdy);
+        // A password field or a button never is a date field.
+        let mut pw = f.clone();
+        pw.is_password = true;
+        assert_eq!(date_field(&pw), None);
+        let mut b = f.clone();
+        b.role = "button".into();
+        assert_eq!(date_field(&b), None);
+    }
+
+    #[test]
+    fn half_filled_date_input_is_still_a_date_input() {
+        // The run-2 bug: all eight digits went into the year part.
+        let f = date_field(&field("Sick since", "TT.mm.102026")).unwrap();
+        assert_eq!(f, DateField { mask: Mask::Dmy, input: true, sep: '.' });
+        assert_eq!(date_field(&field("Start", "10/dd/yyyy")).unwrap().mask, Mask::Mdy);
     }
 
     #[test]

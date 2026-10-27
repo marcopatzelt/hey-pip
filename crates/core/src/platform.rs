@@ -345,6 +345,13 @@ pub struct OutlineItem {
     pub enabled: bool,
     #[serde(default)]
     pub is_password: bool,
+    /// The OS's own words for the control ("Datumsauswahl", "date picker", "Eingabefeld"); None = unknown.
+    #[serde(default)]
+    pub localized_role: Option<String>,
+    /// A date input (Edge/Chrome `<input type=date>`): its day, month and year are separate parts
+    /// (`UiTree::date_parts`), and it ignores text set through the UI tree.
+    #[serde(default)]
+    pub is_date: bool,
 }
 
 fn yes() -> bool {
@@ -364,6 +371,7 @@ impl OutlineItem {
             "item" => "ListItem",
             "menuitem" => "MenuItem",
             "tab" => "TabItem",
+            "spinner" => "Spinner",
             _ => "Text",
         }
     }
@@ -380,6 +388,18 @@ impl OutlineItem {
     pub fn takes_text(&self) -> bool {
         matches!(self.role.as_str(), "edit" | "combo")
     }
+
+    /// A date input: flagged by the platform, or its localized role names a date.
+    pub fn looks_like_date(&self) -> bool {
+        self.is_date || self.localized_role.as_deref().is_some_and(is_date_role)
+    }
+}
+
+/// True if a localized control type names a date control: "Datumsauswahl", "date picker", "Datums- und
+/// Uhrzeitauswahl", "sélecteur de date". Never "update" or "Eingabefeld".
+pub fn is_date_role(localized: &str) -> bool {
+    let l = localized.to_lowercase();
+    l.contains("datum") || l.split(|c: char| !c.is_alphanumeric()).any(|w| w == "date")
 }
 
 /// Role name of a UI Automation control type name ("Edit" -> "edit"); None = not listed in an outline.
@@ -460,6 +480,31 @@ pub trait UiTree: Send + Sync {
     /// Used only to repair a field whose typed text came out wrong; never for password fields.
     fn set_value_at(&self, _p: PhysPoint, _text: &str) -> bool {
         false
+    }
+    /// The day, month and year parts (role "spinner") of a date input of the last outline, in visual order
+    /// (left to right). Each part takes digits only and moves on to the next by itself once full; the year
+    /// part takes up to six digits. Empty = no parts or unknown.
+    fn date_parts(&self, _item: &OutlineItem) -> Vec<OutlineItem> {
+        Vec::new()
+    }
+    /// Give this element (of the last outline, or a date part) the keyboard focus without a click.
+    /// False = could not (the agent clicks instead).
+    fn focus_element(&self, _item: &OutlineItem) -> bool {
+        false
+    }
+    /// True if the element at the item's centre is still this item (same name and role): the page did not move
+    /// or change under it since the outline was read. True also when the platform cannot tell (no UI tree).
+    fn element_matches(&self, _item: &OutlineItem) -> bool {
+        true
+    }
+    /// Press, tick or select the element through the UI tree (Invoke, Toggle or SelectionItem), without the
+    /// mouse. False = it has none of these (the agent clicks instead). The caller gates it like a click.
+    fn invoke(&self, _item: &OutlineItem) -> bool {
+        false
+    }
+    /// The close button of the browser's "Restore pages" popup ("Seiten wiederherstellen"), if one is shown.
+    fn find_restore_popup(&self) -> Option<OutlineItem> {
+        None
     }
 }
 
@@ -587,6 +632,7 @@ mod tests {
         )
         .unwrap();
         assert!(item.enabled && !item.offscreen && !item.is_password && item.value.is_none());
+        assert!(item.localized_role.is_none() && !item.is_date && !item.looks_like_date());
         assert_eq!(item.center(), PhysPoint { x: 60, y: 35 });
         assert_eq!(item.as_element().control, "Edit");
         assert!(item.as_element().is_text_input() && item.takes_text());
@@ -597,6 +643,27 @@ mod tests {
             let it = OutlineItem { role: role.into(), ..item.clone() };
             assert_eq!(it.control(), c);
         }
+        let part = OutlineItem { role: "spinner".into(), ..item.clone() };
+        assert_eq!(part.control(), "Spinner");
+        assert!(!part.takes_text());
+    }
+
+    #[test]
+    fn date_roles() {
+        for r in ["Datumsauswahl", "date picker", "Date", "Datums- und Uhrzeitauswahl", "sélecteur de date"] {
+            assert!(is_date_role(r), "{r}");
+        }
+        for r in ["Eingabefeld", "edit", "update", "Schaltfläche", "dated"] {
+            assert!(!is_date_role(r), "{r}");
+        }
+        let mut it: OutlineItem = serde_json::from_str(
+            r#"{"id": 1, "role": "edit", "name": "Since", "rect": {"x": 0, "y": 0, "w": 9, "h": 9}, "is_date": true}"#,
+        )
+        .unwrap();
+        assert!(it.looks_like_date());
+        it.is_date = false;
+        it.localized_role = Some("Datumsauswahl".into());
+        assert!(it.looks_like_date());
     }
 
     #[test]

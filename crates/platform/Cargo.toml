@@ -22,6 +22,8 @@ xcap.workspace = true
 enigo.workspace = true
 uiautomation.workspace = true
 windows-sys.workspace = true
+# Only for IUIAutomation2 (UI Automation time limits); the same version and features the uiautomation crate uses.
+windows = { version = "0.62", features = ["Win32_System_Com", "Win32_UI_Accessibility"] }
 
 [dev-dependencies]
 tempfile.workspace = true

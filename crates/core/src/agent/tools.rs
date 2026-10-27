@@ -191,7 +191,7 @@ impl Tool {
 
     fn validate(&self) -> anyhow::Result<()> {
         match self {
-            Tool::Say { text } => check_len("text", text, 1, 400),
+            Tool::Say { text } => check_len("text", text, 1, SAY_MAX),
             Tool::Point { sam_query, description } => {
                 check_len("sam_query", sam_query, 1, 80)?;
                 check_len("description", description, 1, 200)
@@ -438,6 +438,8 @@ deletes or cancels something. The user must approve it first.";
 const COMMIT_WHAT: &str = "Only when is_commit: what is sent, in the user's language (e.g. 'deine Krankschreibung \
 20.10.–30.10.'). Otherwise null.";
 const COMMIT_TO: &str = "Only when is_commit: to whom (e.g. 'Evergreen Health (Kontaktformular)'). Otherwise null.";
+const SAY: &str = "One short sentence for the user about what you do now (user's language), shown with this action; \
+null when nothing new needs saying. Never a sentence you already said in this task.";
 const ELEMENT: &str = "The # number of the target in PAGE ELEMENTS (e.g. 4 for '#4'), when the list has it; then Pip \
 acts on that element directly. null when there is no PAGE ELEMENTS list or the target is not in it.";
 
@@ -465,6 +467,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 ("commit_what", opt_str(COMMIT_WHAT)),
                 ("commit_to", opt_str(COMMIT_TO)),
                 ("element", opt_int(ELEMENT)),
+                ("say", opt_str(SAY)),
             ]),
         ),
         def(
@@ -486,6 +489,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                     ),
                 ),
                 ("element", opt_int(ELEMENT)),
+                ("say", opt_str(SAY)),
             ]),
         ),
         def(
@@ -497,6 +501,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 ("is_commit", bool_(IS_COMMIT)),
                 ("commit_what", opt_str(COMMIT_WHAT)),
                 ("commit_to", opt_str(COMMIT_TO)),
+                ("say", opt_str(SAY)),
             ]),
         ),
         def(
@@ -505,12 +510,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
             obj(&[
                 ("direction", json!({"type": "string", "enum": ["up", "down"], "description": "Direction."})),
                 ("amount", int_("How far, 1 (a little) to 10 (a lot).")),
+                ("say", opt_str(SAY)),
             ]),
         ),
         def(
             "open_url",
             "Open a web page or local page in the browser.",
-            obj(&[("url", str_("Full URL (https://… or file:///…)."))]),
+            obj(&[("url", str_("Full URL (https://… or file:///…).")), ("say", opt_str(SAY))]),
         ),
         def("wait", "Wait for a page or dialog to load.", obj(&[("seconds", int_("0 to 10."))])),
         def(
@@ -560,6 +566,29 @@ pub fn tool_defs() -> Vec<ToolDef> {
             ]),
         ),
     ]
+}
+
+/// Tools that carry an optional `say`: the sentence goes with the action, never in a turn of its own.
+pub const SAY_WITH: &[&str] = &["click", "type_text", "key", "scroll", "open_url"];
+
+/// Most characters of a `say` sentence (as the standalone say tool).
+const SAY_MAX: usize = 400;
+
+/// The `say` sentence that comes with an action call (click, type_text, key, scroll, open_url). None when it is
+/// missing, null, "null" or blank, or on any other tool. Too long: cut (the action still runs).
+pub fn say_of(call: &FunctionCall) -> Option<String> {
+    if !SAY_WITH.contains(&call.name.as_str()) {
+        return None;
+    }
+    let args = match &call.arguments {
+        Value::String(s) => serde_json::from_str(s).ok()?,
+        v => v.clone(),
+    };
+    let text = args.get("say")?.as_str()?.trim();
+    if text.is_empty() || text.eq_ignore_ascii_case("null") {
+        return None;
+    }
+    Some(truncate(text, SAY_MAX))
 }
 
 /// Error text for the model, in one place so it stays consistent.
@@ -688,6 +717,33 @@ mod tests {
         // Without an element number nothing names the target: still an error.
         assert!(Tool::from_call(&call("click", json!({"is_commit": false}))).is_err());
         assert!(Tool::from_call(&call("click", json!({"sam_query": "button"}))).is_err());
+    }
+
+    #[test]
+    fn say_goes_with_the_action() {
+        let c = call(
+            "click",
+            json!({"sam_query": "button", "description": "Next", "is_commit": false, "commit_what": null,
+                   "commit_to": null, "element": 4, "say": "I go to the next page."}),
+        );
+        assert_eq!(say_of(&c).as_deref(), Some("I go to the next page."));
+        assert!(matches!(Tool::from_call(&c).unwrap(), Tool::Click { element: Some(4), .. }), "say is no hindrance");
+        for none in [Value::Null, json!("null"), json!("  "), json!(3)] {
+            assert_eq!(say_of(&call("key", json!({"combo": "tab", "say": none}))), None);
+        }
+        assert_eq!(say_of(&call("key", json!({"combo": "tab"}))), None);
+        // As a JSON string, the way the API sends it.
+        let c = call("open_url", Value::String(r#"{"url":"https://x.example","say":"I open the form."}"#.into()));
+        assert_eq!(say_of(&c).as_deref(), Some("I open the form."));
+        // Only actions carry it.
+        assert_eq!(say_of(&call("done", json!({"summary": "x", "say": "Hi"}))), None);
+        assert_eq!(say_of(&call("click", json!({"say": "x".repeat(500)}))).unwrap().chars().count(), SAY_MAX + 1);
+        let defs = tool_defs();
+        for name in SAY_WITH {
+            let d = defs.iter().find(|d| d.name == *name).unwrap();
+            assert_eq!(d.parameters["properties"]["say"]["type"], json!(["string", "null"]), "{name}");
+        }
+        assert!(defs.iter().find(|d| d.name == "done").unwrap().parameters["properties"].get("say").is_none());
     }
 
     #[test]

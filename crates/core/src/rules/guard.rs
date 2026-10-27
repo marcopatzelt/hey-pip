@@ -363,6 +363,8 @@ mod tests {
             offscreen: false,
             enabled: true,
             is_password: false,
+            localized_role: None,
+            is_date: false,
         }
     }
 

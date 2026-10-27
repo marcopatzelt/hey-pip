@@ -59,12 +59,19 @@
     });
   }
 
+  /** While Pip flies, rects are reported this often (ms): a bubble shown mid-flight must take clicks at once. */
+  const FLIGHT_EVERY = 100;
+  /** A report is due during a flight (last: time of the last flight report, -Infinity at the start). */
+  function flightDue(last, now) {
+    return !(now - last < FLIGHT_EVERY);
+  }
+
   /** True if the point (same units as the rects) is inside one of them. */
   function inside(rects, x, y) {
     return rects.some((r) => x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h);
   }
 
-  const Hits = { MARGIN, anyOpen, cssRects, toPhys, inside };
+  const Hits = { MARGIN, FLIGHT_EVERY, anyOpen, cssRects, toPhys, inside, flightDue };
   root.Hits = Hits;
   if (typeof module !== "undefined" && module.exports) module.exports = Hits;
 })(typeof window !== "undefined" ? window : globalThis);

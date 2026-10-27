@@ -3,7 +3,7 @@
 //! One step: capture (masked) -> Muse Spark with tools -> for every call: parse, ground (SAM 3.1 + Spark pick),
 //! gate, approval card, act, log. The cancel token is checked before every tool and raced against every wait.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -20,8 +20,8 @@ use super::gate::{
     ApprovalAnswer, ApprovalCard, Gate, Risk, is_attach_target, is_cancel_target, is_delete_target, is_money_target,
     is_send_target, label_hit, normalize_address, quoted_label, url_host, word_hit,
 };
-use super::tools::{DISCOVER_TOOLS, ScrollDir, Tool, bad_call, normalize_combo, tool_defs, truncate};
-use super::typing::{DateField, date_field, date_keys, date_shown, iso, parse_date_in, shows_mask};
+use super::tools::{DISCOVER_TOOLS, ScrollDir, Tool, bad_call, normalize_combo, say_of, tool_defs, truncate};
+use super::typing::{DateField, Mask, date_field, date_keys, date_shown, iso, parse_date_in, shows_mask};
 use super::{APPROVAL_TIMEOUT, MAX_RUN, MAX_STEPS, prompt};
 use crate::clock::Clock;
 use crate::docs::DocType;
@@ -293,6 +293,20 @@ pub struct RunState {
     talk_only_turn: bool,
     /// Active time of the parts of this task before the last resume (the budget restarts, the clock does not).
     active_before: Duration,
+    /// The last step's turn was `say` alone: the next step asks the model again with the same screen and
+    /// PAGE ELEMENTS (no new picture), once.
+    reask_same_look: bool,
+    /// The text of the last look ("This is the screen now." + PAGE ELEMENTS), sent again on a re-ask.
+    last_look: Option<String>,
+    /// Keys (`prompt::element_keys`) of the PAGE ELEMENTS at the last look: newer ones get a `*`. None = no look.
+    seen_elements: Option<HashSet<String>>,
+    /// Fingerprint of the PAGE ELEMENTS at the last look (`prompt::elements_hash`).
+    elements_hash: u64,
+    /// Clicks since the last look, and clicks in a row after which PAGE ELEMENTS stayed the same.
+    clicks_since_look: u32,
+    unchanged_clicks: u32,
+    /// A live check found the page changed under an element (a stale number): the rest of the turn stops.
+    stale_page: bool,
     /// How often each click / type_text / key / open_url ran in this run ("tool|target|text", see `repeat_key`)
     /// on a page that did not change in between, with the page's shape at the last call (see `outline_shape`).
     repeats: HashMap<String, (u32, u64)>,
@@ -398,6 +412,13 @@ impl RunState {
             dialog_open: false,
             said: Vec::new(),
             talk_only_turn: false,
+            reask_same_look: false,
+            last_look: None,
+            seen_elements: None,
+            elements_hash: 0,
+            clicks_since_look: 0,
+            unchanged_clicks: 0,
+            stale_page: false,
             active_before: Duration::ZERO,
             repeats: HashMap::new(),
             guard_hits: 0,
@@ -446,6 +467,14 @@ impl RunState {
         self.repeats.clear();
         self.guard_hits = 0;
         self.nothing_changed = 0;
+        // A resumed run looks at the screen afresh.
+        self.reask_same_look = false;
+        self.last_look = None;
+        self.seen_elements = None;
+        self.elements_hash = 0;
+        self.clicks_since_look = 0;
+        self.unchanged_clicks = 0;
+        self.stale_page = false;
     }
 
     /// One more identical call (loop guard): how many in a row on this page. The count starts again when the page
@@ -949,32 +978,47 @@ impl Agent {
         input.append(&mut state.pending_input);
 
         self.pip(PipState::Thinking);
-        // Let the last action land (a window coming to the front, a page loading) before the next picture.
-        if state.step > 0 && !self.pause(self.short_pace(), cancel).await {
-            return Ok(StepResult::Finished(AgentOutcome::Stopped));
-        }
-        state.last_masks = self.bus.hit_rects();
-        let (api, outline) = tokio::join!(self.capture(), self.read_outline(state.phase));
-        let api = api?;
-        state.outline = outline;
         state.after_element_type = false;
-        // The page guard: warning signs from rules and memory, before the model sees the page (no tokens).
-        if state.phase != Phase::Discover
-            && !state.guard_ok
-            && let Some(outcome) = self.guard_page(state, cancel, lang).await?
-        {
-            return Ok(StepResult::Finished(outcome));
+        // After a turn of `say` alone the model is asked again at once, with the same picture and elements: the
+        // page did not change, so a new capture would only cost time.
+        let reask = std::mem::take(&mut state.reask_same_look);
+        match (reask, state.last_look.clone(), state.last_api.as_ref()) {
+            (true, Some(look), Some(api)) => {
+                tracing::info!(step = state.step, "say-only turn: the model is asked again with the same screen");
+                input.push(InputItem::Message {
+                    role: Role::User,
+                    content: vec![Content::text(look), Content::png(&api.png)],
+                });
+            }
+            _ => {
+                // Let the last action land (a window coming to the front, a page loading) before the next picture.
+                if state.step > 0 && !self.pause(self.short_pace(), cancel).await {
+                    return Ok(StepResult::Finished(AgentOutcome::Stopped));
+                }
+                // The browser's "Restore pages" popup is closed without asking the model.
+                if !self.close_restore_popup(cancel).await {
+                    return Ok(StepResult::Finished(AgentOutcome::Stopped));
+                }
+                state.last_masks = self.bus.hit_rects();
+                let (api, outline) = tokio::join!(self.capture(), self.read_outline(state.phase));
+                let api = api?;
+                state.outline = outline;
+                // The page guard: warning signs from rules and memory, before the model sees the page (no tokens).
+                if state.phase != Phase::Discover
+                    && !state.guard_ok
+                    && let Some(outcome) = self.guard_page(state, cancel, lang).await?
+                {
+                    return Ok(StepResult::Finished(outcome));
+                }
+                let look = look_text(state);
+                state.last_look = Some(look.clone());
+                input.push(InputItem::Message {
+                    role: Role::User,
+                    content: vec![Content::text(look), Content::png(&api.png)],
+                });
+                state.last_api = Some(api);
+            }
         }
-        let mut look =
-            if state.step == 0 { "This is the screen." } else { "This is the screen now. Continue the task." }
-                .to_string();
-        let elements = prompt::page_elements(&state.outline, prompt::PAGE_ELEMENTS_MAX_CHARS);
-        if !elements.is_empty() {
-            look.push_str("\n\n");
-            look.push_str(&elements);
-        }
-        input.push(InputItem::Message { role: Role::User, content: vec![Content::text(look), Content::png(&api.png)] });
-        state.last_api = Some(api);
 
         let req = ResponseRequest {
             model: MODEL_SPARK.to_string(),
@@ -1001,6 +1045,11 @@ impl Agent {
         state.last_calls = out.calls.clone();
         state.talk_only_turn =
             !out.calls.is_empty() && out.calls.iter().all(|c| matches!(c.name.as_str(), "say" | "wait"));
+        // `say` alone (no wait, no action): shown, then the model is asked again on the same screen. Once in a row.
+        let say_only = state.phase == Phase::Act
+            && !reask
+            && !out.calls.is_empty()
+            && out.calls.iter().all(|c| c.name == "say");
         let tokens = out.usage.input_tokens + out.usage.output_tokens;
         state.tokens += tokens;
         state.step += 1;
@@ -1024,7 +1073,10 @@ impl Agent {
         // A planned turn (several calls) stops when the page changes under it: the window in front before and
         // after each click, key and page open is compared.
         let by_element = out.calls.iter().any(|c| c.name == "type_text" && call_has_element(c));
-        let mut fg = if out.calls.len() > 1 || by_element { self.foreground().await } else { None };
+        let planned = out.calls.len() > 1 || by_element;
+        let mut fg = if planned { self.foreground().await } else { None };
+        let mut focus = if out.calls.len() > 1 { self.focused().await } else { None };
+        state.stale_page = false;
         state.dialog_open = fg.as_ref().is_some_and(WindowInfo::is_file_dialog);
         for (i, call) in out.calls.iter().enumerate() {
             if cancel.is_cancelled() {
@@ -1046,7 +1098,7 @@ impl Agent {
                         return Ok(StepResult::Continue);
                     }
                     let rest = &out.calls[i + 1..];
-                    if !rest.is_empty() && self.page_moved(&call.name, &mut fg, state).await {
+                    if !rest.is_empty() && self.page_moved(&call.name, &mut fg, &mut focus, state).await {
                         tracing::info!(after = %call.name, skipped = rest.len(), "page changed: rest of the turn not done");
                         for c in rest {
                             state.pending_input.push(InputItem::FunctionCallOutput {
@@ -1072,15 +1124,60 @@ impl Agent {
                 }
             }
         }
+        state.reask_same_look = say_only;
         Ok(StepResult::Continue)
     }
 
-    /// After a call of a planned turn: did the page change under the rest of it? A scroll always moves it; after a
-    /// click, key or page open the window in front is compared (title, address, a file dialog that opened).
-    async fn page_moved(&self, tool: &str, fg: &mut Option<WindowInfo>, state: &mut RunState) -> bool {
+    /// The browser's "Restore pages" popup (after a forced close) in front of the page: pressed shut through
+    /// the UI tree (else clicked), logged, no model call. A button that reads like a send button is never
+    /// pressed this way. False = the user stopped meanwhile.
+    async fn close_restore_popup(&self, cancel: &CancellationToken) -> bool {
+        let ui = self.platform.ui.clone();
+        let Some(close) = tokio::task::spawn_blocking(move || ui.find_restore_popup()).await.ok().flatten() else {
+            return true;
+        };
+        if label_hit(&close.name) || is_delete_target(&close.name) || is_money_target(&close.name) {
+            tracing::warn!(name = %close.name, "restore popup: its button reads like a send button, not pressed");
+            return true;
+        }
+        let ui = self.platform.ui.clone();
+        let item = close.clone();
+        let invoked = tokio::task::spawn_blocking(move || ui.invoke(&item)).await.unwrap_or(false);
+        if !invoked {
+            let p = close.center();
+            if let Err(e) = self.blocking(move |pl| pl.input.click(p)).await {
+                tracing::warn!(error = %e, "restore popup: click failed");
+            }
+        }
+        tracing::info!(invoked, name = %close.name, "closed the browser's restore-pages popup");
+        let args = json!({"button": truncate(&close.name, 60)}).to_string();
+        self.log("restore_popup", args, Risk::Free, None, "closed without a model step", 0);
+        self.pause(self.batch_pace(), cancel).await
+    }
+
+    /// After a call of a planned turn: did the page change under the rest of it? A scroll always moves it; a live
+    /// check that found an element gone (stale number) too; after a click, key or page open the window in front
+    /// is compared (title, address, a file dialog that opened), and the keyboard focus: in a popup now (a
+    /// calendar, a drop-down list, a menu) that was not there before means the page changed.
+    async fn page_moved(
+        &self,
+        tool: &str,
+        fg: &mut Option<WindowInfo>,
+        focus: &mut Option<UiElement>,
+        state: &mut RunState,
+    ) -> bool {
+        if std::mem::take(&mut state.stale_page) {
+            return true;
+        }
         match tool {
             "scroll" => true,
             "click" | "key" | "open_url" => {
+                let now_focus = self.focused().await;
+                let popup = now_focus.as_ref().is_some_and(in_popup) && !focus.as_ref().is_some_and(in_popup);
+                if popup {
+                    tracing::info!(after = tool, focus = ?now_focus.as_ref().map(|f| &f.control), "a popup took the focus");
+                }
+                *focus = now_focus;
                 let now = self.foreground().await;
                 let changed = match (fg.as_ref(), now.as_ref()) {
                     (Some(a), Some(b)) => {
@@ -1094,7 +1191,7 @@ impl Agent {
                 };
                 state.dialog_open = now.as_ref().is_some_and(WindowInfo::is_file_dialog);
                 *fg = now;
-                changed
+                changed || popup
             }
             _ => false,
         }
@@ -1332,6 +1429,10 @@ impl Agent {
                 return Ok(Exec::Output(msg));
             }
         };
+        // The sentence that goes with an action is shown as it starts (never twice in a task).
+        if let Some(text) = say_of(call) {
+            self.say_once(&text, state);
+        }
         // Loop guard: the third identical action is not run (the model would burn the step budget on it).
         let mut guarded = None;
         if let Some((key, target)) = repeat_key(&tool, &state.outline)
@@ -1454,6 +1555,17 @@ impl Agent {
         ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(text.to_string()))
     }
 
+    /// Show (and speak) a sentence for the user, unless it was said already in this task. True = shown.
+    fn say_once(&self, text: &str, state: &mut RunState) -> bool {
+        let key = squash(text).to_lowercase();
+        if key.is_empty() || state.said.contains(&key) {
+            return false;
+        }
+        self.bubble(text.to_string(), true);
+        state.said.push(key);
+        true
+    }
+
     async fn run_tool(
         &self,
         tool: &Tool,
@@ -1473,21 +1585,18 @@ impl Agent {
         let quick = std::mem::take(&mut state.after_element_type);
         match tool {
             Tool::Say { text } => {
-                let key = squash(text).to_lowercase();
-                if state.said.contains(&key) {
+                if !self.say_once(text, state) {
                     // No second bubble and no second TTS of the same sentence.
                     return Ok(ToolRun::out(
                         Risk::Free,
                         "already said earlier in this task; the user read it. Act now.",
                     ));
                 }
-                self.bubble(text.clone(), true);
-                state.said.push(key);
                 if state.talk_only_turn && state.phase == Phase::Act {
                     return Ok(ToolRun::out(
                         Risk::Free,
-                        "said. This turn had no action: next time call say together with your actions, or act \
-without say.",
+                        "said. This turn had no action: act now on this screen. Next time put the sentence in the \
+say argument of your action.",
                     ));
                 }
                 Ok(ToolRun::out(Risk::Free, "said"))
@@ -1670,10 +1779,14 @@ without say.",
         let mut note = String::new();
         let picked = match element {
             Some(id) => match self.element_target(state, id, cancel).await? {
-                ElementPick::Found(t, item) => {
-                    by_element = Some(item);
-                    Some(t)
-                }
+                ElementPick::Found(t, item) => match self.live_element(state, &item).await {
+                    Some(live) => {
+                        let t = if live.rect == item.rect { t } else { self.element_point(state, &live)? };
+                        by_element = Some(live);
+                        Some(t)
+                    }
+                    None => return Ok(ToolRun::out(base_risk, stale_element(state, &item))),
+                },
                 ElementPick::Failed(msg) => return Ok(ToolRun::out(base_risk, msg)),
                 ElementPick::Unknown => {
                     note = format!(" (#{id} is not in PAGE ELEMENTS; found it in the picture)");
@@ -1805,6 +1918,7 @@ without say.",
         let p = target.point;
         self.blocking(move |pl| pl.input.click(p)).await?;
         state.last_point = Some(p);
+        state.clicks_since_look += 1;
         let just_sent = sent.is_some();
         if let Some(what) = sent {
             state.sent.push(what);
@@ -1880,6 +1994,40 @@ without say.",
     }
 
     /// The short pause between the actions of one planned turn (zero in tests).
+    /// Live check before acting on element #n: is it still under its centre (same name and role)? If not, the
+    /// outline is read again and the same element at its new place is used. None = it is gone: the page
+    /// changed since the model looked.
+    async fn live_element(&self, state: &mut RunState, item: &OutlineItem) -> Option<OutlineItem> {
+        if self.element_matches(item).await {
+            return Some(item.clone());
+        }
+        self.refresh_outline(state).await;
+        let moved = state
+            .outline
+            .iter()
+            .find(|i| i.id == item.id && i.role == item.role && i.name == item.name && !i.offscreen)
+            .filter(|i| i.rect != item.rect)
+            .cloned()?;
+        let on = state.last_api.as_ref().is_some_and(|api| on_screen(api, &moved.rect));
+        if on && self.element_matches(&moved).await {
+            tracing::info!(element = item.id, "element moved since the look: acting on its new place");
+            return Some(moved);
+        }
+        None
+    }
+
+    async fn element_matches(&self, item: &OutlineItem) -> bool {
+        let ui = self.platform.ui.clone();
+        let it = item.clone();
+        tokio::task::spawn_blocking(move || ui.element_matches(&it)).await.unwrap_or(true)
+    }
+
+    /// Click target of an element of this step's outline.
+    fn element_point(&self, state: &RunState, item: &OutlineItem) -> Result<Target> {
+        let api = state.last_api.as_ref().ok_or_else(|| anyhow!("no screenshot yet"))?;
+        Ok(rect_target(api, item.rect))
+    }
+
     fn batch_pace(&self) -> Duration {
         if self.pace.is_zero() { Duration::ZERO } else { BATCH_PACE.min(self.short_pace()) }
     }
@@ -1917,21 +2065,54 @@ without say.",
                  letter can go in).",
             ));
         }
+        let (target, item) = match self.live_element(state, item).await {
+            Some(live) if live.rect == item.rect => (target, live),
+            Some(live) => (self.element_point(state, &live)?, live),
+            None => return Ok(ToolRun::out(Risk::Act, stale_element(state, item))),
+        };
+        let item = &item;
         self.show_target(&target, a.what);
         let pace = if a.quick { self.batch_pace() } else { self.short_pace() };
         if !self.pause(pace, cancel).await {
             return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped));
         }
         let p = target.point;
-        self.blocking(move |pl| pl.input.click(p)).await?;
-        state.last_point = Some(p);
+        // A date field has its own way in and counts as typed only when the field reads back that very day. A
+        // date input with its own day, month and year parts gets the keys through the UI tree, without a click
+        // (its centre is the year, its right end opens the calendar). The parts say their own order: an English
+        // browser shows mm/dd/yyyy under a German field name, and the keys go in the order the parts have.
+        let date = date_field(item).and_then(|f| parse_date_in(a.text, f.mask).map(|d| (f, d)));
+        let parts = match date {
+            Some((f, _)) if f.input => self.date_parts(item).await,
+            _ => Vec::new(),
+        };
+        let date = match (date, parts_mask(&parts)) {
+            (Some((f, day)), Some(mask)) if mask != f.mask => Some((DateField { mask, sep: mask_sep(mask), ..f }, day)),
+            (d, _) => d,
+        };
+        // Read back in the order the field was typed in (the parts' order, else the field's).
+        let fits = |v: &str| match date {
+            Some((f, day)) => date_shown(v, f.mask) == Some(day),
+            None => value_fits(item, a.text, v),
+        };
+        let first_part = match parts.first() {
+            Some(first) if parts.len() == 3 && self.focus_element(first).await => Some(first.center()),
+            _ => None,
+        };
+        match first_part {
+            Some(fp) => state.last_point = Some(fp),
+            None => {
+                self.blocking(move |pl| pl.input.click(p)).await?;
+                state.last_point = Some(p);
+            }
+        }
         state.focus_by_key = false;
         self.progress(tf("progress_type", lang, &[("what", a.what)]));
-        let fits = |v: &str| value_fits(item, a.text, v);
-        // A date field has its own way in (ISO through the value, else digits from the first part) and counts as
-        // typed only when the field reads back that very day.
-        let date = date_field(item).and_then(|f| parse_date_in(a.text, f.mask).map(|d| (f, d)));
         let shows = match date {
+            Some((f, day)) if first_part.is_some() => match self.fill_date_parts(item, f, day, parts, cancel).await? {
+                Some(shows) => shows,
+                None => return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped)),
+            },
             Some((f, day)) => match self.fill_date(item, f, day, p, cancel).await? {
                 Some(shows) => shows,
                 None => return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped)),
@@ -2068,7 +2249,12 @@ without say.",
         let masked = |s: &Option<String>| s.as_deref().and_then(shows_mask);
         let mut input = f.input;
         let mut mask = f.mask;
-        let tries = if f.input { vec![iso.clone()] } else { vec![written.clone(), iso.clone()] };
+        // A date input the platform knows (Edge/Chrome) drops a value set through the UI tree without a word.
+        let tries = match (f.input, item.looks_like_date()) {
+            (true, true) => Vec::new(),
+            (true, false) => vec![iso.clone()],
+            (false, _) => vec![written.clone(), iso.clone()],
+        };
         for v in tries {
             if !self.set_value(p, &v).await {
                 break; // no ValuePattern: keys only
@@ -2114,6 +2300,78 @@ without say.",
         }
         let shows = self.read_value(p).await;
         if is_day(&shows) {
+            tracing::info!(element = id, "date typed part by part");
+        } else {
+            tracing::info!(element = id, shows = ?shows, "date field does not show the day");
+        }
+        Ok(Some(shows))
+    }
+
+    /// The day, month and year parts of a date input (empty = none or unknown).
+    async fn date_parts(&self, item: &OutlineItem) -> Vec<OutlineItem> {
+        let ui = self.platform.ui.clone();
+        let it = item.clone();
+        tokio::task::spawn_blocking(move || ui.date_parts(&it)).await.unwrap_or_default()
+    }
+
+    /// Keyboard focus to this element through the UI tree (no click); false = could not.
+    async fn focus_element(&self, item: &OutlineItem) -> bool {
+        let ui = self.platform.ui.clone();
+        let it = item.clone();
+        tokio::task::spawn_blocking(move || ui.focus_element(&it)).await.unwrap_or(false)
+    }
+
+    /// A date input with its own parts (Edge/Chrome `<input type=date>`), its first part focused already. Never
+    /// through the value (Chromium drops it) and never a click (the calendar). The digits in the field's own
+    /// order (the parts move on by themselves), then each part is read back; a part that came out wrong (a
+    /// year with more than four digits) is focused, cleared with Backspace and typed again, once. Returns what
+    /// the field shows, built from its parts ("19.10.2026"; None = a part unreadable); the caller counts it as
+    /// typed only if that is the same day. Ok(None) = stopped.
+    async fn fill_date_parts(
+        &self,
+        item: &OutlineItem,
+        f: DateField,
+        day: chrono::NaiveDate,
+        parts: Vec<OutlineItem>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Option<String>>> {
+        let id = item.id;
+        let before = self.foreground().await;
+        if !self.type_chunks(&date_keys(f.mask, day), cancel).await? {
+            return Ok(None);
+        }
+        let want = part_values(f.mask, day);
+        let mut now = self.date_parts(item).await;
+        let wrong: Vec<usize> =
+            (0..3).filter(|&i| !part_is(now.get(i).and_then(|p| p.value.as_deref()), &want[i])).collect();
+        if !wrong.is_empty() {
+            tracing::info!(element = id, ?wrong, "date parts wrong after typing: typed again part by part");
+            for i in wrong {
+                let Some(part) = now.get(i).or(parts.get(i)).cloned() else { continue };
+                if !self.focus_element(&part).await {
+                    continue;
+                }
+                self.blocking(|pl| pl.input.key("backspace")).await?;
+                let digits = want[i].clone();
+                if !self.type_chunks(&digits, cancel).await? {
+                    return Ok(None);
+                }
+            }
+            now = self.date_parts(item).await;
+        }
+        // A calendar popup came up after all (a new window in front): the focus goes back to the field, which
+        // closes it. No Esc: that is the user's stop key.
+        let after = self.foreground().await;
+        if let (Some(a), Some(b)) = (&before, &after)
+            && (a.title != b.title || a.class != b.class)
+            && let Some(first) = now.first().or(parts.first())
+        {
+            tracing::info!(element = id, "a popup came up while typing the date: focus back to the field");
+            self.focus_element(first).await;
+        }
+        let values: Option<Vec<&str>> = now.iter().map(|p| p.value.as_deref().map(str::trim)).collect();
+        let shows = values.filter(|v| v.len() == 3).map(|v| v.join(&f.sep.to_string()));
+        if shows.as_deref().and_then(|v| date_shown(v, f.mask)) == Some(day) {
             tracing::info!(element = id, "date typed part by part");
         } else {
             tracing::info!(element = id, shows = ?shows, "date field does not show the day");
@@ -3541,9 +3799,63 @@ fn tools_for(phase: Phase) -> Vec<ToolDef> {
         .into_iter()
         .filter(|d| match phase {
             Phase::Discover => DISCOVER_TOOLS.contains(&d.name.as_str()),
-            Phase::Act => d.name != "suggest",
+            // No `say` of its own while acting: the sentence goes with the action (its say argument). A plain
+            // text reply answers a question.
+            Phase::Act => d.name != "suggest" && d.name != "say",
         })
         .collect()
+}
+
+/// The keyboard focus is in a popup (a calendar, a drop-down list, a menu): the page under the planned turn
+/// changed.
+fn in_popup(focus: &UiElement) -> bool {
+    matches!(
+        focus.control.as_str(),
+        "Menu"
+            | "MenuItem"
+            | "List"
+            | "ListItem"
+            | "DataGrid"
+            | "DataItem"
+            | "Table"
+            | "Calendar"
+            | "Tree"
+            | "TreeItem"
+    )
+}
+
+/// Clicks in a row after which PAGE ELEMENTS stayed the same before the model is told so.
+const UNCHANGED_CLICKS_NUDGE: u32 = 2;
+
+/// The text next to the picture: "This is the screen now." and PAGE ELEMENTS (new ones with `*`). Two clicks
+/// after which PAGE ELEMENTS read exactly the same add a nudge. Updates what the next look compares with.
+fn look_text(state: &mut RunState) -> String {
+    let mut look =
+        if state.step == 0 { "This is the screen." } else { "This is the screen now. Continue the task." }.to_string();
+    let elements =
+        prompt::page_elements_since(&state.outline, state.seen_elements.as_ref(), prompt::PAGE_ELEMENTS_MAX_CHARS);
+    if !elements.is_empty() {
+        look.push_str("\n\n");
+        look.push_str(&elements);
+    }
+    let hash = prompt::elements_hash(&state.outline);
+    let clicks = std::mem::take(&mut state.clicks_since_look);
+    if hash != 0 && hash == state.elements_hash {
+        state.unchanged_clicks += clicks;
+    } else {
+        state.unchanged_clicks = 0;
+    }
+    state.elements_hash = hash;
+    if state.unchanged_clicks >= UNCHANGED_CLICKS_NUDGE {
+        tracing::info!(clicks = state.unchanged_clicks, "clicks changed nothing in PAGE ELEMENTS: nudge");
+        look.push_str(
+            "\nNOTE: your last clicks changed nothing in PAGE ELEMENTS. Do not click the same thing again: look for \
+             what is in the way (a dialog, an error, an empty required field), scroll, or ask_user.",
+        );
+        state.unchanged_clicks = 0;
+    }
+    state.seen_elements = (!state.outline.is_empty()).then(|| prompt::element_keys(&state.outline));
+    look
 }
 
 /// The task text after a yes to a suggestion. Straight quotes only (like `rules::daily::find_offer`): curly
@@ -3717,6 +4029,8 @@ fn page_fields(html: &str) -> Vec<OutlineItem> {
         offscreen: true,
         enabled: true,
         is_password,
+        localized_role: None,
+        is_date: false,
     };
     let mut out = Vec::new();
     let mut from = 0;
@@ -4388,6 +4702,79 @@ struct TypeArgs<'a> {
 }
 
 /// The call names a PAGE ELEMENTS number (any form the model sends it in).
+/// What each part of a date input must show, left to right in the mask's order: ["19", "10", "2026"].
+fn part_values(mask: Mask, day: chrono::NaiveDate) -> [String; 3] {
+    let (d, m, y) = (day.format("%d").to_string(), day.format("%m").to_string(), day.format("%Y").to_string());
+    match mask {
+        Mask::Dmy => [d, m, y],
+        Mask::Mdy => [m, d, y],
+        Mask::Ymd => [y, m, d],
+    }
+}
+
+/// The order of a date input's parts, from what the parts say of themselves: their names ("Tag", "Monat",
+/// "Jahr", "Day", "Month", "Year") or their placeholders ("TT", "mm", "jjjj", "dd", "yyyy"). None unless all
+/// three parts say which they are, each a different one.
+fn parts_mask(parts: &[OutlineItem]) -> Option<Mask> {
+    const NAMES: [(&str, char); 6] =
+        [("tag", 'd'), ("day", 'd'), ("monat", 'm'), ("month", 'm'), ("jahr", 'y'), ("year", 'y')];
+    let kind = |p: &OutlineItem| -> Option<char> {
+        let name = p.name.to_lowercase();
+        if let Some((_, k)) = NAMES.iter().find(|(w, _)| name.contains(w)) {
+            return Some(*k);
+        }
+        let v = p.value.as_deref()?.trim().to_lowercase();
+        if v.is_empty() || !v.chars().all(|c| c.is_ascii_alphabetic()) {
+            return None;
+        }
+        match v.chars().next()? {
+            't' | 'd' => Some('d'),
+            'm' => Some('m'),
+            'j' | 'y' => Some('y'),
+            _ => None,
+        }
+    };
+    if parts.len() != 3 {
+        return None;
+    }
+    let k: Vec<char> = parts.iter().map(kind).collect::<Option<_>>()?;
+    match (k[0], k[1], k[2]) {
+        ('d', 'm', 'y') => Some(Mask::Dmy),
+        ('m', 'd', 'y') => Some(Mask::Mdy),
+        ('y', 'm', 'd') => Some(Mask::Ymd),
+        _ => None,
+    }
+}
+
+/// The separator a date in this order is written with: 19.10.2026, 10/19/2026, 2026-10-19.
+fn mask_sep(mask: Mask) -> char {
+    match mask {
+        Mask::Dmy => '.',
+        Mask::Mdy => '/',
+        Mask::Ymd => '-',
+    }
+}
+
+/// A date part shows this number: digits only, the same value ("9" or "09" for "09"). A placeholder ("TT"),
+/// an empty part or a year cut or overlong ("102026") is not.
+fn part_is(shown: Option<&str>, want: &str) -> bool {
+    let Some(v) = shown.map(str::trim).filter(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit())) else {
+        return false;
+    };
+    v.parse::<u32>().ok() == want.parse::<u32>().ok() && v.len() <= want.len()
+}
+
+/// Element #n is no longer where the model saw it: say so, and stop the rest of the planned turn.
+fn stale_element(state: &mut RunState, item: &OutlineItem) -> String {
+    tracing::info!(element = item.id, name = %truncate(&item.name, 40), "stale element: not acted on");
+    state.stale_page = true;
+    format!(
+        "not done: the page changed under #{} \"{}\" since your last look. Look at the screen again.",
+        item.id,
+        truncate(&item.name, 40)
+    )
+}
+
 fn call_has_element(call: &FunctionCall) -> bool {
     let args = match &call.arguments {
         Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
@@ -4797,6 +5184,8 @@ mod tests {
             offscreen: false,
             enabled: true,
             is_password: false,
+            localized_role: None,
+            is_date: false,
         }];
         let ty = |text: &str, element: Option<u32>, label: Option<&str>| Tool::TypeText {
             text: text.into(),
@@ -4832,6 +5221,8 @@ mod tests {
             offscreen: false,
             enabled: true,
             is_password: false,
+            localized_role: None,
+            is_date: false,
         }];
         let mut page2 = page1.clone();
         page2.push(OutlineItem { id: 2, role: "edit".into(), name: "Street".into(), ..page1[0].clone() });
@@ -4851,6 +5242,58 @@ mod tests {
         assert_eq!(st.count_repeat("key|enter|".into(), s2), 1, "another call, its own count");
         st.prepare_resume();
         assert_eq!(st.count_repeat(key(), s2), 1, "Continue starts again");
+    }
+
+    #[test]
+    fn date_parts_read_back() {
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        assert_eq!(part_values(Mask::Dmy, day), ["09".to_string(), "10".into(), "2026".into()]);
+        assert_eq!(part_values(Mask::Mdy, day), ["10".to_string(), "09".into(), "2026".into()]);
+        assert_eq!(part_values(Mask::Ymd, day), ["2026".to_string(), "10".into(), "09".into()]);
+        assert!(part_is(Some("09"), "09") && part_is(Some("9"), "09") && part_is(Some(" 2026 "), "2026"));
+        for bad in [None, Some(""), Some("TT"), Some("jjjj"), Some("102026"), Some("002026"), Some("26"), Some("1o")] {
+            assert!(!part_is(bad, if bad.is_some_and(|b| b.len() <= 2) { "09" } else { "2026" }), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn date_parts_say_their_order() {
+        let part = |name: &str, value: &str| OutlineItem {
+            id: 0,
+            role: "spinner".into(),
+            name: name.into(),
+            value: Some(value.into()),
+            rect: PhysRect { x: 0, y: 0, w: 30, h: 20 },
+            offscreen: false,
+            enabled: true,
+            is_password: false,
+            localized_role: None,
+            is_date: false,
+        };
+        let de = [part("Tag", "TT"), part("Monat", "mm"), part("Jahr", "jjjj")];
+        assert_eq!(parts_mask(&de), Some(Mask::Dmy));
+        let us = [part("Month", "mm"), part("Day", "dd"), part("Year", "yyyy")];
+        assert_eq!(parts_mask(&us), Some(Mask::Mdy));
+        // Names say nothing: the placeholders tell, also half filled.
+        let by_value = [part("", "yyyy"), part("", "mm"), part("", "dd")];
+        assert_eq!(parts_mask(&by_value), Some(Mask::Ymd));
+        let half = [part("", "19"), part("", "mm"), part("", "jjjj")];
+        assert_eq!(parts_mask(&half), None, "a filled part without a name says nothing");
+        let same = [part("Tag", ""), part("Tag", ""), part("Jahr", "")];
+        assert_eq!(parts_mask(&same), None);
+        assert_eq!(parts_mask(&de[..2]), None);
+        assert_eq!((mask_sep(Mask::Dmy), mask_sep(Mask::Mdy), mask_sep(Mask::Ymd)), ('.', '/', '-'));
+    }
+
+    #[test]
+    fn popups_by_focus() {
+        let f = |c: &str| UiElement { name: String::new(), control: c.into(), is_password: false };
+        for c in ["Calendar", "DataGrid", "List", "ListItem", "Menu", "MenuItem"] {
+            assert!(in_popup(&f(c)), "{c}");
+        }
+        for c in ["Edit", "Button", "Group", "Document", "Spinner", "ComboBox"] {
+            assert!(!in_popup(&f(c)), "{c}");
+        }
     }
 
     #[test]

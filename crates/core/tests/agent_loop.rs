@@ -50,6 +50,12 @@ struct MockPlatform {
     allow_set_value: Mutex<bool>,
     /// A Chromium date input (Edge, German): see `DateInput`.
     date_input: Mutex<Option<DateInput>>,
+    /// Screenshots taken so far.
+    captures: Mutex<u32>,
+    /// Rects of PAGE ELEMENTS that no longer hold their element (the page changed under them).
+    stale: Mutex<Vec<PhysRect>>,
+    /// The browser's "Restore pages" popup: its close button (None = not shown). Invoking it closes it.
+    restore_popup: Mutex<Option<OutlineItem>>,
 }
 
 /// A Chromium `<input type=date>` as Edge shows it in German: "TT.mm.jjjj". Its value through the UI tree is
@@ -61,15 +67,38 @@ struct DateInput {
     parts: [String; 3],
     at: usize,
     stuck: bool,
+    /// Like Edge 141: its parts are spinners in the UI tree (`date_parts`, `focus_element`), it gives no value,
+    /// the year keeps up to six digits, and a focused part starts afresh with the next digit.
+    edge: bool,
+    fresh: bool,
+    /// The first `focus_element` lands on the year part (the run-2 bug: all digits went into the year).
+    misfocus: bool,
+    /// An English browser: the parts are Month, Day, Year ("mm/dd/yyyy"), whatever the field's name says.
+    us: bool,
 }
 
 impl DateInput {
     const EMPTY: [&'static str; 3] = ["TT", "mm", "jjjj"];
     const LEN: [usize; 3] = [2, 2, 4];
     fn shown(&self) -> String {
+        if self.edge {
+            let p =
+                |i: usize| if self.parts[i].is_empty() { Self::EMPTY[i].to_string() } else { self.parts[i].clone() };
+            return format!("{}.{}.{}", p(0), p(1), p(2));
+        }
         let p =
             |i: usize| if self.parts[i].len() == Self::LEN[i] { self.parts[i].clone() } else { Self::EMPTY[i].into() };
         format!("{}.{}.{}", p(0), p(1), p(2))
+    }
+    /// What the UI tree says the field holds: nothing for Edge, else what it shows.
+    fn value(&self) -> Option<String> {
+        (!self.edge).then(|| self.shown())
+    }
+    /// The part rects: TT 30 px, mm 30 px, the year up to 70 % of the width (then the calendar icon).
+    fn part_rect(field: PhysRect, i: usize) -> PhysRect {
+        let x = field.x + 30 * i as i32;
+        let w = if i < 2 { 30 } else { (field.w * 7 / 10 - 60).max(1) };
+        PhysRect { x, y: field.y, w, h: field.h }
     }
     /// The part under a click: TT at 0-30 px from the left edge, mm at 30-60, the rest is the year.
     fn click(&mut self, rect: PhysRect, p: PhysPoint) {
@@ -85,6 +114,20 @@ impl DateInput {
     }
     fn digit(&mut self, c: char) {
         let i = self.at;
+        if self.edge {
+            if std::mem::take(&mut self.fresh) {
+                self.parts[i].clear();
+            }
+            self.parts[i].push(c);
+            if i == 2 {
+                let n = self.parts[2].len();
+                self.parts[2] = self.parts[2][n.saturating_sub(6)..].to_string();
+            } else if self.parts[i].len() == 2 {
+                self.at += 1;
+                self.fresh = true;
+            }
+            return;
+        }
         if self.parts[i].len() >= Self::LEN[i] {
             self.parts[i].clear();
         }
@@ -125,11 +168,14 @@ fn el(id: u32, role: &str, name: &str, rect: (i32, i32, i32, i32)) -> OutlineIte
         offscreen: false,
         enabled: true,
         is_password: false,
+        localized_role: None,
+        is_date: false,
     }
 }
 
 impl Screen for MockPlatform {
     fn capture_primary(&self) -> anyhow::Result<Frame> {
+        *self.captures.lock().unwrap() += 1;
         // 1000x800 light-grey "screen": API image = frame (no downscale), origin 0,0.
         let image = self
             .screen
@@ -151,7 +197,7 @@ impl Input for MockPlatform {
             && let Some(it) = self.outline.lock().unwrap().iter_mut().find(|i| i.id == d.id && i.rect.contains(p))
         {
             d.click(it.rect, p);
-            it.value = Some(d.shown());
+            it.value = d.value();
         }
         if let Some(w) = self.on_click_window.lock().unwrap().take() {
             *self.foreground.lock().unwrap() = Some(w);
@@ -168,8 +214,10 @@ impl Input for MockPlatform {
             && let Some(p) = caret.0
             && let Some(it) = self.outline.lock().unwrap().iter_mut().find(|i| i.id == d.id && i.rect.contains(p))
         {
-            s.chars().filter(char::is_ascii_digit).for_each(|c| d.digit(c));
-            it.value = Some(d.shown());
+            if !*self.frozen_fields.lock().unwrap() {
+                s.chars().filter(char::is_ascii_digit).for_each(|c| d.digit(c));
+            }
+            it.value = d.value();
             return Ok(());
         }
         if !*self.frozen_fields.lock().unwrap()
@@ -192,6 +240,13 @@ impl Input for MockPlatform {
             && let Some(d) = self.date_input.lock().unwrap().as_mut()
         {
             d.at = d.at.saturating_sub(1);
+        }
+        if combo == "backspace"
+            && let Some(d) = self.date_input.lock().unwrap().as_mut()
+            && d.edge
+        {
+            d.parts[d.at].clear();
+            d.fresh = false;
         }
         Ok(())
     }
@@ -253,6 +308,64 @@ impl UiTree for MockPlatform {
             }
             None => false,
         }
+    }
+    fn date_parts(&self, item: &OutlineItem) -> Vec<OutlineItem> {
+        let date = self.date_input.lock().unwrap();
+        let Some(d) = date.as_ref().filter(|d| d.edge && d.id == item.id) else { return Vec::new() };
+        let Some(field) = self.outline.lock().unwrap().iter().find(|i| i.id == d.id).map(|i| i.rect) else {
+            return Vec::new();
+        };
+        (0..3)
+            .map(|i| {
+                let (names, empty) = if d.us {
+                    (["Month", "Day", "Year"], ["mm", "dd", "yyyy"])
+                } else {
+                    (["Tag", "Monat", "Jahr"], DateInput::EMPTY)
+                };
+                let v = if d.parts[i].is_empty() { empty[i].to_string() } else { d.parts[i].clone() };
+                let mut part = el(i as u32 + 1, "spinner", names[i], (0, 0, 1, 1));
+                part.rect = DateInput::part_rect(field, i);
+                part.value = Some(v);
+                part
+            })
+            .collect()
+    }
+    fn focus_element(&self, item: &OutlineItem) -> bool {
+        self.actions.lock().unwrap().push(format!("focus {}", item.name));
+        let c = item.center();
+        let mut date = self.date_input.lock().unwrap();
+        if item.role == "spinner"
+            && let Some(d) = date.as_mut().filter(|d| d.edge)
+        {
+            let Some(field) = self.outline.lock().unwrap().iter().find(|i| i.id == d.id).map(|i| i.rect) else {
+                return false;
+            };
+            let Some(i) = (0..3).find(|&i| DateInput::part_rect(field, i).contains(c)) else { return false };
+            d.at = if std::mem::take(&mut d.misfocus) { 2 } else { i };
+            d.fresh = true;
+            *self.caret.lock().unwrap() = (Some(c), false);
+            return true;
+        }
+        if self.outline.lock().unwrap().iter().any(|i| i.id == item.id && i.rect == item.rect) {
+            *self.caret.lock().unwrap() = (Some(c), false);
+            return true;
+        }
+        false
+    }
+    fn element_matches(&self, item: &OutlineItem) -> bool {
+        !self.stale.lock().unwrap().contains(&item.rect)
+    }
+    fn invoke(&self, item: &OutlineItem) -> bool {
+        let mut popup = self.restore_popup.lock().unwrap();
+        if popup.as_ref().is_some_and(|b| b.name == item.name) {
+            *popup = None;
+            self.actions.lock().unwrap().push(format!("invoke {}", item.name));
+            return true;
+        }
+        false
+    }
+    fn find_restore_popup(&self) -> Option<OutlineItem> {
+        self.restore_popup.lock().unwrap().clone()
     }
 }
 
@@ -569,7 +682,9 @@ async fn fills_a_field_then_finishes() {
     assert_eq!(reqs.len(), 2);
     for r in &reqs {
         assert!(r["instructions"].as_str().unwrap().contains("Never type passwords"));
-        assert_eq!(r["tools"].as_array().unwrap().len(), 13);
+        // Acting: no `say` tool of its own (the sentence goes with an action), no suggest.
+        assert_eq!(r["tools"].as_array().unwrap().len(), 12);
+        assert!(!tool_names(r).iter().any(|n| n == "say" || n == "suggest"));
         assert_eq!(r["reasoning"]["effort"], "low");
     }
     assert!(reqs[0]["input"].to_string().contains("Trag meinen Namen ein"));
@@ -1964,8 +2079,8 @@ async fn yes_switches_to_act_and_submit_still_shows_card() {
     // Act phase: the normal tools (no suggest), and the task now says what the user agreed to.
     let names = tool_names(&reqs[2]);
     assert!(names.contains(&"click".to_string()) && names.contains(&"type_text".to_string()));
-    assert!(!names.contains(&"suggest".to_string()));
-    assert_eq!(names.len(), 13);
+    assert!(!names.contains(&"suggest".to_string()) && !names.contains(&"say".to_string()));
+    assert_eq!(names.len(), 12);
     let header = reqs[2]["input"][0].to_string();
     assert!(header.contains(r#"The user agreed to do \"Return your questionnaire online\""#), "{header}");
     assert!(!header.contains("Look ONCE"));
@@ -3320,4 +3435,194 @@ async fn already_done_tells_the_model_to_send() {
     let o = &outputs(&h.requests()[3])[0];
     assert!(o.contains("If every required field shows a value, click the send button now"), "{o}");
     assert!(o.contains("Do not scroll for an upload field"), "{o}");
+}
+
+// ---------- after run 2: date parts, say with the action, restore popup, live checks ----------
+
+/// Edge 141 in the VM: "Sick since" is an <input type=date> with three spinner parts and no value at all.
+async fn edge_parts_date(misfocus: bool) -> (Harness, Vec<String>) {
+    let mut h = Harness::new(false).await;
+    let mut item = el(8, "edit", "Sick since", (100, 100, 300, 40));
+    item.value = None;
+    item.is_date = true;
+    item.localized_role = Some("Datumsauswahl".into());
+    h.platform.set_outline(vec![item]);
+    *h.platform.allow_set_value.lock().unwrap() = true;
+    *h.platform.date_input.lock().unwrap() = Some(DateInput { id: 8, edge: true, misfocus, ..Default::default() });
+    h.agent_turns(vec![calls("r1", &[type_el("19.10.2026", "the day you got sick", 8)]), calls("r2", &[done("ok")])]);
+    h.run("Fill in the date").await;
+    let _ = h.drain();
+    let outs = outputs(&h.requests()[1]);
+    (h, outs)
+}
+
+fn date_shown_by(h: &Harness) -> String {
+    h.platform.date_input.lock().unwrap().as_ref().unwrap().shown()
+}
+
+#[tokio::test]
+async fn edge_date_input_is_typed_part_by_part_without_a_click() {
+    let (h, outs) = edge_parts_date(false).await;
+    assert_eq!(date_shown_by(&h), "19.10.2026");
+    let acts: Vec<String> = h.platform.actions().into_iter().filter(|a| !a.starts_with("move")).collect();
+    assert_eq!(acts, ["focus Tag", "type 19102026"], "no click (the calendar), only the first part focused");
+    assert!(h.platform.set_values.lock().unwrap().is_empty(), "no value through the UI tree: Edge drops it");
+    assert!(outs[0].contains(r#"the field now shows "19.10.2026""#), "{outs:?}");
+    assert!(!outs[0].contains("instead of"), "{outs:?}");
+}
+
+#[tokio::test]
+async fn edge_date_input_with_the_keys_in_the_year_is_fixed_part_by_part() {
+    // The run-2 bug: all eight digits went into the year ("TT.mm.102026"). Read back, each wrong part is
+    // focused, cleared and typed again.
+    let (h, outs) = edge_parts_date(true).await;
+    assert_eq!(date_shown_by(&h), "19.10.2026");
+    let acts: Vec<String> = h.platform.actions().into_iter().filter(|a| !a.starts_with("move")).collect();
+    assert!(!acts.iter().any(|a| a.starts_with("click")), "{acts:?}");
+    assert!(acts.iter().any(|a| a == "key backspace"), "{acts:?}");
+    assert!(acts.ends_with(&["focus Jahr".into(), "key backspace".into(), "type 2026".into()]), "{acts:?}");
+    assert!(outs[0].contains(r#"the field now shows "19.10.2026""#), "{outs:?}");
+}
+
+#[tokio::test]
+async fn an_english_edge_date_input_takes_the_month_first() {
+    // Edge in English under a German-named field: the parts are Month, Day, Year. The keys go in the parts'
+    // order and the read-back is in that order too.
+    let mut h = Harness::new(false).await;
+    let mut item = el(8, "edit", "Sick since", (100, 100, 300, 40));
+    item.value = None;
+    item.is_date = true;
+    h.platform.set_outline(vec![item]);
+    *h.platform.date_input.lock().unwrap() = Some(DateInput { id: 8, edge: true, us: true, ..Default::default() });
+    h.agent_turns(vec![calls("r1", &[type_el("19.10.2026", "the day you got sick", 8)]), calls("r2", &[done("ok")])]);
+    h.run("Fill in the date").await;
+    let _ = h.drain();
+    let outs = outputs(&h.requests()[1]);
+    let acts: Vec<String> = h.platform.actions().into_iter().filter(|a| !a.starts_with("move")).collect();
+    assert_eq!(acts, ["focus Month", "type 10192026"], "{acts:?}");
+    assert!(outs[0].contains(r#"the field now shows "10/19/2026""#), "{outs:?}");
+    assert!(!outs[0].contains("instead of"), "{outs:?}");
+}
+
+#[tokio::test]
+async fn a_date_whose_parts_stay_wrong_is_never_reported_as_typed() {
+    let mut h = Harness::new(false).await;
+    let mut item = el(8, "edit", "Sick since", (100, 100, 300, 40));
+    item.value = None;
+    item.is_date = true;
+    h.platform.set_outline(vec![item]);
+    // The page takes no keys at all: every part keeps its placeholder, even after the second try.
+    *h.platform.date_input.lock().unwrap() = Some(DateInput { id: 8, edge: true, ..Default::default() });
+    *h.platform.frozen_fields.lock().unwrap() = true;
+    h.agent_turns(vec![calls("r1", &[type_el("2026-10-19", "the day you got sick", 8)]), calls("r2", &[done("ok")])]);
+    h.run("Fill in the date").await;
+    let _ = h.drain();
+    let outs = outputs(&h.requests()[1]);
+    assert!(outs[0].contains(r#"but the field now shows "TT.mm.jjjj" instead of "2026-10-19""#), "{outs:?}");
+    assert!(!outs[0].contains("; the field now shows"), "{outs:?}");
+}
+
+#[tokio::test]
+async fn a_say_only_turn_is_asked_again_on_the_same_screen() {
+    let mut h = Harness::new(false).await;
+    h.platform.set_outline(form_outline());
+    h.agent_turns(vec![calls("r1", &[say("Ich schaue mir das Formular an.")]), calls("r2", &[done("ok")])]);
+    h.run("Füll das aus").await;
+    assert_eq!(*h.platform.captures.lock().unwrap(), 1, "no new picture for the re-ask");
+    assert_eq!(*h.platform.outline_reads.lock().unwrap(), 1, "no new outline either");
+    let reqs = h.requests();
+    assert_eq!(reqs.len(), 2);
+    let look = |r: &Value| r["input"].as_array().unwrap().last().unwrap().to_string();
+    assert_eq!(look(&reqs[0]), look(&reqs[1]), "the same picture and PAGE ELEMENTS");
+    assert!(outputs(&reqs[1])[0].contains("This turn had no action"));
+    assert_eq!(bubbles(&h.drain()).iter().filter(|b| b.contains("Formular an")).count(), 1);
+
+    // Twice in a row: the second say-only turn gets a fresh look (never round and round on one picture).
+    let h = Harness::new(false).await;
+    h.agent_turns(vec![calls("r1", &[say("Moment.")]), calls("r2", &[say("Gleich.")]), calls("r3", &[done("ok")])]);
+    h.run("Füll das aus").await;
+    assert_eq!(*h.platform.captures.lock().unwrap(), 2);
+    assert_eq!(h.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn say_goes_with_the_action_and_is_shown_once() {
+    let mut h = Harness::new(false).await;
+    h.platform.set_outline(form_outline());
+    let mut first = type_el("Erika Beispiel", "your name", 1);
+    first.1["say"] = json!("Ich trage deinen Namen ein.");
+    let mut second = type_el("G123456789", "your number", 2);
+    second.1["say"] = json!("Ich trage deinen Namen ein.");
+    h.agent_turns(vec![calls("r1", &[first, second]), calls("r2", &[done("ok")])]);
+    h.run("Füll das aus").await;
+    let b = bubbles(&h.drain());
+    assert_eq!(b.iter().filter(|t| t.contains("deinen Namen ein")).count(), 1, "{b:?}");
+    assert_eq!(h.platform.outline.lock().unwrap()[1].value.as_deref(), Some("G123456789"));
+    assert_eq!(h.requests().len(), 2, "no step of its own for the sentence");
+}
+
+#[tokio::test]
+async fn the_restore_pages_popup_is_closed_without_a_model_step() {
+    let h = Harness::new(false).await;
+    let mut close = el(0, "button", "Schließen", (900, 80, 30, 30));
+    close.value = None;
+    *h.platform.restore_popup.lock().unwrap() = Some(close);
+    h.agent_turns(vec![calls("r1", &[done("ok")])]);
+    h.run("Füll das aus").await;
+    assert_eq!(h.platform.actions(), ["invoke Schließen"]);
+    assert!(h.platform.restore_popup.lock().unwrap().is_none());
+    assert_eq!(h.requests().len(), 1, "the model never saw the popup");
+
+    // A popup button that reads like a send button is never pressed on its own.
+    let h = Harness::new(false).await;
+    *h.platform.restore_popup.lock().unwrap() = Some(el(0, "button", "Senden", (900, 80, 30, 30)));
+    h.agent_turns(vec![calls("r1", &[done("ok")])]);
+    h.run("Füll das aus").await;
+    assert!(h.platform.actions().is_empty(), "{:?}", h.platform.actions());
+}
+
+#[tokio::test]
+async fn a_stale_element_is_not_clicked_and_the_turn_stops() {
+    let h = Harness::new(false).await;
+    let page = vec![el(1, "edit", "Full name", (100, 100, 300, 40)), el(2, "button", "Next", (700, 600, 200, 50))];
+    h.platform.set_outline(page.clone());
+    // The page changed under "Next" (a picker closed, the form moved on) since the outline was read.
+    *h.platform.stale.lock().unwrap() = vec![page[1].rect];
+    h.agent_turns(vec![
+        calls("r1", &[click_el("„Next“", 2, false), type_el("Erika", "your name", 1)]),
+        calls("r2", &[done("ok")]),
+    ]);
+    h.run("Füll das aus").await;
+    assert!(h.platform.clicks().is_empty(), "{:?}", h.platform.actions());
+    let outs = outputs(&h.requests()[1]);
+    assert!(outs[0].starts_with("not done: the page changed under #2 \"Next\""), "{outs:?}");
+    assert_eq!(outs[1], "not done: the page changed, look again", "{outs:?}");
+    assert!(h.platform.typed().is_empty());
+}
+
+#[tokio::test]
+async fn new_elements_are_starred_and_unchanged_clicks_get_a_nudge() {
+    let h = Harness::new(false).await;
+    let page = vec![el(1, "edit", "Full name", (100, 100, 300, 40)), el(2, "button", "Next", (700, 600, 200, 50))];
+    h.platform.set_outline(page.clone());
+    let mut next_page = page.clone();
+    next_page.push(el(3, "text", "Please fill in your name", (100, 150, 300, 20)));
+    h.platform.on_click_outline.lock().unwrap().push_back(next_page);
+    h.agent_turns(vec![
+        calls("r1", &[click_el("„Next“", 2, false)]),
+        calls("r2", &[click_el("„Next“", 2, false)]),
+        calls("r3", &[click_el("„Next“", 2, false)]),
+        calls("r4", &[done("ok")]),
+    ]);
+    h.run("Füll das aus").await;
+    let reqs = h.requests();
+    let look =
+        |r: &Value| r["input"].as_array().unwrap().last().unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+    assert!(!look(&reqs[0]).contains('*'), "the first look marks nothing: {}", look(&reqs[0]));
+    assert!(look(&reqs[1]).contains("*#3 text \"Please fill in your name\""), "{}", look(&reqs[1]));
+    assert!(look(&reqs[1]).contains("\n#1 edit \"Full name\""), "{}", look(&reqs[1]));
+    assert!(!look(&reqs[2]).contains("*#"), "seen by now: {}", look(&reqs[2]));
+    // Click 2 and 3 changed nothing in PAGE ELEMENTS: the model hears so once.
+    assert!(!look(&reqs[2]).contains("changed nothing"), "{}", look(&reqs[2]));
+    assert!(look(&reqs[3]).contains("your last clicks changed nothing in PAGE ELEMENTS"), "{}", look(&reqs[3]));
 }

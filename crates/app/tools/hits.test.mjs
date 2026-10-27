@@ -109,3 +109,16 @@ test("anyOpen", () => {
   assert.equal(Hits.anyOpen([null, { x: 0, y: 0, w: 0, h: 0 }]), false);
   assert.equal(Hits.anyOpen([null, bubble]), true);
 });
+
+test("during a flight the rects go out every 100 ms (a bubble shown mid-flight takes clicks)", () => {
+  // a 500 ms flight home at 60 frames per second: the first frame reports, then one report per 100 ms
+  let last = -Infinity;
+  const sent = [];
+  for (let now = 0; now < 500; now += 1000 / 60) {
+    if (Hits.flightDue(last, now)) { last = now; sent.push(now); }
+  }
+  assert.equal(sent[0], 0, "right at the start");
+  assert.ok(sent.length >= 5 && sent.length <= 6, `${sent.length} reports`);
+  for (let i = 1; i < sent.length; i++) assert.ok(sent[i] - sent[i - 1] >= Hits.FLIGHT_EVERY && sent[i] - sent[i - 1] < 120);
+  assert.equal(Hits.flightDue(100, NaN), true, "a broken clock never stops the reports");
+});

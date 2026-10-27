@@ -29,6 +29,8 @@ struct MockPlatform {
     screen: Option<image::RgbaImage>,
     /// PAGE ELEMENTS (empty = none, like Linux).
     outline: Mutex<Vec<OutlineItem>>,
+    /// A browser "Restore pages" popup: the button the platform names as its close button.
+    restore_popup: Mutex<Option<OutlineItem>>,
 }
 
 impl MockPlatform {
@@ -90,6 +92,13 @@ impl UiTree for MockPlatform {
     }
     fn outline(&self, max: usize) -> Vec<OutlineItem> {
         self.outline.lock().unwrap().iter().take(max).cloned().collect()
+    }
+    fn invoke(&self, item: &OutlineItem) -> bool {
+        self.actions.lock().unwrap().push(format!("invoke {}", item.name));
+        true
+    }
+    fn find_restore_popup(&self) -> Option<OutlineItem> {
+        self.restore_popup.lock().unwrap().clone()
     }
 }
 
@@ -711,6 +720,8 @@ async fn hole_send_button_by_element_number_without_is_commit() {
             offscreen: false,
             enabled: true,
             is_password: false,
+            localized_role: None,
+            is_date: false,
         },
         OutlineItem {
             id: 2,
@@ -721,6 +732,8 @@ async fn hole_send_button_by_element_number_without_is_commit() {
             offscreen: false,
             enabled: true,
             is_password: false,
+            localized_role: None,
+            is_date: false,
         },
     ];
     h.agent_turns(vec![calls(
@@ -736,4 +749,57 @@ async fn hole_send_button_by_element_number_without_is_commit() {
     assert_eq!(out, AgentOutcome::Stopped);
     assert_eq!(cards(&h.drain()).len(), 1, "the send card shows");
     assert!(h.platform.clicks().is_empty(), "nothing clicked after Not yet");
+}
+
+fn outline_item(id: u32, role: &str, name: &str, rect: PhysRect) -> OutlineItem {
+    OutlineItem {
+        id,
+        role: role.into(),
+        name: name.into(),
+        value: None,
+        rect,
+        offscreen: false,
+        enabled: true,
+        is_password: false,
+        localized_role: None,
+        is_date: false,
+    }
+}
+
+#[tokio::test]
+async fn hole_send_button_with_a_say_sentence_still_gets_the_card() {
+    // The sentence that goes with the action ("I go on to the next page.") never talks the gate out of a card.
+    let mut h = Harness::new(false).await;
+    *h.platform.outline.lock().unwrap() =
+        vec![outline_item(2, "button", "Submit", PhysRect { x: 700, y: 600, w: 200, h: 50 })];
+    h.agent_turns(vec![calls(
+        "r1",
+        &[(
+            "click",
+            json!({"sam_query": "button", "description": "the next page", "is_commit": false,
+                   "commit_what": null, "commit_to": null, "element": 2,
+                   "say": "I go on to the next page, nothing is sent."}),
+        )],
+    )]);
+    h.auto_answer(ApprovalAnswer::No, "");
+    assert_eq!(h.run("Fill in the form").await, AgentOutcome::Stopped);
+    assert_eq!(cards(&h.drain()).len(), 1, "the send card shows");
+    assert!(h.platform.clicks().is_empty(), "nothing clicked after Not yet");
+}
+
+#[tokio::test]
+async fn hole_restore_popup_never_presses_a_send_button() {
+    // The platform's popup finder is fooled into naming a page's send button: the pre-step does not press it,
+    // and the model's own click on it still needs the card.
+    let mut h = Harness::new(false).await;
+    let send = outline_item(2, "button", "Submit", PhysRect { x: 700, y: 600, w: 200, h: 50 });
+    *h.platform.restore_popup.lock().unwrap() = Some(send.clone());
+    *h.platform.outline.lock().unwrap() = vec![send];
+    h.agent_turns(vec![calls("r1", &[click("den Knopf „Submit“", false)])]);
+    h.sam(&[sam_box(700, 600, 900, 650)]);
+    h.auto_answer(ApprovalAnswer::No, "");
+    assert_eq!(h.run("Fill in the form").await, AgentOutcome::Stopped);
+    assert!(!h.platform.actions().iter().any(|a| a.starts_with("invoke")), "{:?}", h.platform.actions());
+    assert_eq!(cards(&h.drain()).len(), 1);
+    assert!(h.platform.clicks().is_empty());
 }

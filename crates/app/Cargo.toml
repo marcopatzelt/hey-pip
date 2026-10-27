@@ -37,7 +37,12 @@ cpal.workspace = true
 tts.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys.workspace = true
+# Mouse hook: SendInput (a rescued press sent again), the module handle and thread id for the hook thread.
+windows-sys = { workspace = true, features = [
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true

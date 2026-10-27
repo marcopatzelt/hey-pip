@@ -164,6 +164,13 @@ impl Backend {
             _ => None,
         };
         let platform = ok_or_log("platform", guard("platform", pip_platform::native));
+        // Edge's "Restore pages" popup after a hard close costs the agent steps. The Edge policy that hides it also
+        // makes Edge say "managed by your organization", so it is opt-in (PIP_EDGE_POLICY=1, used for demo VMs);
+        // by default Pip closes the popup itself (close_restore_popup).
+        #[cfg(windows)]
+        if std::env::var("PIP_EDGE_POLICY").is_ok_and(|v| matches!(v.trim(), "1" | "true")) {
+            std::thread::spawn(pip_platform::windows::hide_edge_restore_dialog);
+        }
         // DEMO_MODE pages: the shipped/repo fixtures folder and the copy of the demo form in the data folder.
         let builtin = config.as_ref().and_then(|c| write_demo_form(&c.data_dir.join("fixtures")));
         let mut fixture_dirs: Vec<std::path::PathBuf> = config.iter().map(|c| c.fixtures_dir.clone()).collect();

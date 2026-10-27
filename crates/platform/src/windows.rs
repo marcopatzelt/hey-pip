@@ -12,10 +12,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use pip_core::platform::{
-    Frame, Input, OutlineItem, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo, outline_role,
+    Frame, Input, OutlineItem, PhysPoint, PhysRect, Platform, Screen, UiElement, UiTree, WindowInfo, is_date_role,
+    outline_role,
 };
 use uiautomation::core::{UICacheRequest, UICondition};
-use uiautomation::patterns::{UIScrollItemPattern, UIValuePattern};
+use uiautomation::patterns::{
+    UIInvokePattern, UIScrollItemPattern, UISelectionItemPattern, UITogglePattern, UIValuePattern,
+};
 use uiautomation::types::{ControlType, ElementMode, Handle, Point, TreeScope, UIProperty};
 use uiautomation::variants::Variant;
 use uiautomation::{UIAutomation, UIElement};
@@ -26,7 +29,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::keys::{KeyName, Modifier, check_typeable, parse_combo};
-use crate::outline_cache::{Cached, ChildWindow, EMPTY_RETRY_AFTER, Hit, OutlineKey, budget, page_child};
+use crate::outline_cache::{
+    Cached, ChildWindow, EMPTY_RETRY_AFTER, Hit, OutlineKey, budget, date_part, date_text, is_close_button,
+    is_restore_button, owner_of, page_child,
+};
 use crate::{FoundElement, MonitorInfo};
 
 /// Characters per SendInput batch when typing; small batches keep browsers from dropping keys.
@@ -414,6 +420,39 @@ fn enigo_key(k: KeyName) -> Key {
     }
 }
 
+/// Each call to a page waits at most this long (a hung page answers "timed out" instead of blocking).
+const UIA_TRANSACTION_MS: u32 = 900;
+/// Connecting to a page's accessibility at most this long.
+const UIA_CONNECTION_MS: u32 = 500;
+
+/// A UI Automation client with real time limits per call: CUIAutomation8 as IUIAutomation2 (Windows 8+), with
+/// transaction and connection timeouts; the plain client if that is not possible. Idea from Windows-MCP
+/// `uia/core.py` (MIT). The uiautomation crate only makes the plain CUIAutomation, so the client is made here
+/// and handed to it.
+fn new_uia() -> uiautomation::Result<UIAutomation> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+    use windows::Win32::UI::Accessibility::{CUIAutomation8, IUIAutomation, IUIAutomation2};
+    use windows::core::Interface;
+    // COM as MTA; on a thread that already has COM (e.g. the UI thread, STA) this fails harmlessly and its COM
+    // is used.
+    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    let made =
+        unsafe { CoCreateInstance::<_, IUIAutomation2>(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }.and_then(|a| {
+            unsafe {
+                a.SetTransactionTimeout(UIA_TRANSACTION_MS)?;
+                a.SetConnectionTimeout(UIA_CONNECTION_MS)?;
+            }
+            a.cast::<IUIAutomation>()
+        });
+    match made {
+        Ok(a) => Ok(UIAutomation::from(a)),
+        Err(e) => {
+            tracing::debug!("ui automation without time limits: {e}");
+            UIAutomation::new_direct()
+        }
+    }
+}
+
 thread_local! {
     /// COM objects are bound to the thread that made them, so each thread keeps its own client.
     static UIA: RefCell<Option<UIAutomation>> = const { RefCell::new(None) };
@@ -424,8 +463,7 @@ fn with_uia<R>(f: impl FnOnce(&UIAutomation) -> uiautomation::Result<R>) -> Opti
     UIA.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
-            // new() initialises COM as MTA; on an STA thread (e.g. the UI thread) that fails, so reuse its COM.
-            *slot = UIAutomation::new().or_else(|_| UIAutomation::new_direct()).ok();
+            *slot = new_uia().ok();
         }
         match f(slot.as_ref()?) {
             Ok(r) => Some(r),
@@ -496,22 +534,7 @@ impl UiTree for WinPlatform {
 
     fn scroll_into_view(&self, item: &OutlineItem) -> bool {
         with_uia(|uia| {
-            let Some(hwnd) = page_window() else { return Ok(false) };
-            let Some(ct) = control_type_of(&item.role) else { return Ok(false) };
-            let win = uia.element_from_handle(Handle::from(hwnd))?;
-            let by_type = uia.create_property_condition(UIProperty::ControlType, Variant::from(ct as i32), None)?;
-            let by_name = uia.create_property_condition(UIProperty::Name, Variant::from(item.name.as_str()), None)?;
-            let cond = uia.create_and_condition(by_type, by_name)?;
-            let found = win.find_all(TreeScope::Descendants, &cond)?;
-            // Same name twice ("Service" in the menu and the breadcrumbs): the one nearest to where it was.
-            let dist = |e: &UIElement| {
-                e.get_bounding_rectangle()
-                    .map(|r| {
-                        (i64::from(r.get_left() - item.rect.x)).abs() + (i64::from(r.get_top() - item.rect.y)).abs()
-                    })
-                    .unwrap_or(i64::MAX)
-            };
-            let Some(el) = found.iter().min_by_key(|e| dist(e)) else { return Ok(false) };
+            let Some(el) = find_in_page(uia, item)? else { return Ok(false) };
             el.get_pattern::<UIScrollItemPattern>()?.scroll_into_view()?;
             acted();
             Ok(true)
@@ -612,6 +635,264 @@ impl UiTree for WinPlatform {
             Ok(None)
         })
         .flatten()
+    }
+
+    fn date_parts(&self, item: &OutlineItem) -> Vec<OutlineItem> {
+        with_uia(|uia| {
+            let cache = values_cache(uia)?;
+            cache.add_property(UIProperty::Name)?;
+            cache.add_property(UIProperty::IsOffscreen)?;
+            let spinner = uia.create_property_condition(
+                UIProperty::ControlType,
+                Variant::from(ControlType::Spinner as i32),
+                None,
+            )?;
+            // The parts are inside the input; if the input cannot be found again, look for parts within its rect.
+            let found = match locate(uia, item)? {
+                Some(field) => field.find_all_build_cache(TreeScope::Descendants, &spinner, &cache).unwrap_or_default(),
+                None => Vec::new(),
+            };
+            let found = if found.is_empty() {
+                let Some(hwnd) = page_window() else { return Ok(Vec::new()) };
+                let win = uia.element_from_handle(Handle::from(hwnd))?;
+                win.find_all_build_cache(TreeScope::Descendants, &spinner, &cache)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|e| {
+                        e.get_cached_bounding_rectangle().is_ok_and(|r| item.rect.contains(center_of(&phys(&r))))
+                    })
+                    .collect()
+            } else {
+                found
+            };
+            let mut parts: Vec<OutlineItem> = found
+                .iter()
+                .filter_map(|e| {
+                    let v = Valued::of(e)?;
+                    (v.rect.w > 1 && v.rect.h > 1).then(|| OutlineItem {
+                        id: 0,
+                        role: "spinner".into(),
+                        name: short(&e.get_cached_name().unwrap_or_default(), 100),
+                        value: v.value,
+                        rect: v.rect,
+                        offscreen: cached_bool(e, UIProperty::IsOffscreen).unwrap_or(false),
+                        enabled: true,
+                        is_password: false,
+                        localized_role: None,
+                        is_date: false,
+                    })
+                })
+                .collect();
+            parts.sort_by_key(|p| (p.rect.x, p.rect.y));
+            for (i, p) in parts.iter_mut().enumerate() {
+                p.id = i as u32 + 1;
+            }
+            tracing::debug!(
+                field = %item.name,
+                parts = ?parts.iter().map(|p| (p.name.as_str(), p.value.as_deref())).collect::<Vec<_>>(),
+                "date parts"
+            );
+            Ok(parts)
+        })
+        .unwrap_or_default()
+    }
+
+    fn focus_element(&self, item: &OutlineItem) -> bool {
+        with_uia(|uia| {
+            let Some(el) = locate(uia, item)? else { return Ok(false) };
+            el.set_focus()?;
+            acted();
+            Ok(true)
+        })
+        .unwrap_or(false)
+    }
+
+    /// False only when something else is there now (or Pip's own window): a failed or timed-out UI Automation
+    /// call is "cannot tell" (true), as the trait promises, so a slow page never stops every click.
+    fn element_matches(&self, item: &OutlineItem) -> bool {
+        with_uia(|uia| Ok(at_point(uia, item)?.is_some())).unwrap_or(true)
+    }
+
+    fn invoke(&self, item: &OutlineItem) -> bool {
+        with_uia(|uia| {
+            let Some(el) = locate(uia, item)? else { return Ok(false) };
+            let done = if let Ok(p) = el.get_pattern::<UIInvokePattern>() {
+                p.invoke().is_ok()
+            } else if let Ok(p) = el.get_pattern::<UITogglePattern>() {
+                p.toggle().is_ok()
+            } else if let Ok(p) = el.get_pattern::<UISelectionItemPattern>() {
+                p.select().is_ok()
+            } else {
+                false
+            };
+            if done {
+                acted();
+            }
+            Ok(done)
+        })
+        .unwrap_or(false)
+    }
+
+    /// Chromium shows the popup as its own small window, owned by the browser window; only those are searched
+    /// (never the page, which would cost as much as an outline read).
+    fn find_restore_popup(&self) -> Option<OutlineItem> {
+        let front = page_window()?;
+        // The popup itself may be in front (it took the keyboard): then it is the candidate.
+        let owned = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetWindow(
+                front as _,
+                windows_sys::Win32::UI::WindowsAndMessaging::GW_OWNER,
+            )
+        };
+        let popups = if owned.is_null() { owned_popups(front) } else { vec![front] };
+        if popups.is_empty() {
+            return None;
+        }
+        with_uia(|uia| {
+            let buttons = uia.create_property_condition(
+                UIProperty::ControlType,
+                Variant::from(ControlType::Button as i32),
+                None,
+            )?;
+            for h in popups {
+                let Ok(win) = uia.element_from_handle(Handle::from(h)) else { continue };
+                let found = win.find_all(TreeScope::Descendants, &buttons).unwrap_or_default();
+                let names: Vec<String> = found.iter().map(|b| b.get_name().unwrap_or_default()).collect();
+                if !names.iter().any(|n| is_restore_button(n)) {
+                    continue;
+                }
+                let Some(i) = names.iter().position(|n| is_close_button(n)) else {
+                    tracing::debug!(?names, "restore popup without a close button");
+                    continue;
+                };
+                let rect = phys(&found[i].get_bounding_rectangle()?);
+                tracing::info!(?rect, "browser shows its restore-pages popup");
+                return Ok(Some(OutlineItem {
+                    id: 0,
+                    role: "button".into(),
+                    name: short(&names[i], 100),
+                    value: None,
+                    rect,
+                    offscreen: false,
+                    enabled: true,
+                    is_password: false,
+                    localized_role: None,
+                    is_date: false,
+                }));
+            }
+            Ok(None)
+        })
+        .flatten()
+    }
+}
+
+fn center_of(r: &PhysRect) -> PhysPoint {
+    PhysPoint { x: r.x + r.w / 2, y: r.y + r.h / 2 }
+}
+
+/// The element of the item still under its centre (the point may hit text inside it: up to three parents
+/// up), same role (a SplitButton is still a "button") and name. None if something else is there now, or Pip's
+/// own window.
+fn at_point(uia: &UIAutomation, item: &OutlineItem) -> uiautomation::Result<Option<UIElement>> {
+    if control_type_of(&item.role).is_none() {
+        return Ok(None);
+    }
+    let c = item.center();
+    if overlay_at(c) {
+        return Ok(None);
+    }
+    let walker = uia.get_control_view_walker()?;
+    let mut cur = uia.element_from_point(Point::new(c.x, c.y)).ok();
+    for _ in 0..4 {
+        let Some(e) = cur else { break };
+        if e.get_process_id().ok() == Some(std::process::id()) {
+            break;
+        }
+        if role_of(&e) == Some(item.role.as_str())
+            && short(&e.get_name().unwrap_or_default(), 100) == item.name
+        {
+            return Ok(Some(e));
+        }
+        cur = walker.get_parent(&e).ok();
+    }
+    Ok(None)
+}
+
+/// The live element of an outline item: under its centre, else searched in the page window by type and name.
+fn locate(uia: &UIAutomation, item: &OutlineItem) -> uiautomation::Result<Option<UIElement>> {
+    match at_point(uia, item)? {
+        Some(e) => Ok(Some(e)),
+        None => find_in_page(uia, item),
+    }
+}
+
+/// The page window's element of this type and name; the same name twice ("Service" in the menu and the
+/// breadcrumbs): the one nearest to where it was. Never in Pip's own windows.
+fn find_in_page(uia: &UIAutomation, item: &OutlineItem) -> uiautomation::Result<Option<UIElement>> {
+    let Some(hwnd) = page_window() else { return Ok(None) };
+    let Some(ct) = control_type_of(&item.role) else { return Ok(None) };
+    let win = uia.element_from_handle(Handle::from(hwnd))?;
+    let by_type = uia.create_property_condition(UIProperty::ControlType, Variant::from(ct as i32), None)?;
+    let by_name = uia.create_property_condition(UIProperty::Name, Variant::from(item.name.as_str()), None)?;
+    let cond = uia.create_and_condition(by_type, by_name)?;
+    let found = win.find_all(TreeScope::Descendants, &cond)?;
+    let dist = |e: &UIElement| {
+        e.get_bounding_rectangle()
+            .map(|r| (i64::from(r.get_left() - item.rect.x)).abs() + (i64::from(r.get_top() - item.rect.y)).abs())
+            .unwrap_or(i64::MAX)
+    };
+    Ok(found.into_iter().min_by_key(dist))
+}
+
+/// Visible top-level windows owned by this window (a browser's popups and bubbles).
+fn owned_popups(owner: isize) -> Vec<isize> {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GW_OWNER, GetWindow, IsWindowVisible};
+    struct Search {
+        owner: isize,
+        found: Vec<isize>,
+    }
+    unsafe extern "system" fn each(h: HWND, lp: LPARAM) -> windows_sys::core::BOOL {
+        // SAFETY: lp is the &mut Search passed below, alive for the whole EnumWindows call.
+        let s = unsafe { &mut *(lp as *mut Search) };
+        if unsafe { GetWindow(h, GW_OWNER) } as isize == s.owner && unsafe { IsWindowVisible(h) } != 0 {
+            s.found.push(h as isize);
+        }
+        (s.found.len() < 64) as windows_sys::core::BOOL
+    }
+    let mut s = Search { owner, found: Vec::new() };
+    unsafe { EnumWindows(Some(each), &mut s as *mut Search as LPARAM) };
+    s.found
+}
+
+/// Switch off Edge's "Restore pages" popup for this Windows user (policy HideRestoreDialogEnabled = 1 under
+/// HKEY_CURRENT_USER; Microsoft documents the policy, per user needs no admin rights). Best effort, logged; run
+/// once at Pip's start. Edge reads policies at its next start.
+pub fn hide_edge_restore_dialog() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new("reg.exe")
+        .args([
+            "add",
+            r"HKCU\Software\Policies\Microsoft\Edge",
+            "/v",
+            "HideRestoreDialogEnabled",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            "1",
+            "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => tracing::info!("edge: restore-pages popup switched off for this user"),
+        Ok(o) => tracing::warn!(
+            code = ?o.status.code(),
+            err = %String::from_utf8_lossy(&o.stderr).trim(),
+            "edge: could not switch off the restore-pages popup"
+        ),
+        Err(e) => tracing::warn!("edge: could not switch off the restore-pages popup: {e}"),
     }
 }
 
@@ -755,10 +1036,14 @@ impl OutlineWorker {
 /// The reader thread's UI Automation objects (COM objects stay on the thread that made them).
 struct OutlineReader {
     uia: UIAutomation,
-    /// Interactive control elements (OUTLINE_TYPES).
+    /// Interactive control elements (FORM_TYPES, NAV_TYPES on screen).
     condition: UICondition,
     /// Properties of each found element, without live references (ElementMode::None: much less marshalling).
     items: UICacheRequest,
+    /// Fields, boxes and date parts only (VALUED_TYPES), for their values: a second, small request, so the value
+    /// of every link and button is never asked for.
+    valued: UICondition,
+    values: UICacheRequest,
     /// Control type and bounds of a page root candidate.
     root: UICacheRequest,
     document: UICondition,
@@ -768,17 +1053,20 @@ struct OutlineReader {
 
 impl OutlineReader {
     fn new() -> uiautomation::Result<Self> {
-        // This thread is ours alone: COM as MTA (new) works; new_direct if COM was already set up differently.
-        let uia = UIAutomation::new().or_else(|_| UIAutomation::new_direct())?;
+        // This thread is ours alone: COM as MTA works.
+        let uia = new_uia()?;
         let condition = outline_condition(&uia)?;
         let items = outline_cache(&uia)?;
         items.set_element_mode(ElementMode::None)?;
+        let valued = types_condition(&uia, VALUED_TYPES)?;
+        let values = values_cache(&uia)?;
+        values.set_element_mode(ElementMode::None)?;
         let root = uia.create_cache_request()?;
         root.add_property(UIProperty::ControlType)?;
         root.add_property(UIProperty::BoundingRectangle)?;
         let document =
             uia.create_property_condition(UIProperty::ControlType, Variant::from(ControlType::Document as i32), None)?;
-        Ok(OutlineReader { uia, condition, items, root, document, memo: None })
+        Ok(OutlineReader { uia, condition, items, valued, values, root, document, memo: None })
     }
 
     /// One read; an empty or failed one is asked once more after a short pause (Chromium builds the tree of a
@@ -805,8 +1093,24 @@ impl OutlineReader {
         let (root, viewport) = self.page_root(key)?;
         let found_root_ms = started.elapsed().as_millis() as u64;
         let found = root.find_all_build_cache(TreeScope::Descendants, &self.condition, &self.items)?;
-        tracing::debug!(found_root_ms, ms = started.elapsed().as_millis() as u64, n = found.len(), "outline: find all");
-        Ok(outline_items(&found, viewport, key.max))
+        let found_all_ms = started.elapsed().as_millis() as u64;
+        // Values are a nice-to-have: without them the outline still lists every element.
+        let values = match root.find_all_build_cache(TreeScope::Descendants, &self.valued, &self.values) {
+            Ok(v) => v.iter().filter_map(Valued::of).collect(),
+            Err(e) => {
+                tracing::debug!("outline: no values: {e}");
+                Vec::new()
+            }
+        };
+        tracing::debug!(
+            found_root_ms,
+            found_all_ms,
+            ms = started.elapsed().as_millis() as u64,
+            n = found.len(),
+            valued = values.len(),
+            "outline: find all"
+        );
+        Ok(outline_items(&found, &values, viewport, key.max))
     }
 
     /// The web page of the window (its Document) and its bounds; the whole window if it has none.
@@ -895,19 +1199,27 @@ fn child_windows(hwnd: isize) -> Vec<ChildWindow> {
     out
 }
 
-/// Controls an outline lists.
-const OUTLINE_TYPES: &[ControlType] = &[
+/// Controls an outline lists even when scrolled away or disabled: form controls (the agent scrolls to them, and
+/// "(disabled)" on a Send button tells the model a field is missing). Spinners are the day/month/year parts of a
+/// date input; they are folded into their Edit, never listed.
+const FORM_TYPES: &[ControlType] = &[
     ControlType::Edit,
     ControlType::Button,
     ControlType::SplitButton,
     ControlType::CheckBox,
     ControlType::RadioButton,
     ControlType::ComboBox,
-    ControlType::Hyperlink,
-    ControlType::ListItem,
-    ControlType::MenuItem,
-    ControlType::TabItem,
+    ControlType::Spinner,
 ];
+
+/// Controls an outline lists only when on screen and enabled: the many links, list and menu items of a page
+/// (filtered by the browser itself, so they never cross to Pip). Idea from UFO `inspector.py` (MIT).
+const NAV_TYPES: &[ControlType] =
+    &[ControlType::Hyperlink, ControlType::ListItem, ControlType::MenuItem, ControlType::TabItem];
+
+/// Controls whose value, tick or selection the outline shows.
+const VALUED_TYPES: &[ControlType] =
+    &[ControlType::Edit, ControlType::ComboBox, ControlType::CheckBox, ControlType::RadioButton, ControlType::Spinner];
 
 fn control_type_of(role: &str) -> Option<ControlType> {
     Some(match role {
@@ -920,8 +1232,16 @@ fn control_type_of(role: &str) -> Option<ControlType> {
         "item" => ControlType::ListItem,
         "menuitem" => ControlType::MenuItem,
         "tab" => ControlType::TabItem,
+        "spinner" => ControlType::Spinner,
         _ => return None,
     })
+}
+
+/// The outline role of a live element ("button" for a Button or SplitButton, "spinner" for a date part); None
+/// for a type an outline never lists.
+fn role_of(e: &UIElement) -> Option<&'static str> {
+    let ct = e.get_control_type().ok()?;
+    if ct == ControlType::Spinner { Some("spinner") } else { outline_role(&format!("{ct:?}")) }
 }
 
 /// The window the user works in: the foreground window, or, when Pip's own window has the keyboard (the user
@@ -962,13 +1282,11 @@ fn outline_cache(uia: &UIAutomation) -> uiautomation::Result<UICacheRequest> {
     for p in [
         UIProperty::Name,
         UIProperty::ControlType,
+        UIProperty::LocalizedControlType,
         UIProperty::BoundingRectangle,
         UIProperty::IsOffscreen,
         UIProperty::IsEnabled,
         UIProperty::IsPassword,
-        UIProperty::ValueValue,
-        UIProperty::ToggleToggleState,
-        UIProperty::SelectionItemIsSelected,
         UIProperty::ProcessId,
     ] {
         cache.add_property(p)?;
@@ -976,20 +1294,105 @@ fn outline_cache(uia: &UIAutomation) -> uiautomation::Result<UICacheRequest> {
     Ok(cache)
 }
 
-/// Control elements of one of OUTLINE_TYPES.
-fn outline_condition(uia: &UIAutomation) -> uiautomation::Result<UICondition> {
+/// The second, small request: where an element is (to match it to the first) and what it holds.
+fn values_cache(uia: &UIAutomation) -> uiautomation::Result<UICacheRequest> {
+    let cache = uia.create_cache_request()?;
+    for p in [
+        UIProperty::ControlType,
+        UIProperty::BoundingRectangle,
+        UIProperty::ValueValue,
+        UIProperty::RangeValueValue,
+        UIProperty::ToggleToggleState,
+        UIProperty::SelectionItemIsSelected,
+    ] {
+        cache.add_property(p)?;
+    }
+    Ok(cache)
+}
+
+/// Control elements of one of these types.
+fn types_condition(uia: &UIAutomation, types: &[ControlType]) -> uiautomation::Result<UICondition> {
+    let control = uia.create_property_condition(UIProperty::IsControlElement, Variant::from(true), None)?;
+    match any_type(uia, types)? {
+        Some(a) => uia.create_and_condition(control, a),
+        None => Ok(control),
+    }
+}
+
+/// ControlType is one of these; None for an empty list.
+fn any_type(uia: &UIAutomation, types: &[ControlType]) -> uiautomation::Result<Option<UICondition>> {
     let mut any: Option<UICondition> = None;
-    for ct in OUTLINE_TYPES {
+    for ct in types {
         let c = uia.create_property_condition(UIProperty::ControlType, Variant::from(*ct as i32), None)?;
         any = Some(match any {
             Some(a) => uia.create_or_condition(a, c)?,
             None => c,
         });
     }
+    Ok(any)
+}
+
+/// Control elements of FORM_TYPES, and of NAV_TYPES when on screen and enabled.
+fn outline_condition(uia: &UIAutomation) -> uiautomation::Result<UICondition> {
     let control = uia.create_property_condition(UIProperty::IsControlElement, Variant::from(true), None)?;
+    let form = any_type(uia, FORM_TYPES)?;
+    let nav = match any_type(uia, NAV_TYPES)? {
+        Some(n) => {
+            let shown = uia.create_property_condition(UIProperty::IsOffscreen, Variant::from(false), None)?;
+            let enabled = uia.create_property_condition(UIProperty::IsEnabled, Variant::from(true), None)?;
+            Some(uia.create_and_condition(n, uia.create_and_condition(shown, enabled)?)?)
+        }
+        None => None,
+    };
+    let any = match (form, nav) {
+        (Some(f), Some(n)) => Some(uia.create_or_condition(f, n)?),
+        (f, n) => f.or(n),
+    };
     match any {
         Some(a) => uia.create_and_condition(control, a),
         None => Ok(control),
+    }
+}
+
+/// What a field, box or date part holds, from the second request.
+struct Valued {
+    rect: PhysRect,
+    control: ControlType,
+    value: Option<String>,
+    toggle: Option<i32>,
+    selected: Option<bool>,
+}
+
+impl Valued {
+    fn of(e: &UIElement) -> Option<Valued> {
+        let control = e.get_cached_control_type().ok()?;
+        let rect = phys(&e.get_cached_bounding_rectangle().ok()?);
+        let text = e
+            .get_cached_property_value(UIProperty::ValueValue)
+            .ok()
+            .filter(Variant::is_string)
+            .and_then(|v| v.get_string().ok());
+        // A date part may hold its number only as a range value (none or 0 while empty).
+        let number = e
+            .get_cached_property_value(UIProperty::RangeValueValue)
+            .ok()
+            .and_then(|v| TryInto::<f64>::try_into(&v).ok())
+            .filter(|n| n.is_finite() && *n > 0.0)
+            .map(|n| format!("{}", n.round() as i64));
+        let value = match control {
+            ControlType::Spinner => text.filter(|t| !t.trim().is_empty()).or(number),
+            _ => text,
+        };
+        Some(Valued {
+            rect,
+            control,
+            value,
+            toggle: e
+                .get_cached_property_value(UIProperty::ToggleToggleState)
+                .ok()
+                .and_then(|v| TryInto::<i32>::try_into(&v).ok()),
+            selected: cached_bool(e, UIProperty::SelectionItemIsSelected),
+        })
     }
 }
 
@@ -1008,24 +1411,34 @@ fn short(s: &str, max: usize) -> String {
 }
 
 /// Outline items from the elements FindAll found (cached properties only), in document order, numbered 1..,
-/// at most `max`; Pip's own windows skipped; never a password field's value.
-fn outline_items(found: &[UIElement], viewport: PhysRect, max: usize) -> Vec<OutlineItem> {
+/// at most `max`; Pip's own windows skipped; never a password field's value. `values` (the second request)
+/// gives the values, matched by place and type. The day/month/year parts (Spinner) of a date input are folded
+/// into its Edit: it is marked `is_date`, and when Edge gives the Edit no value, the parts tell what it shows
+/// ("TT.MM.JJJJ", "19.10.2026").
+fn outline_items(found: &[UIElement], values: &[Valued], viewport: PhysRect, max: usize) -> Vec<OutlineItem> {
     let me = std::process::id();
-    let mut out = Vec::new();
+    let held = |rect: PhysRect, ct: ControlType| values.iter().find(|v| v.rect == rect && v.control == ct);
+    let mut parts: Vec<(PhysRect, String, Option<String>)> = Vec::new();
+    let mut out: Vec<OutlineItem> = Vec::new();
     for e in found {
-        if out.len() >= max {
-            break;
-        }
         if e.get_cached_process_id().ok().map(|p| p as u32) == Some(me) {
             continue;
         }
         let Ok(ct) = e.get_cached_control_type() else { continue };
-        let Some(role) = outline_role(&format!("{ct:?}")) else { continue };
         let Ok(r) = e.get_cached_bounding_rectangle() else { continue };
         let rect = phys(&r);
         if rect.w <= 1 || rect.h <= 1 {
             continue; // hidden (a file input behind its label, a collapsed menu)
         }
+        if ct == ControlType::Spinner {
+            let name = short(&e.get_cached_name().unwrap_or_default(), 100);
+            parts.push((rect, name, held(rect, ct).and_then(|v| v.value.clone())));
+            continue;
+        }
+        if out.len() >= max {
+            break;
+        }
+        let Some(role) = outline_role(&format!("{ct:?}")) else { continue };
         let name = short(&e.get_cached_name().unwrap_or_default(), 100);
         if name.is_empty() && !matches!(role, "edit" | "combo" | "checkbox" | "radio") {
             continue; // decorative
@@ -1033,26 +1446,24 @@ fn outline_items(found: &[UIElement], viewport: PhysRect, max: usize) -> Vec<Out
         let is_password = cached_bool(e, UIProperty::IsPassword).unwrap_or(false);
         let center = PhysPoint { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
         let offscreen = cached_bool(e, UIProperty::IsOffscreen).unwrap_or(false) || !viewport.contains(center);
+        let localized_role =
+            e.get_cached_localized_control_type().ok().map(|l| short(&l, 40)).filter(|l| !l.is_empty());
+        let v = held(rect, ct);
         let value = if is_password {
             None
         } else {
             match role {
-                "checkbox" => e
-                    .get_cached_property_value(UIProperty::ToggleToggleState)
-                    .ok()
-                    .and_then(|v| TryInto::<i32>::try_into(&v).ok())
-                    .map(|t| if t == 1 { "checked" } else { "unchecked" }.to_string()),
-                "radio" => cached_bool(e, UIProperty::SelectionItemIsSelected)
-                    .map(|on| if on { "selected" } else { "not selected" }.to_string()),
-                "edit" | "combo" => e
-                    .get_cached_property_value(UIProperty::ValueValue)
-                    .ok()
-                    .filter(Variant::is_string)
-                    .and_then(|v| v.get_string().ok())
-                    .map(|v| short(&v, 60)),
+                "checkbox" => {
+                    v.and_then(|v| v.toggle).map(|t| if t == 1 { "checked" } else { "unchecked" }.to_string())
+                }
+                "radio" => {
+                    v.and_then(|v| v.selected).map(|on| if on { "selected" } else { "not selected" }.to_string())
+                }
+                "edit" | "combo" => v.and_then(|v| v.value.as_deref()).map(|t| short(t, 60)),
                 _ => None,
             }
         };
+        let is_date = role == "edit" && localized_role.as_deref().is_some_and(is_date_role);
         out.push(OutlineItem {
             id: out.len() as u32 + 1,
             role: role.to_string(),
@@ -1062,7 +1473,52 @@ fn outline_items(found: &[UIElement], viewport: PhysRect, max: usize) -> Vec<Out
             offscreen,
             enabled: cached_bool(e, UIProperty::IsEnabled).unwrap_or(true),
             is_password,
+            localized_role,
+            is_date,
         });
     }
+    fold_date_parts(&mut out, parts);
     out
+}
+
+/// Fold the date parts into the Edit around them (see `outline_items`).
+fn fold_date_parts(out: &mut [OutlineItem], parts: Vec<(PhysRect, String, Option<String>)>) {
+    if parts.is_empty() {
+        return;
+    }
+    let fields: Vec<PhysRect> = out
+        .iter()
+        .map(|i| if i.role == "edit" && !i.is_password { i.rect } else { PhysRect { x: 0, y: 0, w: 0, h: 0 } })
+        .collect();
+    let mut by_field: Vec<Vec<(PhysRect, String, Option<String>)>> = vec![Vec::new(); out.len()];
+    let mut orphans = 0;
+    for p in parts {
+        match owner_of(p.0, &fields) {
+            Some(i) => by_field[i].push(p),
+            None => orphans += 1,
+        }
+    }
+    if orphans > 0 {
+        tracing::debug!(orphans, "outline: date parts outside any listed field");
+    }
+    for (item, mut ps) in out.iter_mut().zip(by_field) {
+        if ps.is_empty() {
+            continue;
+        }
+        ps.sort_by_key(|(r, _, _)| (r.x, r.y));
+        let named: Vec<(String, Option<String>)> = ps.into_iter().map(|(_, n, v)| (n, v)).collect();
+        // A time input (hours, minutes) or a number field has spinner parts too: a date only when a part is a
+        // day, month or year (or the browser calls the field a date).
+        if !named.iter().any(|(n, _)| date_part(n).is_some()) && !item.is_date {
+            tracing::debug!(name = %item.name, parts = ?named, "outline: field with parts that are no date");
+            continue;
+        }
+        item.is_date = true;
+        if item.value.as_deref().is_none_or(|v| v.trim().is_empty())
+            && let Some(text) = date_text(&named)
+        {
+            item.value = Some(text);
+        }
+        tracing::debug!(name = %item.name, value = ?item.value, parts = named.len(), "outline: date input");
+    }
 }
