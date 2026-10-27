@@ -1,0 +1,201 @@
+{
+ "note": "UI Automation outline of fixtures/screens/demo-insurer.png (English demo form, 1600x1000), as Windows would report it. Rects are physical pixels.",
+ "image": "demo-insurer.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "Benefits",
+   "value": null,
+   "rect": {
+    "x": 1033,
+    "y": 62,
+    "w": 61,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "Join",
+   "value": null,
+   "rect": {
+    "x": 1117,
+    "y": 62,
+    "w": 29,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "Service",
+   "value": null,
+   "rect": {
+    "x": 1170,
+    "y": 62,
+    "w": 53,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "link",
+   "name": "Contact",
+   "value": null,
+   "rect": {
+    "x": 1247,
+    "y": 62,
+    "w": 63,
+    "h": 28
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "link",
+   "name": "Home",
+   "value": null,
+   "rect": {
+    "x": 278,
+    "y": 131,
+    "w": 40,
+    "h": 18
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "link",
+   "name": "Service",
+   "value": null,
+   "rect": {
+    "x": 330,
+    "y": 131,
+    "w": 46,
+    "h": 18
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "combo",
+   "name": "What is it about?",
+   "value": "Send a sick note",
+   "rect": {
+    "x": 307,
+    "y": 369,
+    "w": 646,
+    "h": 54
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "edit",
+   "name": "Full name",
+   "value": "",
+   "rect": {
+    "x": 307,
+    "y": 476,
+    "w": 314,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "edit",
+   "name": "Insurance number",
+   "value": "",
+   "rect": {
+    "x": 639,
+    "y": 476,
+    "w": 314,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 10,
+   "role": "edit",
+   "name": "Your message (optional)",
+   "value": "",
+   "rect": {
+    "x": 307,
+    "y": 609,
+    "w": 646,
+    "h": 84
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 11,
+   "role": "button",
+   "name": "Choose file",
+   "value": null,
+   "rect": {
+    "x": 327,
+    "y": 766,
+    "w": 179,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 12,
+   "role": "checkbox",
+   "name": "Send me a confirmation of receipt.",
+   "value": "checked",
+   "rect": {
+    "x": 311,
+    "y": 863,
+    "w": 25,
+    "h": 25
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 13,
+   "role": "button",
+   "name": "Submit",
+   "value": null,
+   "rect": {
+    "x": 794,
+    "y": 910,
+    "w": 159,
+    "h": 58
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

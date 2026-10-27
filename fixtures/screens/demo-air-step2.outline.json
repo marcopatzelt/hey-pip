@@ -1,0 +1,216 @@
+{
+ "note": "UI Automation outline of demo-air-step2.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-air/index.html?step2, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-air-step2.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "BX Beispiel Air Fly from Beispielstadt",
+   "value": null,
+   "rect": {
+    "x": 284,
+    "y": 50,
+    "w": 191,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "Book",
+   "value": null,
+   "rect": {
+    "x": 1044,
+    "y": 61,
+    "w": 38,
+    "h": 31
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "My trips",
+   "value": null,
+   "rect": {
+    "x": 1106,
+    "y": 61,
+    "w": 61,
+    "h": 31
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "link",
+   "name": "Check-in",
+   "value": null,
+   "rect": {
+    "x": 1191,
+    "y": 61,
+    "w": 64,
+    "h": 31
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "link",
+   "name": "Help",
+   "value": null,
+   "rect": {
+    "x": 1279,
+    "y": 61,
+    "w": 37,
+    "h": 31
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "text",
+   "name": "Claim compensation for a delayed or cancelled flight",
+   "value": null,
+   "rect": {
+    "x": 394,
+    "y": 138,
+    "w": 812,
+    "h": 42
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "edit",
+   "name": "Full name",
+   "value": "",
+   "rect": {
+    "x": 423,
+    "y": 322,
+    "w": 366,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "edit",
+   "name": "E-mail",
+   "value": "",
+   "rect": {
+    "x": 811,
+    "y": 322,
+    "w": 366,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "edit",
+   "name": "IBAN",
+   "value": "",
+   "rect": {
+    "x": 423,
+    "y": 424,
+    "w": 366,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 10,
+   "role": "radio",
+   "name": "Yes",
+   "value": "unchecked",
+   "rect": {
+    "x": 816,
+    "y": 436,
+    "w": 22,
+    "h": 22
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 11,
+   "role": "radio",
+   "name": "No",
+   "value": "unchecked",
+   "rect": {
+    "x": 912,
+    "y": 436,
+    "w": 22,
+    "h": 22
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 12,
+   "role": "button",
+   "name": "Upload boarding pass",
+   "value": null,
+   "rect": {
+    "x": 443,
+    "y": 540,
+    "w": 276,
+    "h": 51
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 13,
+   "role": "checkbox",
+   "name": "I confirm the information is correct",
+   "value": "unchecked",
+   "rect": {
+    "x": 427,
+    "y": 624,
+    "w": 22,
+    "h": 22
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 14,
+   "role": "button",
+   "name": "Send claim",
+   "value": null,
+   "rect": {
+    "x": 981,
+    "y": 665,
+    "w": 196,
+    "h": 56
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

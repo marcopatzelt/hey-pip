@@ -49,6 +49,25 @@ pub struct AuInfo {
     pub issued: Option<NaiveDate>,
 }
 
+/// An airline's notice about a delayed or cancelled flight (the EU 261 rule in `rules::flight` reads it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlightInfo {
+    pub airline: String,
+    /// "BX 2041", as printed.
+    pub flight_no: String,
+    /// Day of the (planned) departure.
+    pub date: NaiveDate,
+    /// IATA code if printed ("DUS"), else the city ("Düsseldorf").
+    pub from: String,
+    pub to: String,
+    /// Arrival delay in minutes, if the notice says.
+    pub delay_minutes: Option<u32>,
+    pub cancelled: bool,
+    /// Cancellation: days between the airline's notice and the departure.
+    pub notice_days: Option<u32>,
+    pub booking_ref: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtractedDeadline {
     pub title: String,
@@ -73,6 +92,9 @@ pub struct DocumentExtract {
     pub requests: Vec<String>,
     pub deadlines: Vec<ExtractedDeadline>,
     pub au: Option<AuInfo>,
+    /// Only on an airline's notice about a delayed or cancelled flight. Older stored extracts have no field.
+    #[serde(default)]
+    pub flight: Option<FlightInfo>,
     pub consequences_if_ignored: Option<String>,
     pub confidence: f32,
 }
@@ -118,6 +140,20 @@ pub fn extract_schema() -> Value {
         }),
         true,
     );
+    let flight = object(
+        json!({
+            "airline": string("The airline that wrote the notice, e.g. \"Beispiel Air\""),
+            "flight_no": string("Flight number as printed, e.g. \"BX 2041\""),
+            "date": string("Day of the planned departure, YYYY-MM-DD"),
+            "from": string("Departure airport: the IATA code if printed (e.g. \"DUS\"), else the city"),
+            "to": string("Arrival airport: the IATA code if printed (e.g. \"TFS\"), else the city"),
+            "delay_minutes": nullable("integer", "How many minutes late the flight ARRIVED, if the notice says"),
+            "cancelled": { "type": "boolean", "description": "true if the flight was cancelled" },
+            "notice_days": nullable("integer", "Cancellation only: days between the airline's notice and the planned departure"),
+            "booking_ref": nullable("string", "Booking reference (PNR), e.g. \"BX7Q2K\""),
+        }),
+        true,
+    );
     object(
         json!({
             "doc_type": { "type": "string", "enum": DOC_TYPES,
@@ -133,6 +169,7 @@ pub fn extract_schema() -> Value {
             "deadlines": { "type": "array", "items": deadline,
                 "description": "Only dates written in the letter by which the reader must do something. Never calculate dates." },
             "au": au,
+            "flight": flight,
             "consequences_if_ignored": nullable("string", "What happens if the reader does nothing, as stated in the letter"),
             "confidence": { "type": "number", "description": "How sure you are that you read everything correctly, 0.0 to 1.0" },
         }),
@@ -205,6 +242,17 @@ pub fn validate(extract: &mut DocumentExtract) -> Vec<String> {
                 warnings.push("sick note issue date implausible; dropped".into());
                 au.issued = None;
             }
+        }
+    }
+    if let Some(f) = &mut extract.flight {
+        if !plausible(f.date) {
+            warnings.push("flight date outside 2000..2100; flight dropped".into());
+            extract.flight = None;
+        } else {
+            for s in [&mut f.airline, &mut f.flight_no, &mut f.from, &mut f.to] {
+                *s = s.trim().to_string();
+            }
+            f.booking_ref = f.booking_ref.take().map(|r| r.trim().to_string()).filter(present);
         }
     }
     match (extract.doc_type, extract.au.is_some()) {
@@ -297,9 +345,53 @@ pub(crate) fn from_model_value(mut v: Value) -> anyhow::Result<(DocumentExtract,
         Value::Null
     };
     obj.insert("au".into(), au);
+    let flight = flight_from_model(obj.get("flight").unwrap_or(&Value::Null));
+    obj.insert("flight".into(), flight);
 
     let extract: DocumentExtract = serde_json::from_value(v)?;
     Ok((extract, letter_text))
+}
+
+/// The model's `flight` object made tolerant: no readable date or no flight number -> null (never an error);
+/// numbers given as text are read, negative or broken numbers become null.
+fn flight_from_model(f: &Value) -> Value {
+    if !f.is_object() {
+        return Value::Null;
+    }
+    let text = |k: &str| match f.get(k) {
+        Some(Value::String(s)) => s.trim().to_string(),
+        Some(Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    };
+    let number = |k: &str| match f.get(k) {
+        Some(Value::Number(n)) => n.as_f64().filter(|v| *v >= 0.0 && *v < 1e6).map(|v| v.round() as u32),
+        Some(Value::String(s)) => {
+            s.trim().parse::<f64>().ok().filter(|v| *v >= 0.0 && *v < 1e6).map(|v| v.round() as u32)
+        }
+        _ => None,
+    };
+    let Some(date) = f.get("date").and_then(Value::as_str).and_then(normalize_date) else { return Value::Null };
+    let flight_no = text("flight_no");
+    if flight_no.is_empty() || flight_no.eq_ignore_ascii_case("null") {
+        return Value::Null;
+    }
+    let cancelled = match f.get("cancelled") {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => matches!(s.trim().to_lowercase().as_str(), "true" | "yes" | "ja"),
+        _ => false,
+    };
+    let booking = text("booking_ref");
+    json!({
+        "airline": text("airline"),
+        "flight_no": flight_no,
+        "date": date,
+        "from": text("from"),
+        "to": text("to"),
+        "delay_minutes": number("delay_minutes"),
+        "cancelled": cancelled,
+        "notice_days": number("notice_days"),
+        "booking_ref": if booking.is_empty() || booking.eq_ignore_ascii_case("null") { Value::Null } else { Value::String(booking) },
+    })
 }
 
 /// "2026-10-30", "30.10.2026", "30.10.26", "2026-10-30T00:00:00Z" -> "2026-10-30". Anything else -> None.
@@ -352,6 +444,7 @@ mod tests {
                 first_or_follow: AuKind::Erst,
                 issued: None,
             }),
+            flight: None,
             consequences_if_ignored: None,
             confidence: 0.9,
         }
@@ -387,6 +480,7 @@ mod tests {
         b.sort();
         assert_eq!(a, b, "schema fields == DocumentExtract fields");
         assert_eq!(schema["properties"]["au"]["type"], json!(["object", "null"]));
+        assert_eq!(schema["properties"]["flight"]["type"], json!(["object", "null"]));
         assert_eq!(schema["properties"]["doc_type"]["enum"].as_array().unwrap().len(), DOC_TYPES.len());
         for t in DOC_TYPES {
             assert_eq!(DocType::parse(t).unwrap().as_str(), *t);
@@ -495,6 +589,40 @@ mod tests {
         assert_eq!(e.doc_type, DocType::Sonstiges);
         assert!(e.au.is_none() && e.deadlines.is_empty() && text.is_empty());
         assert!(from_model_value(json!([1, 2])).is_err());
+    }
+
+    #[test]
+    fn flight_block_is_read_tolerantly() {
+        let v = json!({
+            "doc_type": "brief", "sender": "Beispiel Air", "summary_simple": "Your flight was late.",
+            "flight": {"airline": "Beispiel Air", "flight_no": "BX 2041", "date": "03.10.2026", "from": "DUS",
+                "to": "TFS", "delay_minutes": "250", "cancelled": false, "notice_days": null, "booking_ref": "BX7Q2K"},
+        });
+        let (e, _) = from_model_value(v).unwrap();
+        let f = e.flight.unwrap();
+        assert_eq!((f.flight_no.as_str(), f.date, f.delay_minutes), ("BX 2041", d("2026-10-03"), Some(250)));
+        assert_eq!(
+            (f.from.as_str(), f.to.as_str(), f.cancelled, f.booking_ref.as_deref()),
+            ("DUS", "TFS", false, Some("BX7Q2K"))
+        );
+        // A bad date or a missing flight number: no flight, never an error.
+        for broken in [json!({"flight_no": "BX 1", "date": "soon"}), json!({"date": "2026-10-03"}), json!("BX 1")] {
+            let (e, _) = from_model_value(json!({"doc_type": "brief", "flight": broken})).unwrap();
+            assert!(e.flight.is_none());
+        }
+        let (e, _) = from_model_value(json!({"doc_type": "brief",
+            "flight": {"flight_no": "BX 9", "date": "2026-10-03", "cancelled": "true", "notice_days": -3, "delay_minutes": 1.5}}))
+        .unwrap();
+        let f = e.flight.unwrap();
+        assert!(f.cancelled && f.notice_days.is_none() && f.delay_minutes == Some(2));
+    }
+
+    #[test]
+    fn old_stored_extracts_still_parse() {
+        let mut v = serde_json::to_value(sample()).unwrap();
+        v.as_object_mut().unwrap().remove("flight");
+        let e: DocumentExtract = serde_json::from_value(v).unwrap();
+        assert!(e.flight.is_none());
     }
 
     #[test]

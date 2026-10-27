@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sampletown Library – My loans</title>
+<!-- Second INVENTED busy page for the click-target eval (picture-only grounding), the light twin of index.html: a
+     LIGHT header with a 24 px magnifier icon button, a WHITE notice bar with a small "×", three similar outlined
+     buttons in a row (the middle one is "Print") and a GREY link inside running text. Same four target ids as
+     demo-busy (icon_button, close_x, print_button, text_link), other places, colours and sizes. Nothing leaves the page.
+     Switch (fixture screenshots only): ?mark paints the four targets in solid colours. -->
+<style>
+  :root { --ink: #222a31; --muted: #6a737c; --line: #e2e6ea; --bg: #fafbfc; --accent: #2f6f62; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 17px/1.55 "Segoe UI", system-ui, -apple-system, Arial, sans-serif; color: var(--ink); background: var(--bg); }
+  header { background: #f4f6f8; border-bottom: 1px solid var(--line); }
+  .top { max-width: 1180px; margin: 0 auto; padding: 12px 24px; display: flex; align-items: center; gap: 26px; }
+  .crest { width: 36px; height: 36px; border-radius: 50%; background: var(--accent); display: grid; place-items: center; font-weight: 700; color: #fff; }
+  .brand b { display: block; font-size: 20px; line-height: 1.1; }
+  .brand span { font-size: 12px; color: var(--muted); }
+  nav { display: flex; gap: 22px; margin-left: auto; }
+  nav a { color: #46505a; text-decoration: none; font-size: 15px; }
+  .icon-btn { width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #7b858f; display: grid; place-items: center; cursor: pointer; }
+  .icon-btn svg { width: 18px; height: 18px; }
+  .notice { background: #fff; border-bottom: 1px solid var(--line); color: #4a535c; }
+  .notice .in { max-width: 1180px; margin: 0 auto; padding: 8px 24px; display: flex; align-items: center; gap: 12px; font-size: 15px; }
+  .close-x { margin-left: auto; width: 20px; height: 20px; padding: 0; border: 0; background: transparent; color: #9aa3ab; font-size: 17px; line-height: 1; cursor: pointer; }
+  main { max-width: 1180px; margin: 0 auto; padding: 22px 24px 30px; display: grid; grid-template-columns: 1fr 300px; gap: 26px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 20px 24px; margin-bottom: 18px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  .meta { color: var(--muted); font-size: 14px; margin-bottom: 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; margin-bottom: 16px; }
+  th, td { padding: 7px 10px; border-bottom: 1px solid #f0f2f4; text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: 14px; }
+  .tools { display: flex; gap: 10px; }
+  .tool { font: inherit; font-size: 15px; padding: 6px 16px; border-radius: 6px; border: 1px solid #c9d0d6; background: #fff; color: #39424b; cursor: pointer; }
+  p .soft { color: #8a939b; text-decoration: underline; text-decoration-color: #c9d0d6; }
+  aside { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 15px; align-self: start; }
+  aside h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 0 0 8px; }
+  aside a { display: block; color: #39424b; text-decoration: none; padding: 5px 0; border-bottom: 1px solid #f0f2f4; }
+  footer { text-align: center; font-size: 13px; color: var(--muted); padding: 0 24px 24px; }
+  .mark #search { background: #f00 !important; color: #f00 !important; }
+  .mark #close-notice { background: #0f0 !important; color: #0f0 !important; }
+  .mark #print { background: #00f !important; color: #00f !important; border-color: #00f !important; }
+  .mark #renew-link { background: #f0f !important; color: #f0f !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <div class="crest">S</div>
+    <div class="brand"><b>Sampletown Library</b><span>Your account</span></div>
+    <nav><a href="#">Catalogue</a><a href="#">Events</a><a href="#">My loans</a><a href="#">Help</a></nav>
+    <button class="icon-btn" id="search" type="button" aria-label="Search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>
+    </button>
+  </div>
+</header>
+<div class="notice" role="note"><div class="in">
+  <span>New opening hours from 2 November: Monday to Saturday 9:00 to 19:00.</span>
+  <button class="close-x" id="close-notice" type="button" aria-label="Close notice">×</button>
+</div></div>
+
+<main>
+  <section>
+    <div class="card">
+      <h1>My loans</h1>
+      <div class="meta">Library card 4402 1187 · 3 items</div>
+      <table>
+        <tr><th>Title</th><th>Due</th><th>Renewals</th></tr>
+        <tr><td>Gardening for Beginners</td><td>4 November 2026</td><td>1 of 3</td></tr>
+        <tr><td>The Big Book of Soups</td><td>11 November 2026</td><td>0 of 3</td></tr>
+        <tr><td>Walks around Sampletown</td><td>18 November 2026</td><td>2 of 3</td></tr>
+      </table>
+      <div class="tools">
+        <button class="tool" id="export" type="button">Export</button>
+        <button class="tool" id="print" type="button">Print</button>
+        <button class="tool" id="email" type="button">E-mail</button>
+      </div>
+    </div>
+    <div class="card">
+      <p style="margin:0">Items can be renewed three times unless someone has reserved them. To keep a book longer,
+      open <a href="#" class="soft" id="renew-link">the renewal page</a> before the due date; late fees are 0.20 euros
+      a day.</p>
+    </div>
+  </section>
+  <aside>
+    <h2>Account</h2>
+    <a href="#">Reservations</a>
+    <a href="#">Reading history</a>
+    <a href="#">Fees (0.00 euros)</a>
+    <a href="#">Settings</a>
+  </aside>
+</main>
+<footer>Sampletown Library is invented. Invented example for tests; no data leaves the computer.</footer>
+<script>
+  if (new URLSearchParams(location.search).has("mark")) document.body.classList.add("mark");
+</script>
+</body>
+</html>

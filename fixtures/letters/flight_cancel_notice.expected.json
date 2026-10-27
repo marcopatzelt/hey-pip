@@ -1,0 +1,22 @@
+{
+  "doc_type": "brief",
+  "date": "2026-10-26",
+  "reference": "BX9R3T",
+  "sender_contains": "Beispiel Air",
+  "recipient_contains": "Erika Beispiel",
+  "au": null,
+  "flight": {
+    "airline": "Beispiel Air",
+    "flight_no": "BX 2305",
+    "date": "2026-11-20",
+    "from": "CGN",
+    "to": "LIS",
+    "cancelled": true,
+    "notice_days": 25,
+    "booking_ref": "BX9R3T"
+  },
+  "deadlines_due": [],
+  "rule_deadlines": [],
+  "tip": null,
+  "note": "Cancelled 25 days before departure (more than 14 days' notice) and rebooked the same day: no tip, no claim deadline. The e-mail is dated on the rule clock's day (26.10.2026) so it is not in the future."
+}

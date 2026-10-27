@@ -1,0 +1,22 @@
+{
+  "doc_type": "brief",
+  "date": "2026-10-13",
+  "reference": "BX4M8P",
+  "sender_contains": "Beispiel Air",
+  "recipient_contains": "Erika Beispiel",
+  "au": null,
+  "flight": {
+    "airline": "Beispiel Air",
+    "flight_no": "BX 1180",
+    "date": "2026-10-12",
+    "from": "DUS",
+    "to": "PMI",
+    "delay_minutes": 80,
+    "cancelled": false,
+    "booking_ref": "BX4M8P"
+  },
+  "deadlines_due": [],
+  "rule_deadlines": [],
+  "tip": null,
+  "note": "Only 1 h 20 min late: under the 3 hours of EU 261, so no tip and no claim deadline."
+}

@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beispiel Air – Entschädigung beantragen</title>
+<!-- Variant of the INVENTED airline's claim form for evals: ONE page, German labels in another order than
+     demo-air (Flugnummer, Flugdatum, Buchungsnummer; then Name, E-Mail, IBAN), a cookie banner covers the form until
+     one of its buttons is clicked ("Nur notwendige" / "Alle akzeptieren"), the date is a TEXT field with the mask
+     TT.MM.JJJJ, "Gutschein erhalten?" Ja / Nein, "Bordkarte hochladen", "Antrag absenden" top right. The IBAN refuses
+     spaces ("Bitte geben Sie die IBAN ohne Leerzeichen ein."). Nothing is sent anywhere.
+     Switches (fixture screenshots only, fixtures/screens/make_outline.py): ?popup (the banner; also the default),
+     ?fill (no banner; only the flight, the booking number and the name), ?error (filled with an IBAN with spaces, after "Antrag absenden"), ?thanks. -->
+<style>
+  :root {
+    --red: #c8102e; --red-dark: #8e0b20; --navy: #1d2b4f;
+    --ink: #1d2433; --muted: #5d6779; --line: #d3d9e4; --bg: #f3f5f9; --error: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 18px/1.5 "Segoe UI", system-ui, -apple-system, Arial, sans-serif; color: var(--ink); background: var(--bg); }
+  .demo-bar { background: #fff4d6; color: #6b4e00; text-align: center; font-size: 15px; padding: 6px 16px; border-bottom: 1px solid #f0dca0; }
+  header { background: #fff; border-bottom: 1px solid var(--line); }
+  .top { max-width: 1080px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 32px; }
+  .logo { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--red); }
+  .logo-mark { width: 44px; height: 44px; border-radius: 8px; background: var(--red); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 22px; }
+  .logo-text b { display: block; font-size: 24px; line-height: 1.1; }
+  .logo-text span { font-size: 13px; color: var(--muted); }
+  nav { display: flex; gap: 24px; margin-left: auto; }
+  nav a { color: var(--ink); text-decoration: none; font-size: 16px; }
+  nav a.active { color: var(--red); font-weight: 600; border-bottom: 3px solid var(--red); padding-bottom: 4px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 18px 24px 40px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 22px 28px; }
+  .card-head { display: flex; align-items: center; gap: 24px; margin-bottom: 16px; }
+  .card-head h1 { font-size: 28px; margin: 0; }
+  .card-head p { margin: 2px 0 0; color: var(--muted); font-size: 16px; }
+  .card-head .grow { flex: 1; }
+  .btn-submit {
+    font: inherit; font-size: 20px; font-weight: 700; padding: 12px 32px; border-radius: 10px; border: 0; cursor: pointer;
+    background: var(--red); color: #fff; box-shadow: 0 3px 0 var(--red-dark); white-space: nowrap;
+  }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0 18px; }
+  .field { margin-bottom: 16px; }
+  .lbl { display: block; font-weight: 600; margin-bottom: 6px; }
+  .hint { font-size: 14px; color: var(--muted); margin-top: 4px; }
+  input[type=text], input[type=email] {
+    width: 100%; font: inherit; padding: 11px 14px; border: 2px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink);
+  }
+  .radios { display: flex; gap: 28px; padding-top: 8px; }
+  .radios label { display: flex; gap: 10px; align-items: center; }
+  .radios input { width: 22px; height: 22px; accent-color: var(--navy); }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 12px 18px; display: flex; align-items: center; gap: 18px; background: #fafbfd; }
+  .file-input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .btn-file {
+    display: inline-flex; align-items: center; gap: 10px; padding: 10px 22px; border-radius: 8px; cursor: pointer;
+    border: 2px solid var(--navy); color: var(--navy); background: #fff; font-weight: 600; white-space: nowrap;
+  }
+  .file-name { color: var(--muted); font-size: 16px; }
+  .file-name.chosen { color: var(--ink); font-weight: 600; }
+  .error { color: var(--error); font-size: 15px; margin-top: 6px; display: none; }
+  .invalid .error { display: block; }
+  .invalid input[type=text], .invalid input[type=email] { border-color: var(--error); }
+  #thanks { display: none; }
+  .done #form-view { display: none; }
+  .done #thanks { display: block; }
+  .ok { width: 64px; height: 64px; border-radius: 50%; background: var(--navy); color: #fff; display: grid; place-items: center; font-size: 36px; margin-bottom: 12px; }
+  footer { text-align: center; font-size: 14px; color: var(--muted); padding: 0 24px 32px; }
+  /* The cookie banner covers the whole page until one button is clicked. */
+  #cookies { position: fixed; inset: 0; background: rgba(20, 24, 40, 0.55); display: grid; place-items: center; z-index: 10; }
+  #cookies .box { background: #fff; border-radius: 14px; padding: 28px 32px; width: 640px; box-shadow: 0 10px 40px rgba(0,0,0,.3); }
+  #cookies h2 { margin: 0 0 8px; font-size: 24px; }
+  #cookies p { margin: 0 0 20px; color: var(--muted); font-size: 16px; }
+  #cookies .btns { display: flex; gap: 14px; justify-content: flex-end; }
+  #cookies button { font: inherit; font-weight: 600; padding: 12px 24px; border-radius: 8px; cursor: pointer; }
+  #cookie-necessary { background: #fff; border: 2px solid var(--navy); color: var(--navy); }
+  #cookie-all { background: var(--red); border: 2px solid var(--red); color: #fff; }
+  .consent #cookies { display: none; }
+</style>
+</head>
+<body>
+<div class="demo-bar">Demo-Seite einer erfundenen Fluggesellschaft. Es wird nichts gesendet.</div>
+<header>
+  <div class="top">
+    <a class="logo" href="#"><div class="logo-mark">BX</div><div class="logo-text"><b>Beispiel Air</b><span>Ab Beispielstadt in die Sonne</span></div></a>
+    <nav><a href="#">Buchen</a><a href="#">Meine Reisen</a><a href="#">Check-in</a><a class="active" href="#">Hilfe</a></nav>
+  </div>
+</header>
+
+<main>
+  <section id="form-view">
+    <form class="card" id="form" novalidate>
+      <div class="card-head">
+        <div class="grow">
+          <h1>Entschädigung bei Verspätung oder Annullierung</h1>
+          <p>Alle Felder sind Pflichtfelder. Halten Sie Ihre Buchungsnummer und Ihre Bordkarte bereit.</p>
+        </div>
+        <button type="submit" class="btn-submit" id="submit">Antrag absenden</button>
+      </div>
+      <div class="grid">
+        <div class="field" id="w-flight">
+          <label class="lbl" for="f-flight">Flugnummer</label>
+          <input type="text" id="f-flight" name="flight" placeholder="z. B. BX 1234">
+          <div class="error">Bitte Flugnummer eingeben.</div>
+        </div>
+        <div class="field" id="w-date">
+          <label class="lbl" for="f-date">Flugdatum</label>
+          <input type="text" id="f-date" name="date" placeholder="TT.MM.JJJJ" maxlength="10" inputmode="numeric">
+          <div class="error">Bitte Datum als TT.MM.JJJJ eingeben.</div>
+        </div>
+        <div class="field" id="w-ref">
+          <label class="lbl" for="f-ref">Buchungsnummer</label>
+          <input type="text" id="f-ref" name="ref" maxlength="6" autocomplete="off">
+          <div class="error">Bitte Buchungsnummer eingeben (6 Zeichen).</div>
+        </div>
+        <div class="field" id="w-name">
+          <label class="lbl" for="f-name">Vor- und Nachname</label>
+          <input type="text" id="f-name" name="name" autocomplete="name">
+          <div class="error">Bitte Vor- und Nachname eingeben.</div>
+        </div>
+        <div class="field" id="w-email">
+          <label class="lbl" for="f-email">E-Mail-Adresse</label>
+          <input type="email" id="f-email" name="email" autocomplete="email">
+          <div class="error">Bitte E-Mail-Adresse eingeben.</div>
+        </div>
+        <div class="field" id="w-iban">
+          <label class="lbl" for="f-iban">IBAN</label>
+          <input type="text" id="f-iban" name="iban" autocomplete="off">
+          <div class="error">Bitte geben Sie die IBAN ohne Leerzeichen ein.</div>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="field" id="w-voucher">
+          <span class="lbl">Gutschein erhalten?</span>
+          <div class="radios">
+            <label><input type="radio" name="voucher" value="ja" id="f-voucher-ja"> Ja</label>
+            <label><input type="radio" name="voucher" value="nein" id="f-voucher-nein"> Nein</label>
+          </div>
+          <div class="error">Bitte beantworten: Gutschein erhalten?</div>
+        </div>
+        <div class="field" id="w-file" style="grid-column: span 2">
+          <span class="lbl">Bordkarte (PDF, JPG oder PNG)</span>
+          <div class="drop">
+            <input class="file-input" type="file" id="f-pass" name="pass" accept=".pdf,.jpg,.jpeg,.png">
+            <label class="btn-file" for="f-pass"><span aria-hidden="true">📎</span><span>Bordkarte hochladen</span></label>
+            <span class="file-name" id="file-name">Noch keine Datei gewählt</span>
+          </div>
+        </div>
+      </div>
+    </form>
+  </section>
+
+  <section id="thanks" aria-live="polite">
+    <div class="card">
+      <div class="ok">✓</div>
+      <h1>Vielen Dank, Ihr Antrag <span id="t-ref">BX7Q2K</span> ist am <span id="t-when"></span> eingegangen</h1>
+      <p>Wir antworten per E-Mail innerhalb von 6 Wochen. Sie müssen nichts weiter tun.</p>
+    </div>
+  </section>
+</main>
+<footer>Beispiel Air is invented. Invented example for tests; no data leaves the computer.</footer>
+
+<div id="cookies" role="dialog" aria-label="Cookies">
+  <div class="box">
+    <h2>Wir verwenden Cookies</h2>
+    <p>Einige Cookies sind für diese Seite nötig. Mit Ihrer Zustimmung nutzen wir auch Cookies für Statistiken.</p>
+    <div class="btns">
+      <button type="button" id="cookie-necessary">Nur notwendige</button>
+      <button type="button" id="cookie-all">Alle akzeptieren</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  const consent = () => document.body.classList.add("consent");
+  $("cookie-necessary").addEventListener("click", consent);
+  $("cookie-all").addEventListener("click", consent);
+  const file = $("f-pass"), fileName = $("file-name");
+  file.addEventListener("change", () => {
+    const f = file.files[0];
+    fileName.textContent = f ? f.name : "Noch keine Datei gewählt";
+    fileName.classList.toggle("chosen", !!f);
+  });
+  // TT.MM.JJJJ: the dots are typed in for the user ("03102026" -> "03.10.2026").
+  $("f-date").addEventListener("input", () => {
+    const d = $("f-date").value.replace(/\D/g, "").slice(0, 8);
+    $("f-date").value = [d.slice(0, 2), d.slice(2, 4), d.slice(4)].filter(Boolean).join(".");
+  });
+
+  $("form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const iban = $("f-iban").value;
+    const checks = [
+      ["w-flight", !!$("f-flight").value.trim()],
+      ["w-date", /^\d{2}\.\d{2}\.\d{4}$/.test($("f-date").value.trim())],
+      ["w-ref", /^[A-Za-z0-9]{6}$/.test($("f-ref").value.trim())],
+      ["w-name", !!$("f-name").value.trim()],
+      ["w-email", /@/.test($("f-email").value)],
+      ["w-iban", !!iban.trim() && !/\s/.test(iban)],
+      ["w-voucher", !!document.querySelector('input[name="voucher"]:checked')],
+    ];
+    let ok = true;
+    for (const [id, good] of checks) {
+      $(id).classList.toggle("invalid", !good);
+      if (!good) ok = false;
+    }
+    if (!ok) return;
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    $("t-ref").textContent = $("f-ref").value.trim().toUpperCase();
+    $("t-when").textContent = `${pad(now.getDate())}.${pad(now.getMonth() + 1)}.${now.getFullYear()} um ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    document.body.classList.add("done");
+  });
+
+  // Fixture screenshots only (fake file name, no real file).
+  // ?fill shows only what memory knows (the flight notice and the name): Pip must ask for the e-mail and the IBAN,
+  // not read them off the picture. ?error is the whole form with an IBAN with spaces.
+  if (params.has("fill") || params.has("thanks") || params.has("error")) {
+    consent();
+    $("f-flight").value = "BX 2041";
+    $("f-date").value = "03.10.2026";
+    $("f-ref").value = "BX7Q2K";
+    $("f-name").value = "Erika Beispiel";
+  }
+  if (params.has("error")) {
+    $("f-email").value = "erika.beispiel@example.com";
+    $("f-iban").value = "DE02 1203 0000 0000 2020 51";
+    $("f-voucher-nein").checked = true;
+    fileName.textContent = "boarding_pass_bx2041.pdf";
+    fileName.classList.add("chosen");
+  }
+  if (params.has("error")) $("submit").click();
+  if (params.has("thanks")) {
+    $("t-when").textContent = "29.10.2026 um 18:06";
+    document.body.classList.add("done");
+  }
+})();
+</script>
+</body>
+</html>

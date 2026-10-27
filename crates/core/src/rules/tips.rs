@@ -12,6 +12,7 @@ use anyhow::Result;
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate};
 
 use super::au::{au_due, au_end};
+use super::flight::{self, Claim, EU261_RULE, Reason};
 use super::text::{fmt_date, weekday_name};
 use crate::docs::{DocType, DocumentExtract};
 use crate::i18n::Lang;
@@ -49,9 +50,14 @@ pub enum Trigger {
     BescheidWithRechtsbehelf,
     /// An open deadline of this rule id, due within this many days (daily brief).
     DeadlineWithin(i64, &'static str),
+    /// An airline's notice whose flight may give money under EU 261 (`flight::eu261` is Some).
+    FlightClaim,
+    /// An open deadline of this rule id, whatever its due date (daily brief; a claim is due years ahead).
+    OpenDeadline(&'static str),
 }
 
-/// One curated rule. Placeholders: `{due}`, `{until}` (dates like "Monday, 2 November").
+/// One curated rule. Placeholders: `{due}`, `{until}` (dates like "Monday, 2 November"); the flight rule:
+/// `{flight}`, `{date}`, `{hours}`, `{amount}`, `{airline}`, `{notice}`.
 #[derive(Debug, Clone, Copy)]
 pub struct TipRule {
     pub id: &'static str,
@@ -68,8 +74,29 @@ pub struct TipRule {
     pub region: Option<&'static str>,
 }
 
-/// The curated table. The first rule that fits wins.
+/// The curated table. The first rule that fits wins: money first (a claim in the brief before the sick-note gap).
 pub const TIPS: &[TipRule] = &[
+    TipRule {
+        id: "eu261_delay",
+        triggers: &[Trigger::FlightClaim, Trigger::OpenDeadline(EU261_RULE)],
+        text_en: "Good to know: your flight {flight} on {date} arrived about {hours} hours late. Under EU rule 261/2004 \
+                  you may be owed EUR {amount} from {airline}. The airline can refuse this in extraordinary \
+                  circumstances, for example a storm. Please check.",
+        text_de: "Gut zu wissen: Dein Flug {flight} am {date} ist etwa {hours} Stunden zu spät angekommen. Nach der \
+                  EU-Regel 261/2004 stehen dir dafür vielleicht {amount} Euro von {airline} zu. Die Fluggesellschaft \
+                  kann das bei außergewöhnlichen Umständen ablehnen, zum Beispiel bei einem Sturm. Bitte prüf das nach.",
+        brief_en: Some(
+            "Good to know: your flight {flight} on {date} was about {hours} hours late; under EU rule 261/2004 you may \
+             be owed EUR {amount} from {airline}; please check.",
+        ),
+        brief_de: Some(
+            "Gut zu wissen: Dein Flug {flight} am {date} war etwa {hours} Stunden zu spät; nach der EU-Regel 261/2004 \
+             stehen dir vielleicht {amount} Euro von {airline} zu; bitte prüf das nach.",
+        ),
+        source: flight::EU261_SOURCE,
+        url: flight::EU261_URL,
+        region: None,
+    },
     TipRule {
         id: "au_gap",
         triggers: &[Trigger::AuLetter, Trigger::DeadlineWithin(BRIEF_TIP_DAYS, "au_lueckenlos")],
@@ -106,6 +133,27 @@ pub const TIPS: &[TipRule] = &[
     },
 ];
 
+/// The cancellation wording of `eu261_delay` (letter, brief): notice known, notice unknown.
+const CANCEL_EN: &str = "Good to know: your flight {flight} on {date} was cancelled only {notice} days before departure. \
+                         Under EU rule 261/2004 you may be owed EUR {amount} from {airline}. The airline can refuse \
+                         this in extraordinary circumstances, for example a storm. Please check.";
+const CANCEL_DE: &str = "Gut zu wissen: Dein Flug {flight} am {date} wurde nur {notice} Tage vor dem Abflug gestrichen. \
+                         Nach der EU-Regel 261/2004 stehen dir dafür vielleicht {amount} Euro von {airline} zu. Die \
+                         Fluggesellschaft kann das bei außergewöhnlichen Umständen ablehnen, zum Beispiel bei einem \
+                         Sturm. Bitte prüf das nach.";
+const CANCEL_UNKNOWN_EN: &str = "Good to know: your flight {flight} on {date} was cancelled. If you were told less than \
+                                 14 days before departure, under EU rule 261/2004 you may be owed EUR {amount} from \
+                                 {airline}. The airline can refuse this in extraordinary circumstances, for example a \
+                                 storm. Please check.";
+const CANCEL_UNKNOWN_DE: &str = "Gut zu wissen: Dein Flug {flight} am {date} wurde gestrichen. Wenn du das weniger als \
+                                 14 Tage vor dem Abflug erfahren hast, stehen dir nach der EU-Regel 261/2004 vielleicht \
+                                 {amount} Euro von {airline} zu. Die Fluggesellschaft kann das bei außergewöhnlichen \
+                                 Umständen ablehnen, zum Beispiel bei einem Sturm. Bitte prüf das nach.";
+const CANCEL_BRIEF_EN: &str = "Good to know: your flight {flight} on {date} was cancelled at short notice; under EU rule \
+                               261/2004 you may be owed EUR {amount} from {airline}; please check.";
+const CANCEL_BRIEF_DE: &str = "Gut zu wissen: Dein Flug {flight} am {date} wurde kurzfristig gestrichen; nach der \
+                               EU-Regel 261/2004 stehen dir vielleicht {amount} Euro von {airline} zu; bitte prüf das nach.";
+
 /// Profile key `tips` is "off": no tip anywhere.
 pub fn tips_off(mem: &Memory) -> Result<bool> {
     Ok(mem.profile_get("tips")?.is_some_and(|v| v.trim().eq_ignore_ascii_case("off")))
@@ -126,7 +174,11 @@ pub fn for_letter(extract: &DocumentExtract, deadlines: &[Deadline], today: Naiv
                     && deadlines.iter().any(|d| d.rule_id.as_deref() == Some("widerspruch_bescheid"));
                 has.then(|| fill_tip(rule, text_of(rule, lang), &[], None))
             }
-            Trigger::DeadlineWithin(..) => None,
+            Trigger::FlightClaim => {
+                let (f, c) = flight::claim_of(extract)?;
+                (flight::claim_due(f) >= today).then(|| flight_tip(rule, f, &c, lang, false, None))
+            }
+            Trigger::DeadlineWithin(..) | Trigger::OpenDeadline(_) => None,
         })
     })
 }
@@ -160,10 +212,22 @@ pub fn for_brief(mem: &Memory, now: DateTime<Local>, lang: Lang) -> Result<Optio
     for rule in TIPS {
         let Some(text) = brief_of(rule, lang) else { continue };
         for trigger in rule.triggers {
-            let Trigger::DeadlineWithin(days, rule_id) = *trigger else { continue };
             if shown(rule.id) {
                 continue;
             }
+            if let Trigger::OpenDeadline(rule_id) = *trigger {
+                let mut claims: Vec<&Deadline> =
+                    open.iter().filter(|d| d.rule_id.as_deref() == Some(rule_id) && d.due >= today).collect();
+                claims.sort_by_key(|d| (d.due, d.id));
+                for dl in claims {
+                    let Some(row) = dl.doc_id.map(|id| mem.document_by_id(id)).transpose()?.flatten() else { continue };
+                    if let Some((f, c)) = flight::claim_of(&row.extract) {
+                        return Ok(Some(flight_tip(rule, f, &c, lang, true, Some(dl.id))));
+                    }
+                }
+                continue;
+            }
+            let Trigger::DeadlineWithin(days, rule_id) = *trigger else { continue };
             let near = open
                 .iter()
                 .filter(|d| {
@@ -205,6 +269,45 @@ fn brief_of(rule: &TipRule, lang: Lang) -> Option<&'static str> {
 
 fn tip(rule: &TipRule, text: &str, lang: Lang, due: NaiveDate, until: NaiveDate, deadline_id: Option<i64>) -> Tip {
     fill_tip(rule, text, &[("due", &tip_date(due, lang)), ("until", &tip_date(until, lang))], deadline_id)
+}
+
+/// The flight tip, worded for a delay or a cancellation (`brief`: the one-sentence form).
+fn flight_tip(
+    rule: &TipRule,
+    f: &crate::docs::extract::FlightInfo,
+    c: &Claim,
+    lang: Lang,
+    brief: bool,
+    deadline_id: Option<i64>,
+) -> Tip {
+    let text = match (c.reason, brief, lang) {
+        (Reason::Delay(_), false, _) => text_of(rule, lang),
+        (Reason::Delay(_), true, _) => brief_of(rule, lang).unwrap_or(text_of(rule, lang)),
+        (Reason::Cancelled(_), true, Lang::En) => CANCEL_BRIEF_EN,
+        (Reason::Cancelled(_), true, Lang::De) => CANCEL_BRIEF_DE,
+        (Reason::Cancelled(Some(_)), false, Lang::En) => CANCEL_EN,
+        (Reason::Cancelled(Some(_)), false, Lang::De) => CANCEL_DE,
+        (Reason::Cancelled(None), false, Lang::En) => CANCEL_UNKNOWN_EN,
+        (Reason::Cancelled(None), false, Lang::De) => CANCEL_UNKNOWN_DE,
+    };
+    let hours = match c.reason {
+        Reason::Delay(m) => flight::hours(m).to_string(),
+        Reason::Cancelled(_) => String::new(),
+    };
+    let notice = match c.reason {
+        Reason::Cancelled(Some(n)) => n.to_string(),
+        _ => String::new(),
+    };
+    let args = [
+        ("flight", f.flight_no.trim().to_string()),
+        ("date", tip_date(f.date, lang)),
+        ("hours", hours),
+        ("amount", c.amount.text(lang)),
+        ("airline", flight::airline_name(f, lang)),
+        ("notice", notice),
+    ];
+    let args: Vec<(&str, &str)> = args.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    fill_tip(rule, text, &args, deadline_id)
 }
 
 fn fill_tip(rule: &TipRule, text: &str, args: &[(&str, &str)], deadline_id: Option<i64>) -> Tip {
@@ -286,7 +389,7 @@ mod tests {
         let mut ids = Vec::new();
         for r in TIPS {
             assert!(!r.source.trim().is_empty(), "{}", r.id);
-            assert!(r.source.contains('§'), "{}", r.id);
+            assert!(r.source.contains('§') || r.source.starts_with("Regulation"), "{}", r.id);
             assert!(r.url.starts_with("https://") && r.url.len() > "https://".len() + 3, "{}", r.id);
             assert!(!r.triggers.is_empty(), "{}", r.id);
             assert!(!ids.contains(&r.id), "duplicate id {}", r.id);
@@ -302,7 +405,7 @@ mod tests {
                 }
             }
             // Brief form only for rules the brief can trigger.
-            let brief = r.triggers.iter().any(|t| matches!(t, Trigger::DeadlineWithin(..)));
+            let brief = r.triggers.iter().any(|t| matches!(t, Trigger::DeadlineWithin(..) | Trigger::OpenDeadline(_)));
             assert_eq!(brief, r.brief_en.is_some(), "{}", r.id);
         }
     }
@@ -376,6 +479,7 @@ mod tests {
         let mut extract = bescheid_doc(date(&x["date"]).unwrap());
         extract.doc_type = doc_type;
         extract.au = au;
+        extract.flight = x.get("flight").cloned().and_then(|f| serde_json::from_value(f).ok());
         let deadlines = x["rule_deadlines"]
             .as_array()
             .unwrap()
@@ -395,8 +499,15 @@ mod tests {
             ("bescheid_wohngeld", Some("widerspruch_month")),
             ("insurer_letter", None),
             ("uni_rueckmeldung", None),
+            // The airline notices (written by the eval builder; checked once they exist).
+            ("flight_delay_bx2041", Some("eu261_delay")),
+            ("flight_delay_short", None),
+            ("flight_cancel_notice", None),
         ];
         for (name, want) in names {
+            if name.starts_with("flight_") && !fixtures().join(format!("{name}.expected.json")).exists() {
+                continue;
+            }
             let (extract, deadlines, x) = fixture(name);
             // The expected.json says the same as this table.
             assert!(x.get("tip").is_some(), "{name}.expected.json has no \"tip\" field");
@@ -481,6 +592,94 @@ mod tests {
         assert_eq!(for_brief(&mem, local_at(d(2026, 10, 29), 9, 0), Lang::En).unwrap(), None);
         mem.profile_set("tips", "on").unwrap();
         assert!(for_brief(&mem, local_at(d(2026, 10, 29), 9, 0), Lang::En).unwrap().is_some());
+    }
+
+    /// Words that promise money: never in a flight tip.
+    const PROMISES: &[&str] = &["earned", "will get", "entitled"];
+
+    #[test]
+    fn flight_tip_says_may_be_owed_and_never_promises() {
+        use crate::rules::flight::tests::{flight, notice_doc};
+        let doc = notice_doc(flight("DUS", "TFS", Some(250), false, None));
+        let t = for_letter(&doc, &[], d(2026, 10, 4), Lang::En).expect("tip");
+        assert_eq!((t.id, t.source, t.url), ("eu261_delay", flight::EU261_SOURCE, flight::EU261_URL));
+        assert_eq!(
+            t.text,
+            "Good to know: your flight BX 2041 on Saturday, 3 October arrived about 4 hours late. Under EU rule \
+             261/2004 you may be owed EUR 400 from Beispiel Air. The airline can refuse this in extraordinary \
+             circumstances, for example a storm. Please check."
+        );
+        let cancel = notice_doc(flight("CGN", "LIS", None, true, Some(4)));
+        let c = for_letter(&cancel, &[], d(2026, 10, 4), Lang::En).unwrap();
+        assert!(
+            c.text
+                .contains("was cancelled only 4 days before departure. Under EU rule 261/2004 you may be owed EUR 400"),
+            "{}",
+            c.text
+        );
+        let unknown = notice_doc(flight("CGN", "LIS", None, true, None));
+        let u = for_letter(&unknown, &[], d(2026, 10, 4), Lang::En).unwrap();
+        assert!(u.text.contains("If you were told less than 14 days before departure"), "{}", u.text);
+        assert!(u.text.contains("EUR 250 to 600"), "{}", u.text);
+        for x in [&doc, &cancel, &unknown] {
+            for lang in [Lang::En, Lang::De] {
+                let t = for_letter(x, &[], d(2026, 10, 4), lang).unwrap();
+                assert!(!t.text.contains('{'), "{}", t.text);
+                match lang {
+                    Lang::En => {
+                        check_en(&t.text);
+                        assert!(t.text.contains("may be owed"), "{}", t.text);
+                    }
+                    Lang::De => check_de(&t.text),
+                }
+                let low = t.text.to_lowercase();
+                for w in PROMISES {
+                    assert!(!low.contains(w), "{w}: {}", t.text);
+                }
+            }
+        }
+        for text in [CANCEL_EN, CANCEL_UNKNOWN_EN, CANCEL_BRIEF_EN] {
+            check_brief_en(text);
+        }
+        for text in [CANCEL_DE, CANCEL_UNKNOWN_DE, CANCEL_BRIEF_DE] {
+            check_de(text);
+        }
+        // A short delay, a cancellation told three weeks ahead, or a flight too old to claim: no tip.
+        assert_eq!(
+            for_letter(&notice_doc(flight("DUS", "PMI", Some(80), false, None)), &[], d(2026, 10, 4), Lang::En),
+            None
+        );
+        assert_eq!(
+            for_letter(&notice_doc(flight("CGN", "LIS", None, true, Some(21))), &[], d(2026, 10, 4), Lang::En),
+            None
+        );
+        assert_eq!(for_letter(&doc, &[], d(2030, 1, 1), Lang::En), None);
+    }
+
+    #[test]
+    fn brief_flight_tip_for_an_open_claim_at_any_distance() {
+        use crate::rules::flight::tests::{flight, notice_doc};
+        let (mem, _) = erika();
+        let doc = mem
+            .insert_document(
+                Path::new("air.pdf"),
+                "sha-air",
+                &notice_doc(flight("DUS", "TFS", Some(250), false, None)),
+                "x",
+            )
+            .unwrap();
+        let id = add(&mem, d(2029, 12, 31), EU261_RULE, Some(doc));
+        let now = local_at(d(2026, 10, 28), 9, 0);
+        let t = for_brief(&mem, now, Lang::En).unwrap().expect("tip");
+        assert_eq!((t.id, t.deadline_id), ("eu261_delay", Some(id)), "money first, before the sick-note gap");
+        assert_eq!(
+            t.text,
+            "Good to know: your flight BX 2041 on Saturday, 3 October was about 4 hours late; under EU rule 261/2004 \
+             you may be owed EUR 400 from Beispiel Air; please check."
+        );
+        mark_shown(&mem, &t, now).unwrap();
+        // Said once: the next brief has the sick-note tip.
+        assert_eq!(for_brief(&mem, now, Lang::En).unwrap().unwrap().id, "au_gap");
     }
 
     #[test]

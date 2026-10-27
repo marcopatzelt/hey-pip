@@ -1822,6 +1822,7 @@ async fn discover_setup(page: &str) -> Disc {
         requests: vec!["Return the questionnaire".into()],
         deadlines: vec![],
         au: None,
+        flight: None,
         consequences_if_ignored: None,
         confidence: 0.9,
     };
@@ -2870,17 +2871,66 @@ async fn third_identical_type_text_asks_once_then_moves_on() {
 }
 
 #[tokio::test]
-async fn third_identical_click_is_refused_with_advice() {
+async fn second_identical_click_on_an_unchanged_page_is_refused_with_advice() {
     let h = Harness::new(false).await;
     h.platform.set_outline(employer_outline());
     let same = || calls("r", &[click_el("the Next button", 2, false)]);
-    h.agent_turns(vec![same(), same(), same(), calls("r4", &[done("ok")])]);
+    h.agent_turns(vec![same(), same(), calls("r3", &[done("ok")])]);
     let out = h.run("Go on").await;
     assert_eq!(out, AgentOutcome::Done("ok".into()));
-    assert_eq!(h.platform.clicks().len(), 2, "{:?}", h.platform.clicks());
-    let outs = outputs(&h.requests()[3]);
-    assert!(outs[0].starts_with("not done: you already did this twice in this task (#2 next)"), "{outs:?}");
+    assert_eq!(h.platform.clicks().len(), 1, "{:?}", h.platform.clicks());
+    let outs = outputs(&h.requests()[2]);
+    assert!(outs[0].starts_with("not done: you already did this and nothing changed (#2 next)"), "{outs:?}");
     assert!(outs[0].contains("ask_user"), "{outs:?}");
+}
+
+#[tokio::test]
+async fn the_same_link_twice_on_one_screen_is_refused_once() {
+    // Run 2 (demo-insurer/help): the link „contact page“ leads nowhere in the dry run; the second click on it
+    // is refused at once (one guard hit), not on the third try, and the run goes on.
+    let mut h = Harness::new(false).await;
+    h.platform.set_outline(vec![
+        el(10, "text", "Where do I send my sick note?", (100, 100, 400, 30)),
+        el(11, "link", "contact page", (100, 140, 120, 20)),
+    ]);
+    let link = || {
+        calls("r", &[click_el("the link „contact page“ under the heading Where do I send my sick note?", 11, false)])
+    };
+    h.agent_turns(vec![link(), link(), calls("r3", &[done("ok")])]);
+    h.auto_answer(ApprovalAnswer::No, "");
+    let out = h.run("Send my sick note").await;
+    assert_eq!(out, AgentOutcome::Done("ok".into()));
+    assert_eq!(h.platform.clicks().len(), 1, "{:?}", h.platform.clicks());
+    assert!(cards(&h.drain()).is_empty(), "a link is never a send card");
+    let r = h.requests();
+    assert!(outputs(&r[1])[0].starts_with("clicked"), "{:?}", outputs(&r[1]));
+    let o = &outputs(&r[2])[0];
+    assert!(o.starts_with("not done: you already did this and nothing changed (#11 contact page)"), "{o}");
+}
+
+#[tokio::test]
+async fn already_open_page_then_the_same_click_is_refused() {
+    // click #11 -> open_url answered "already open" (the page in front) -> click #11 again: refused.
+    let url = "https://www.evergreen-health.example/help";
+    let mut h = Harness::new(false).await;
+    h.agent = h.agent.with_current_page(url);
+    *h.platform.foreground.lock().unwrap() = Some(WindowInfo {
+        title: "Help - Microsoft Edge".into(),
+        class: "Chrome_WidgetWin_1".into(),
+        address: Some(url.into()),
+    });
+    h.platform.set_outline(vec![el(11, "link", "contact page", (100, 140, 120, 20))]);
+    let link = || calls("r", &[click_el("the link „contact page“", 11, false)]);
+    h.agent_turns(vec![link(), calls("r2", &[("open_url", json!({"url": url}))]), link(), calls("r4", &[done("ok")])]);
+    h.run("Open the contact page").await;
+    let r = h.requests();
+    assert!(outputs(&r[2])[0].starts_with("already open"), "{:?}", outputs(&r[2]));
+    assert!(
+        outputs(&r[3])[0].starts_with("not done: you already did this and nothing changed"),
+        "{:?}",
+        outputs(&r[3])
+    );
+    assert_eq!(h.platform.clicks().len(), 1);
 }
 
 #[tokio::test]
@@ -2901,7 +2951,33 @@ async fn next_on_every_wizard_page_is_no_repeat() {
 }
 
 #[tokio::test]
-async fn second_guard_hit_ends_the_run_as_needs_user() {
+async fn backspace_twice_on_an_unchanged_page_is_no_repeat() {
+    // One Backspace changes one character: the picture and the PAGE ELEMENTS look the same, the second one is
+    // still wanted. Only the third identical key is held back (the old guard).
+    let h = Harness::new(false).await;
+    h.platform.set_outline(employer_outline());
+    let back = || {
+        calls(
+            "r",
+            &[("key", json!({"combo": "backspace", "is_commit": false, "commit_what": null, "commit_to": null}))],
+        )
+    };
+    h.agent_turns(vec![back(), back(), back(), calls("r4", &[done("ok")])]);
+    let out = h.run("Remove the last two letters").await;
+    assert_eq!(out, AgentOutcome::Done("ok".into()));
+    let keys: Vec<String> = h.platform.actions().into_iter().filter(|a| a == "key backspace").collect();
+    assert_eq!(keys.len(), 2, "{:?}", h.platform.actions());
+    assert!(outputs(&h.requests()[2])[0].starts_with("pressed"), "{:?}", outputs(&h.requests()[2]));
+    assert!(
+        outputs(&h.requests()[3])[0].starts_with("not done: you already did this twice"),
+        "{:?}",
+        outputs(&h.requests()[3])
+    );
+}
+
+#[tokio::test]
+async fn repeats_on_an_unchanged_page_end_the_run_as_needs_user() {
+    // Click 1 runs; 2, 3 and 4 are refused; the third "nothing changed" (NOTHING_CHANGED_MAX) ends the run.
     let mut h = Harness::new(false).await;
     h.memory.profile_set("lang", "en").unwrap();
     h.platform.set_outline(employer_outline());
@@ -2910,7 +2986,7 @@ async fn second_guard_hit_ends_the_run_as_needs_user() {
     let out = h.run("Go on").await;
     let stuck = "I keep getting stuck here. Could you have a look?";
     assert_eq!(out, AgentOutcome::NeedsUser(stuck.into()));
-    assert_eq!(h.platform.clicks().len(), 2);
+    assert_eq!(h.platform.clicks().len(), 1);
     assert_eq!(h.requests().len(), 4, "the step budget is not burned");
     assert!(bubbles(&h.drain()).iter().any(|b| b == stuck));
 }
@@ -3077,8 +3153,11 @@ async fn open_url_opens_when_another_window_is_in_front() {
     let mut h = Harness::new(true).await;
     let opened = Arc::new(AtomicUsize::new(0));
     let o = opened.clone();
+    let platform = h.platform.clone();
     h.agent = h.agent.with_url_opener(Arc::new(move |_: &str| {
-        o.fetch_add(1, Ordering::SeqCst);
+        // The page loads (other PAGE ELEMENTS), then the user brings Explorer back to the front.
+        let n = o.fetch_add(1, Ordering::SeqCst) as u32;
+        platform.set_outline(vec![el(n + 1, "link", "Contact", (100, 100, 100, 20))]);
         Ok(())
     }));
     // Explorer in front (no address bar): the page this run opened is opened again, so the browser comes up.
@@ -3189,6 +3268,7 @@ async fn guard_setup(open: &str) -> GuardSite {
         requests: vec![],
         deadlines: vec![],
         au: None,
+        flight: None,
         consequences_if_ignored: None,
         confidence: 0.9,
     };
@@ -3335,12 +3415,68 @@ async fn a_second_offer_with_nothing_done_in_between_ends_the_run() {
     ]);
     h.auto_answer(ApprovalAnswer::No, "Nein");
     let out = h.run("Look at my screen").await;
-    assert_eq!(out, AgentOutcome::Done("Soll ich dir bei etwas anderem helfen?".into()));
+    assert_eq!(out, AgentOutcome::NeedsUser("Soll ich dir bei etwas anderem helfen?".into()));
     assert_eq!(h.requests().len(), 2, "the run ends at the second offer");
     let ev = h.drain();
     assert_eq!(questions(&ev).len(), 1, "asked once, not twice");
     assert!(bubbles(&ev).contains(&"Soll ich dir bei etwas anderem helfen?".to_string()), "closing bubble");
     assert!(h.platform.typed().is_empty());
+}
+
+#[tokio::test]
+async fn agreeing_box_and_point_skip_the_zoom_and_sam_runs_once_per_picture() {
+    // Box (700,600)-(900,640) and the model's point (800, 620) agree: no enlarged look. The second click on the
+    // same picture with the same sam_query takes SAM's boxes from this run.
+    let h = Harness::new(false).await;
+    h.agent_turns(vec![
+        calls("r1", &[click("den Knopf „Weiter“", false)]),
+        calls("r2", &[click("den blauen Knopf „Weiter“ unten rechts", false)]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.sam(&[sam_box(700, 600, 900, 640)]);
+    h.locate(0.8, 0.775);
+    h.locate(0.8, 0.775);
+    let out = h.run("Go on").await;
+    assert_eq!(out, AgentOutcome::Done("ok".into()));
+    assert_eq!(h.platform.clicks(), ["click 800,620", "click 800,620"]);
+    // 1 SAM + 1 point for the first click, 1 point for the second; no zoom look.
+    assert_eq!(*h.script.grounds.lock().unwrap(), 3);
+}
+
+#[tokio::test]
+async fn a_run_ending_on_an_open_question_is_never_done_and_never_credited() {
+    // Two option questions in a row, both answered: the run ends as NeedsUser with the question and its buttons,
+    // not as Done(question); nothing is learned and no time is credited.
+    let mut h = Harness::new(false).await;
+    let url = "https://www.evergreen-health.example/kontakt";
+    h.agent = h.agent.with_current_page(url);
+    let offer = |id: &str, q: &str| calls(id, &[("ask_user", json!({"question": q, "options": ["Yes", "No"]}))]);
+    h.agent_turns(vec![
+        offer("r1", "Shall I fill in the form?"),
+        offer("r2", "Shall I fill in the form now?"),
+        calls("r3", &[done("never reached")]),
+    ]);
+    h.auto_answer(ApprovalAnswer::No, "Yes");
+    let out = h.run("Fill in the form").await;
+    assert_eq!(out, AgentOutcome::NeedsUser("Shall I fill in the form now?".into()));
+    let ev = h.drain();
+    let last = ev
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            UiEvent::Bubble { text, buttons, question_id: None } if text == "Shall I fill in the form now?" => {
+                Some(buttons.clone())
+            }
+            _ => None,
+        })
+        .expect("the question stays on screen");
+    let labels: Vec<&str> = last.iter().map(|b| b.label.as_str()).collect();
+    assert_eq!(labels, ["Yes", "No"]);
+    assert_eq!(last[0].id, "cmd:resume");
+    assert!(h.agent.can_resume(), "the run waits for the user");
+    assert!(h.memory.playbook_all().unwrap().is_empty(), "no playbook from an open question");
+    assert_eq!(saved_total(&h), 0, "no time credited");
+    assert!(!ev.iter().any(|e| matches!(e, UiEvent::Pip { state: pip_core::events::PipState::Happy })));
 }
 
 #[tokio::test]
@@ -3374,7 +3510,7 @@ async fn an_offer_after_an_action_that_changed_nothing_ends_the_run() {
     ]);
     h.auto_answer(ApprovalAnswer::No, "A");
     let out = h.run("Look at my screen").await;
-    assert_eq!(out, AgentOutcome::Done("Was jetzt?".into()), "the same screen as at the first offer");
+    assert_eq!(out, AgentOutcome::NeedsUser("Was jetzt?".into()), "the same screen as at the first offer");
     assert_eq!(questions(&h.drain()).len(), 1);
 }
 
@@ -3611,7 +3747,8 @@ async fn new_elements_are_starred_and_unchanged_clicks_get_a_nudge() {
     h.agent_turns(vec![
         calls("r1", &[click_el("„Next“", 2, false)]),
         calls("r2", &[click_el("„Next“", 2, false)]),
-        calls("r3", &[click_el("„Next“", 2, false)]),
+        // The same click a third time would be refused (nothing changed after the second): another target.
+        calls("r3", &[click_el("„Full name“", 1, false)]),
         calls("r4", &[done("ok")]),
     ]);
     h.run("Füll das aus").await;

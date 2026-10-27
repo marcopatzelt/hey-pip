@@ -1,0 +1,28 @@
+{
+  "doc_type": "brief",
+  "date": "2026-10-04",
+  "reference": "BX7Q2K",
+  "sender_contains": "Beispiel Air",
+  "recipient_contains": "Erika Beispiel",
+  "au": null,
+  "flight": {
+    "airline": "Beispiel Air",
+    "flight_no": "BX 2041",
+    "date": "2026-10-03",
+    "from": "DUS",
+    "to": "TFS",
+    "delay_minutes": 250,
+    "cancelled": false,
+    "booking_ref": "BX7Q2K"
+  },
+  "deadlines_due": [],
+  "rule_deadlines": [
+    {
+      "rule_id": "eu261_claim",
+      "due": "2029-12-31"
+    }
+  ],
+  "tip": "eu261_delay",
+  "summary": "Beispiel Air: flight BX 2041 from Düsseldorf (DUS) to Tenerife South (TFS) on 3 October 2026 arrived 4 h 10 min late (scheduled 14:10, actual 18:20). Booking reference BX7Q2K. Requests at beispiel-air.example/claim.",
+  "note": "Printed e-mail, 4.10.2026. Arrival 4 h 10 min late, DUS-TFS about 3,300 km: EU 261 band 1,500-3,500 km = EUR 400 (the rule, not the letter, names the amount). Claim limit in Germany: 3 years from the end of 2026 = 31.12.2029. `summary` is the stand-in text the dry run seeds."
+}

@@ -35,6 +35,10 @@ pub struct Backend {
 /// Profile key with the demo insurer's contact form (file:// URL of fixtures/demo-insurer/index.html).
 pub const DEMO_FORM_KEY: &str = "insurer_contact_form";
 
+/// Profile key of the "Good to know" switch (`rules::tips::tips_off` reads the same key).
+pub const PROFILE_TIPS: &str = "tips";
+const TIPS_OFF: &str = "off";
+
 /// Profile key with the demo insurer's "Services for you" page (after-task discovery looks there).
 pub const DEMO_SERVICES_KEY: &str = PROFILE_SERVICES;
 
@@ -47,6 +51,8 @@ const DEMO_PAGES: &[(&str, &str)] = &[
     ("demo-insurer/services.html", include_str!("../../../fixtures/demo-insurer/services.html")),
     ("demo-insurer/questionnaire.html", include_str!("../../../fixtures/demo-insurer/questionnaire.html")),
     ("demo-uni/index.html", include_str!("../../../fixtures/demo-uni/index.html")),
+    ("demo-air/index.html", include_str!("../../../fixtures/demo-air/index.html")),
+    ("demo-air/thanks.html", include_str!("../../../fixtures/demo-air/thanks.html")),
 ];
 
 /// The invented letters of the demo profile (`PIP_DEMO_PROFILE=1`), written to `<data_dir>/demo-letters/`.
@@ -54,6 +60,8 @@ const DEMO_LETTERS: &[(&str, &[u8])] = &[
     ("bescheid_wohngeld.pdf", include_bytes!("../../../fixtures/letters/bescheid_wohngeld.pdf")),
     ("au_erika_erst_foto.jpg", include_bytes!("../../../fixtures/letters/au_erika_erst_foto.jpg")),
     ("insurer_letter.pdf", include_bytes!("../../../fixtures/letters/insurer_letter.pdf")),
+    ("flight_delay_bx2041.pdf", include_bytes!("../../../fixtures/letters/flight_delay_bx2041.pdf")),
+    ("boarding_pass_bx2041.pdf", include_bytes!("../../../fixtures/letters/boarding_pass_bx2041.pdf")),
 ];
 
 /// The invented demo person (`seed_demo_profile`); PIP_DEMO_RESET wipes only her memory.
@@ -263,6 +271,36 @@ impl Backend {
         if let Some(mem) = &self.memory {
             ok_or_log("profile_set", guard("profile_set", || mem.profile_set(key, value)));
         }
+    }
+
+    /// Remove a profile key (memory and the fallback). Unknown keys are fine.
+    pub fn profile_delete(&self, key: &str) {
+        self.profile_fallback.lock().expect("profile lock").remove(key);
+        if let Some(mem) = &self.memory {
+            ok_or_log("profile_delete", guard("profile_delete", || mem.profile_delete(key)));
+        }
+    }
+
+    /// Profile `tips` is "off" (tray "Fewer tips"): no "Good to know" anywhere.
+    pub fn tips_off(&self) -> bool {
+        self.profile_get(PROFILE_TIPS).is_some_and(|v| v.trim().eq_ignore_ascii_case(TIPS_OFF))
+    }
+
+    /// Tray "Fewer tips": "off" or unset (then the rules decide again). Returns the new state (true = off).
+    pub fn set_tips_off(&self, off: bool) -> bool {
+        if off {
+            self.profile_set(PROFILE_TIPS, TIPS_OFF);
+        } else {
+            self.profile_delete(PROFILE_TIPS);
+        }
+        self.tips_off()
+    }
+
+    /// "Remind me on …" after a tip: one more reminder for the rule's deadline at `at` (the memory reminder API,
+    /// the reminder loop rings it like every other). Ok(false) without a memory (mock mode).
+    pub fn add_tip_reminder(&self, deadline_id: i64, at: DateTime<Local>) -> Result<bool> {
+        let Some(mem) = &self.memory else { return Ok(false) };
+        guard("tip reminder", || mem.add_reminder(deadline_id, at)).map(|_| true)
     }
 
     /// Profile language (key `lang`, the one the agent reads), overridable with PIP_LANG. Default English.
@@ -498,14 +536,14 @@ mod tests {
         mem.profile_set("old_note", "from an older build").unwrap();
         seed_demo_memory(&mem, &rules, &letters, now, false);
         assert!(demo_seed_is_complete(&mem).unwrap());
-        assert_eq!(mem.documents_count().unwrap(), 3);
+        assert_eq!(mem.documents_count().unwrap() as usize, pip_core::memory::DEMO_LETTER_FILES.len());
         assert!(mem.open_deadlines().unwrap().iter().any(|dl| dl.rule_id.as_deref() == Some("frist_aus_brief")));
         assert_eq!(mem.profile_get("old_note").unwrap(), None, "wiped before seeding");
         // A complete Erika is left alone (her playbooks and facts stay).
         mem.profile_set("learned", "yes").unwrap();
         seed_demo_memory(&mem, &rules, &letters, now, false);
         assert_eq!(mem.profile_get("learned").unwrap().as_deref(), Some("yes"));
-        assert_eq!(mem.documents_count().unwrap(), 3);
+        assert_eq!(mem.documents_count().unwrap() as usize, pip_core::memory::DEMO_LETTER_FILES.len());
     }
 
     #[test]
@@ -526,6 +564,44 @@ mod tests {
             assert_eq!(mem.profile_get("name").unwrap().as_deref(), Some("Marta"));
             assert_eq!(mem.documents_count().unwrap(), 0);
         }
+    }
+
+    #[test]
+    fn fewer_tips_switches_between_off_and_unset() {
+        let mut b = Backend::mock();
+        b.memory = Some(Arc::new(Memory::open_in_memory().unwrap()));
+        assert!(!b.tips_off());
+        assert!(b.set_tips_off(true));
+        let mem = b.memory.clone().unwrap();
+        assert!(pip_core::rules::tips::tips_off(&mem).unwrap(), "the rules read the same key");
+        assert!(!b.set_tips_off(false));
+        assert_eq!(mem.profile_get(PROFILE_TIPS).unwrap(), None, "unset, not \"on\"");
+        assert!(!pip_core::rules::tips::tips_off(&mem).unwrap());
+        // mock mode (no memory): the fallback holds it
+        let m = Backend::mock();
+        assert!(m.set_tips_off(true) && !m.set_tips_off(false));
+    }
+
+    #[test]
+    fn tip_reminder_goes_through_the_memory_reminder_api() {
+        let mut b = Backend::mock();
+        let at = chrono::Local::now() + chrono::Duration::days(2);
+        assert!(!b.add_tip_reminder(1, at).unwrap(), "no memory: nothing written");
+        let mem = Arc::new(Memory::open_in_memory().unwrap());
+        b.memory = Some(mem.clone());
+        let id = mem
+            .add_deadline(&pip_core::memory::NewDeadline {
+                title: "New sick note".into(),
+                due: at.date_naive() + chrono::Duration::days(1),
+                rule_id: Some("au_lueckenlos".into()),
+                doc_id: None,
+                remind_at: vec![],
+                why: String::new(),
+                source: String::new(),
+            })
+            .unwrap();
+        assert!(b.add_tip_reminder(id, at).unwrap());
+        assert_eq!(mem.next_reminder_at(chrono::Local::now()).unwrap().map(|t| t.timestamp()), Some(at.timestamp()));
     }
 
     #[test]

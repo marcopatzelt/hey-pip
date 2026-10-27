@@ -9,13 +9,28 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Local, NaiveDate};
 
 use super::Memory;
+use crate::docs::extract::FlightInfo;
 use crate::docs::pipeline::{bubble_text, sha256_hex};
 use crate::docs::{AuInfo, AuKind, DocType, DocumentExtract, ExtractedDeadline};
 use crate::i18n::Lang;
 use crate::rules::{RuleEngine, local_at};
 
-/// The letter files the demo profile points to (the app writes them into `<data_dir>/demo-letters/`).
-pub const DEMO_LETTER_FILES: &[&str] = &["bescheid_wohngeld.pdf", "au_erika_erst_foto.jpg", "insurer_letter.pdf"];
+/// The letter files the demo profile points to (the app writes them into `<data_dir>/demo-letters/`): three
+/// letters, Beispiel Air's delay notice and the boarding pass (a document Pip may attach to the claim).
+pub const DEMO_LETTER_FILES: &[&str] = &[
+    "bescheid_wohngeld.pdf",
+    "au_erika_erst_foto.jpg",
+    "insurer_letter.pdf",
+    "flight_delay_bx2041.pdf",
+    "boarding_pass_bx2041.pdf",
+];
+
+/// Files of DEMO_LETTER_FILES that are only attachments: skipped when the file is missing (the file dialog can
+/// only pick a file that exists), and not needed for a complete seed.
+const ATTACHMENT_FILES: &[&str] = &["boarding_pass_bx2041.pdf"];
+
+/// The airline's claim page in the demo (next to the letters folder, like demo-insurer).
+const DEMO_AIR_PAGE: &str = "demo-air/index.html";
 
 /// Profile of the invented person. Address and birth date are the ones printed on the invented letters.
 /// Keys: `name` (first name, the greeting uses it), `insurer`, `versichertennummer`, `bundesland`,
@@ -29,6 +44,7 @@ const PROFILE: &[(&str, &str)] = &[
     ("email", "erika.beispiel@example.com"),
     ("insurer", "Evergreen Health"),
     ("versichertennummer", "G123456789"),
+    ("airline", "Beispiel Air"),
     ("arbeitgeber", "Bäckerei Sonnenschein GmbH"),
     ("iban", "DE02 1203 0000 0000 2020 51"),
     ("bundesland", "Nordrhein-Westfalen"),
@@ -78,6 +94,8 @@ fn letters(shift: Duration) -> Vec<DemoLetter> {
     let wg_date = d(2026, 10, 14);
     let (au_from, au_until) = (d(2026, 10, 20), d(2026, 10, 30));
     let (insurer_date, insurer_due) = (d(2026, 10, 27), d(2026, 11, 13));
+    // Beispiel Air: the flight 25 days before the story day, the delay notice the day after.
+    let (flight_date, notice_date) = (d(2026, 10, 3), d(2026, 10, 4));
     vec![
         DemoLetter {
             file: "bescheid_wohngeld.pdf",
@@ -97,6 +115,7 @@ fn letters(shift: Duration) -> Vec<DemoLetter> {
                 requests: vec!["Report any change of your income or rent at once.".into()],
                 deadlines: vec![],
                 au: None,
+                flight: None,
                 consequences_if_ignored: Some(
                     "If you do not object within one month, the decision becomes final.".into(),
                 ),
@@ -139,6 +158,7 @@ fn letters(shift: Duration) -> Vec<DemoLetter> {
                     first_or_follow: AuKind::Erst,
                     issued: Some(au_from),
                 }),
+                flight: None,
                 consequences_if_ignored: Some(
                     "If you are still ill afterwards and the next sick note leaves a gap, the health insurer \
                      may not pay sick pay for those days."
@@ -185,6 +205,7 @@ fn letters(shift: Duration) -> Vec<DemoLetter> {
                     ),
                 }],
                 au: None,
+                flight: None,
                 consequences_if_ignored: Some("Your sick pay may be paid later.".into()),
                 confidence: 0.94,
             },
@@ -199,6 +220,73 @@ fn letters(shift: Duration) -> Vec<DemoLetter> {
                 de(insurer_date),
                 de(au_from),
                 de(insurer_due)
+            ),
+        },
+        DemoLetter {
+            file: "flight_delay_bx2041.pdf",
+            read_at: (notice_date, 19, 10),
+            extract: DocumentExtract {
+                doc_type: DocType::Brief,
+                sender: "Beispiel Air".into(),
+                recipient: "Erika Beispiel".into(),
+                date: Some(notice_date),
+                reference: Some("BX7Q2K".into()),
+                person: Some("Erika Beispiel".into()),
+                summary_simple: format!(
+                    "Beispiel Air says sorry: your flight BX 2041 from Düsseldorf to Tenerife on {} arrived about \
+                     4 hours late. You can ask for compensation on their claim page.",
+                    en(flight_date)
+                ),
+                requests: vec!["Use the claim page if you want compensation.".into()],
+                deadlines: vec![],
+                au: None,
+                flight: Some(FlightInfo {
+                    airline: "Beispiel Air".into(),
+                    flight_no: "BX 2041".into(),
+                    date: flight_date,
+                    from: "DUS".into(),
+                    to: "TFS".into(),
+                    delay_minutes: Some(250),
+                    cancelled: false,
+                    notice_days: None,
+                    booking_ref: Some("BX7Q2K".into()),
+                }),
+                consequences_if_ignored: None,
+                confidence: 0.92,
+            },
+            text: format!(
+                "Beispiel Air – Customer Care. Dear Ms Beispiel, booking reference BX7Q2K. We are sorry that your \
+                 flight BX 2041 from Düsseldorf (DUS) to Tenerife South (TFS) on {} arrived 4 hours and 10 minutes \
+                 late (planned 10:05, landed 14:15). You can claim compensation on our claim page. Date {}.",
+                de(flight_date),
+                de(notice_date)
+            ),
+        },
+        DemoLetter {
+            file: "boarding_pass_bx2041.pdf",
+            read_at: (flight_date, 7, 30),
+            extract: DocumentExtract {
+                doc_type: DocType::Sonstiges,
+                sender: "Beispiel Air".into(),
+                recipient: "Erika Beispiel".into(),
+                date: Some(flight_date),
+                reference: Some("BX7Q2K".into()),
+                person: Some("Erika Beispiel".into()),
+                summary_simple: format!(
+                    "Boarding pass for flight BX 2041, Erika Beispiel, Düsseldorf → Tenerife, {}",
+                    en_day(flight_date)
+                ),
+                requests: vec![],
+                deadlines: vec![],
+                au: None,
+                flight: None,
+                consequences_if_ignored: None,
+                confidence: 0.95,
+            },
+            text: format!(
+                "Boarding pass. Beispiel Air. BEISPIEL/ERIKA MS. Flight BX 2041. From Düsseldorf DUS to Tenerife South \
+                 TFS. Date {}. Booking reference BX7Q2K. Seat 14C.",
+                de(flight_date)
             ),
         },
     ]
@@ -235,6 +323,17 @@ pub fn seed_demo_profile(
     for (k, v) in PROFILE {
         memory.profile_set(k, v)?;
     }
+    // The airline's claim page of the demo, when it lies next to the letters folder: `fixtures/demo-air/` beside
+    // `fixtures/letters/`, or `<data_dir>/fixtures/demo-air/` beside the app's `<data_dir>/demo-letters/`.
+    let air = letters_dir
+        .parent()
+        .into_iter()
+        .flat_map(|p| [p.join(DEMO_AIR_PAGE), p.join("fixtures").join(DEMO_AIR_PAGE)])
+        .find_map(|p| p.canonicalize().ok());
+    match air {
+        Some(page) => memory.profile_set(crate::rules::flight::PROFILE_CLAIM_FORM, &crate::config::file_url(&page))?,
+        None => tracing::warn!("demo airline page {DEMO_AIR_PAGE} not found next to the letters: no claim page"),
+    }
     let lang = Lang::En;
 
     let shift = now.date_naive() - STORY_DAY;
@@ -245,7 +344,15 @@ pub fn seed_demo_profile(
         }
         let path = letters_dir.join(l.file);
         // The real file hash, so giving Pip the same file again is recognised as known.
-        let sha = std::fs::read(&path).map(|b| sha256_hex(&b)).unwrap_or_else(|_| format!("demo:{}", l.file));
+        let bytes = std::fs::read(&path);
+        if bytes.is_err() {
+            if ATTACHMENT_FILES.contains(&l.file) {
+                tracing::warn!(file = l.file, "demo attachment missing: skipped");
+                continue;
+            }
+            tracing::warn!(file = l.file, "demo letter file missing: memory keeps the letter without its file");
+        }
+        let sha = bytes.map(|b| sha256_hex(&b)).unwrap_or_else(|_| format!("demo:{}", l.file));
         let id = memory.insert_document(&path, &sha, &l.extract, &l.text)?;
         let deadlines = rules.apply_document(id, &l.extract)?;
         let (day, h, m) = l.read_at;
@@ -265,9 +372,9 @@ pub fn seed_demo_profile(
     Ok(true)
 }
 
-/// The demo person's memory has the whole story: `full_name` is exactly Erika's, all three
-/// DEMO_LETTER_FILES are letters in memory and the insurer's questionnaire deadline (`frist_aus_brief`)
-/// exists, in any status. A questionnaire the user already sent (deadline Done) is progress, not a stale
+/// The demo person's memory has the whole story: `full_name` is exactly Erika's, every letter of
+/// DEMO_LETTER_FILES is in memory (the boarding pass only when its file exists), and the insurer's
+/// questionnaire deadline (`frist_aus_brief`) and the flight claim (`eu261_claim`) exist, in any status. A questionnaire the user already sent (deadline Done) is progress, not a stale
 /// seed: what Pip learned on the way (playbooks, facts) must survive a restart. False for any other
 /// person (the caller never touches their memory) and for an Erika seeded on an older day or by an older
 /// build (a letter or the deadline missing: the older seed skipped the future-dated letter): the app then
@@ -278,19 +385,21 @@ pub fn demo_seed_is_complete(memory: &Memory) -> Result<bool> {
     }
     let mut files: Vec<String> = Vec::new();
     let mut questionnaire = false;
+    let mut claim = false;
     for t in ALL_DOC_TYPES {
         for row in memory.documents_of_type(t)? {
             if let Some(name) = row.path.file_name().and_then(|n| n.to_str()) {
                 files.push(name.to_string());
             }
-            if memory.deadlines_for_document(row.id)?.iter().any(|dl| dl.rule_id.as_deref() == Some("frist_aus_brief"))
-            {
-                questionnaire = true;
-            }
+            let rules: Vec<_> =
+                memory.deadlines_for_document(row.id)?.into_iter().filter_map(|dl| dl.rule_id).collect();
+            questionnaire |= rules.iter().any(|r| r == "frist_aus_brief");
+            claim |= rules.iter().any(|r| r == crate::rules::flight::EU261_RULE);
         }
     }
-    let letters = DEMO_LETTER_FILES.iter().all(|f| files.iter().any(|have| have == f));
-    Ok(letters && questionnaire)
+    let letters =
+        DEMO_LETTER_FILES.iter().filter(|f| !ATTACHMENT_FILES.contains(f)).all(|f| files.iter().any(|have| have == f));
+    Ok(letters && questionnaire && claim)
 }
 
 /// The demo person's full name (the profile's `full_name` after `seed_demo_profile`).
@@ -318,6 +427,11 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/letters")
     }
 
+    /// 1 when the boarding pass file exists (it is seeded only then), else 0.
+    fn boarding() -> usize {
+        usize::from(letters_dir().join("boarding_pass_bx2041.pdf").exists())
+    }
+
     fn setup(now: DateTime<Local>) -> (Arc<Memory>, RuleEngine) {
         let mem = Arc::new(Memory::open_in_memory().unwrap());
         let rules = RuleEngine::new(mem.clone(), Arc::new(FixedClock::new(now)) as Arc<dyn Clock>);
@@ -338,15 +452,22 @@ mod tests {
             ("lang", "en"),
             ("onboarded", "1"),
             ("bundesland", "Nordrhein-Westfalen"),
+            ("airline", "Beispiel Air"),
         ] {
             assert_eq!(mem.profile_get(k).unwrap().as_deref(), Some(v), "{k}");
         }
+        // The claim page is set only when fixtures/demo-air exists next to the letters.
+        let air = letters_dir().join("../demo-air/index.html");
+        let claim_form = mem.profile_get("airline_claim_form").unwrap();
+        assert_eq!(claim_form.is_some(), air.exists());
+        assert!(claim_form.is_none_or(|u| u.starts_with("file:") && u.ends_with("demo-air/index.html")));
 
         let docs: Vec<_> = [DocType::AuBescheinigung, DocType::Bescheid, DocType::Brief]
             .iter()
             .flat_map(|t| mem.documents_of_type(*t).unwrap())
             .collect();
-        assert_eq!(docs.len(), 3);
+        assert_eq!(docs.len(), 4);
+        assert_eq!(mem.documents_of_type(DocType::Sonstiges).unwrap().len(), boarding());
         assert!(docs.iter().all(|r| r.path.starts_with(letters_dir())));
         // The real file hash: the same file dropped again is a known letter.
         let foto = std::fs::read(letters_dir().join("au_erika_erst_foto.jpg")).unwrap();
@@ -359,23 +480,28 @@ mod tests {
                 ("au_lueckenlos".to_string(), d(2026, 11, 2)),
                 ("frist_aus_brief".to_string(), d(2026, 11, 13)),
                 ("widerspruch_bescheid".to_string(), d(2026, 11, 18)),
+                ("eu261_claim".to_string(), d(2029, 12, 31)),
             ]
         );
+        let claim = mem.open_deadlines().unwrap().pop().unwrap();
+        assert_eq!(claim.title, "Claim EUR 400 from Beispiel Air for flight BX 2041 (3 Oct 2026)");
+        assert_eq!(claim.remind_at, vec![local_at(d(2026, 10, 29), 9, 0)], "tomorrow morning");
         let all_open = mem.open_deadlines().unwrap();
         assert!(all_open.iter().all(|dl| dl.status == DeadlineStatus::Open && !dl.remind_at.is_empty()));
         assert!(all_open.iter().all(|dl| dl.remind_at.iter().all(|t| *t >= local_at(now.date_naive(), 0, 0))));
         assert!(all_open.iter().any(|dl| dl.title == "New sick note, if you are still ill"));
 
         let events = mem.recent_events(10).unwrap();
-        assert_eq!(events.len(), 4);
+        assert_eq!(events.len(), 5 + boarding());
         assert!(events.iter().all(|e| e.at < now));
         assert!(events.iter().any(|e| e.kind == "done" && e.text.contains("sick note of 13 Oct")));
-        assert_eq!(events.iter().filter(|e| e.kind == "letter").count(), 3);
+        assert_eq!(events.iter().filter(|e| e.kind == "letter").count(), 4 + boarding());
+        assert!(demo_seed_is_complete(&mem).unwrap());
 
         // Second call: no-op.
         assert!(!seed_demo_profile(&mem, &rules, &letters_dir(), now).unwrap());
-        assert_eq!(mem.open_deadlines().unwrap().len(), 3);
-        assert_eq!(mem.recent_events(10).unwrap().len(), 4);
+        assert_eq!(mem.open_deadlines().unwrap().len(), 4);
+        assert_eq!(mem.recent_events(10).unwrap().len(), 5 + boarding());
     }
 
     #[test]
@@ -384,18 +510,23 @@ mod tests {
         let now = local_at(d(2026, 10, 26), 10, 0);
         let (mem, rules) = setup(now);
         assert!(seed_demo_profile(&mem, &rules, &letters_dir(), now).unwrap());
-        let briefe = mem.documents_of_type(DocType::Brief).unwrap();
-        assert_eq!(briefe.len(), 1);
+        let mut briefe = mem.documents_of_type(DocType::Brief).unwrap();
+        assert_eq!(briefe.len(), 2);
+        briefe.retain(|b| b.extract.flight.is_none());
         assert!(briefe[0].extract.summary_simple.contains("11 November 2026"), "{}", briefe[0].extract.summary_simple);
+        // The flight moves too: two days earlier, the claim stays due at the end of 2029.
+        let air = mem.search_documents("BX7Q2K", 5).unwrap();
+        let flight = air.iter().find_map(|r| r.extract.flight.clone()).expect("the delay notice");
+        assert_eq!(flight.date, d(2026, 10, 1));
         let au = mem.documents_of_type(DocType::AuBescheinigung).unwrap();
         assert!(au[0].extract.summary_simple.contains("28 October 2026"));
         assert!(!mem.search_documents("28.10.2026", 5).unwrap().is_empty());
         assert!(!mem.search_documents("11.11.2026", 5).unwrap().is_empty());
         // The sick note ends Wednesday 28 Oct: the next one is due Thursday 29 Oct.
         let due: Vec<_> = mem.open_deadlines().unwrap().iter().map(|dl| dl.due).collect();
-        assert_eq!(due, vec![d(2026, 10, 29), d(2026, 11, 11), d(2026, 11, 16)]);
+        assert_eq!(due, vec![d(2026, 10, 29), d(2026, 11, 11), d(2026, 11, 16), d(2029, 12, 31)]);
         assert!(mem.recent_events(10).unwrap().iter().all(|e| e.at < now));
-        assert_eq!(mem.recent_events(10).unwrap().len(), 4);
+        assert_eq!(mem.recent_events(10).unwrap().len(), 5 + boarding());
 
         let (mem, rules) = setup(now);
         mem.profile_set("name", "Jonas").unwrap();
@@ -448,12 +579,13 @@ mod tests {
                 ("au_lueckenlos".to_string(), d(2026, 11, 9)),
                 ("frist_aus_brief".to_string(), d(2026, 11, 22)),
                 ("widerspruch_bescheid".to_string(), d(2026, 11, 27)),
+                ("eu261_claim".to_string(), d(2029, 12, 31)),
             ]
         );
         assert!(open.iter().all(|(_, due)| *due >= now.date_naive()));
         assert!(!mem.search_documents("22.11.2026", 5).unwrap().is_empty());
         let events = mem.recent_events(10).unwrap();
-        assert_eq!(events.len(), 4);
+        assert_eq!(events.len(), 5 + boarding());
         assert!(events.iter().all(|e| e.at < now));
         assert!(events.iter().any(|e| e.kind == "done" && e.text.contains("sick note of 22 Oct")));
     }
@@ -469,9 +601,12 @@ mod tests {
         // Restart with DEMO_NOW=2026-10-29T18:00.
         let rules =
             RuleEngine::new(mem.clone(), Arc::new(DemoClock::parse("2026-10-29T18:00").unwrap()) as Arc<dyn Clock>);
+        // The sick note at 18:00, and the flight claim's morning reminder that rang while Pip was off.
         let fired = rules.tick().unwrap();
-        assert_eq!(fired.len(), 1);
-        let UiEvent::Reminder { text, .. } = rules.reminder_event(&fired[0], Lang::En) else { panic!() };
+        let rules_fired: Vec<_> = fired.iter().filter_map(|r| r.deadline.rule_id.clone()).collect();
+        assert_eq!(rules_fired, ["eu261_claim", "au_lueckenlos"]);
+        let au = fired.iter().find(|r| r.deadline.rule_id.as_deref() == Some("au_lueckenlos")).unwrap();
+        let UiEvent::Reminder { text, .. } = rules.reminder_event(au, Lang::En) else { panic!() };
         assert!(text.starts_with("Your sick note ends tomorrow."), "{text}");
     }
 }

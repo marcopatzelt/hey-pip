@@ -330,8 +330,9 @@ impl Gate {
         Some(key)
     }
 
-    /// Commit if is_commit || COMMIT_WORDS hit (case-insensitive, word-ish) in description/sam_query,
-    /// or the UI name / quoted label looks final (`label_hit`). Keys: see `key_commits`; Space when the
+    /// Commit if is_commit || COMMIT_WORDS hit (case-insensitive, word-ish) in sam_query or (unless the UI name
+    /// and a quoted label both name the target) in the description, or the UI name / quoted label looks final
+    /// (`label_hit`). Keys: see `key_commits`; Space when the
     /// focused element looks like a send button or is unknown (ui_name None).
     /// Click/TypeText/Key/Scroll/OpenUrl = Act; the rest Free.
     /// Pip never closes, minimizes or quits the user's windows (unsaved work, the user's own programs).
@@ -355,8 +356,13 @@ impl Gate {
         match tool {
             Tool::Click { sam_query, description, is_commit, .. } => {
                 let ui_hit = ui_name.is_some_and(label_hit);
-                let quoted = quoted_label(description).is_some_and(|l| label_hit(&l));
-                if *is_commit || ui_hit || quoted || word_hit(description) || word_hit(sam_query) {
+                let label = quoted_label(description);
+                let quoted = label.as_deref().is_some_and(label_hit);
+                // Element path: the UI tree names the target AND the model quotes its label. Then the free text
+                // around it ("the link „contact page“ under the heading Where do I send …") does not count, only
+                // the names, the quoted label and the SAM query. Picture path (no UI name): everything counts.
+                let target_named = ui_name.is_some() && label.is_some();
+                if *is_commit || ui_hit || quoted || word_hit(sam_query) || (!target_named && word_hit(description)) {
                     Risk::Commit
                 } else {
                     Risk::Act

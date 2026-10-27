@@ -1,0 +1,111 @@
+{
+ "note": "UI Automation outline of demo-air-refund-check.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-air-refund-check/index.html, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-air-refund-check.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "text",
+   "name": "Receive your refund",
+   "value": null,
+   "rect": {
+    "x": 547,
+    "y": 132,
+    "w": 506,
+    "h": 45
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "text",
+   "name": "Confirm within 24 hours or your EUR 400 refund expires.",
+   "value": null,
+   "rect": {
+    "x": 547,
+    "y": 185,
+    "w": 506,
+    "h": 78
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "edit",
+   "name": "Card number",
+   "value": "",
+   "rect": {
+    "x": 547,
+    "y": 314,
+    "w": 506,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "edit",
+   "name": "Name on card",
+   "value": "",
+   "rect": {
+    "x": 547,
+    "y": 418,
+    "w": 350,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "edit",
+   "name": "CVV",
+   "value": "",
+   "rect": {
+    "x": 913,
+    "y": 418,
+    "w": 140,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "edit",
+   "name": "SMS code",
+   "value": "",
+   "rect": {
+    "x": 547,
+    "y": 522,
+    "w": 506,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "button",
+   "name": "Get my refund now",
+   "value": null,
+   "rect": {
+    "x": 547,
+    "y": 593,
+    "w": 506,
+    "h": 58
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

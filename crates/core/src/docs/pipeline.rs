@@ -240,6 +240,9 @@ fn letter_rules(lang: Lang, how: &str) -> String {
            au.from = \"arbeitsunfähig seit\", au.until = \"bis einschließlich\", first_or_follow from the ticked box, \
            au.issued = \"festgestellt am\". A sick note has no deadlines of its own.\n\
          - For any other letter au is null. person = the full name of the person the letter is addressed to or about.\n\
+         - flight: only when the letter or e-mail is an airline's notice about a delayed or cancelled flight; \
+           otherwise null. from/to = the IATA code if printed, else the city; delay_minutes = how late it arrived; \
+           reference = the booking reference.\n\
          - bescheid = an official decision with a legal remedy notice (Rechtsbehelfsbelehrung / Widerspruch).\n\
          - letter_text = the full readable text of the letter, plain, line breaks kept (for search).\n\
          - confidence: how sure you are about the dates and names (0.0 to 1.0)."
@@ -425,7 +428,8 @@ impl DocPipeline {
     }
 
     /// PNG/JPEG/PDF path -> sha256 (dedupe) -> crop (photos) -> read -> validate -> insert_document
-    /// -> rules.apply_document -> bubble text. Also learns name, insurer and insurance number (`learn_from_letter`).
+    /// -> rules.apply_document -> bubble text. Also learns name, insurer and insurance number, and from an airline's
+    /// notice the airline and its claim page (`learn_from_letter_text`).
     pub async fn ingest(&self, path: &Path, lang: Lang) -> Result<IngestResult> {
         let bytes = tokio::fs::read(path).await.with_context(|| format!("cannot open {}", path.display()))?;
         let kind = sniff(&bytes).ok_or(DocError::Unsupported)?;
@@ -469,7 +473,7 @@ impl DocPipeline {
         let doc_id = self.memory.insert_document(path, &sha, &extract, &text)?;
         let deadlines = self.rules.apply_document(doc_id, &extract)?;
         // Name, insurer and insurance number from the letter (never over what the user said).
-        match crate::memory::learn_from_letter(&self.memory, doc_id, &extract) {
+        match crate::memory::learn::learn_from_letter_text(&self.memory, doc_id, &extract, &text) {
             Ok(keys) if !keys.is_empty() => tracing::info!(facts = keys.len(), "learned from letter"),
             Ok(_) => {}
             Err(e) => tracing::warn!(error = %e, "learning from the letter failed"),
@@ -618,6 +622,7 @@ mod tests {
             requests: vec![],
             deadlines: vec![],
             au: None,
+            flight: None,
             consequences_if_ignored: None,
             confidence: 0.9,
         }
@@ -835,7 +840,8 @@ mod tests {
         let p = &tool.parameters;
         assert_eq!(p["additionalProperties"], false);
         let req: Vec<&str> = p["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(req.contains(&"letter_text") && req.contains(&"au"));
+        assert!(req.contains(&"letter_text") && req.contains(&"au") && req.contains(&"flight"));
+        assert!(instructions(Lang::En).contains("flight: only when the letter or e-mail is an airline's notice"));
         assert_eq!(req.len(), p["properties"].as_object().unwrap().len());
         assert!(instructions(Lang::En).contains("in English"));
         let private = private_instructions(Lang::En);

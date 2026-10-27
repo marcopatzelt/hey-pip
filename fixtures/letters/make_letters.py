@@ -2,12 +2,13 @@
 """Build the invented example letters (PDF + PNG) and the phone photo of the sick note.
 
 All people, insurers, offices, numbers and addresses are INVENTED. No real logos.
-Run from anywhere:  python3 fixtures/letters/make_letters.py
+Run from anywhere:  python3 fixtures/letters/make_letters.py [flight]   (flight: only the Beispiel Air family)
 Needs: reportlab, pymupdf, ImageMagick 7 (`magick`).
 """
 
 import pathlib
 import subprocess
+import sys
 
 import pymupdf
 from reportlab.lib.colors import HexColor, black, white
@@ -407,6 +408,236 @@ def make_uni() -> None:
     c.save()
 
 
+# --------------------------------------------------------------------------- Beispiel Air (flight family)
+
+AIR = HexColor("#c8102e")
+AIR_DARK = HexColor("#7a0a1c")
+
+
+def logo_beispiel_air(c: Canvas, x: float, y: float) -> None:
+    c.setFillColor(AIR)
+    p = c.beginPath()  # a simple wing, no real logo
+    p.moveTo(x, y)
+    p.lineTo(x + 12 * mm, y + 6 * mm)
+    p.lineTo(x + 9 * mm, y)
+    p.close()
+    c.drawPath(p, fill=1, stroke=0)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(x + 15 * mm, y + 0.5 * mm, "Beispiel Air")
+    c.setFillColor(black)
+
+
+def email_header(c: Canvas, rows: list[tuple[str, str]], top: float) -> float:
+    """The head of a printed e-mail: From / Sent / To / Subject, a rule below."""
+    y = top
+    for label, value in rows:
+        c.setFont("Helvetica-Bold", 9.5)
+        c.drawString(20 * mm, y, label)
+        c.setFont("Helvetica", 9.5)
+        c.drawString(42 * mm, y, value)
+        y -= 5.2 * mm
+    c.setStrokeColor(HexColor("#bbbbbb"))
+    c.line(20 * mm, y + 1.5 * mm, W - 20 * mm, y + 1.5 * mm)
+    return y - 6 * mm
+
+
+def flight_table(c: Canvas, y: float, rows: list[tuple[str, str]]) -> float:
+    c.setFillColor(HexColor("#f6f1f2"))
+    c.rect(20 * mm, y - len(rows) * 6.2 * mm + 2 * mm, W - 40 * mm, len(rows) * 6.2 * mm + 2 * mm, fill=1, stroke=0)
+    c.setFillColor(black)
+    for label, value in rows:
+        c.setFont("Helvetica", 9.5)
+        c.setFillColor(GREY)
+        c.drawString(24 * mm, y - 2 * mm, label)
+        c.setFillColor(black)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(75 * mm, y - 2 * mm, value)
+        y -= 6.2 * mm
+    return y - 6 * mm
+
+
+def make_flight_email(name: str, *, sent: str, subject: str, intro: list[str], rows: list[tuple[str, str]],
+                      outro: list[str]) -> None:
+    """A printed e-mail of the invented airline "Beispiel Air" (the passenger printed it to keep it)."""
+    c = Canvas(str(OUT / f"{name}.pdf"), pagesize=A4)
+    c.setTitle(f"{subject} (Beispiel)")
+    c.setFont("Helvetica", 7.5)
+    c.setFillColor(GREY)
+    c.drawString(20 * mm, H - 12 * mm, f"Printed e-mail · {sent}")
+    c.setFillColor(black)
+    y = email_header(
+        c,
+        [
+            ("From:", "Beispiel Air Customer Service <service@beispiel-air.example>"),
+            ("Sent:", sent),
+            ("To:", "Erika Beispiel <erika.beispiel@example.com>"),
+            ("Subject:", subject),
+        ],
+        H - 22 * mm,
+    )
+    logo_beispiel_air(c, 20 * mm, y - 6 * mm)
+    y = paragraphs(c, y - 18 * mm, intro, size=10.5)
+    y = flight_table(c, y, rows)
+    paragraphs(c, y, outro, size=10.5)
+    footer(
+        c,
+        [
+            "Beispiel Air · Flughafenstraße 1 · 40999 Beispielstadt · www.beispiel-air.example",
+            "You receive this e-mail because you booked a flight with Beispiel Air.",
+        ],
+    )
+    c.showPage()
+    c.save()
+
+
+def make_flight_letters() -> None:
+    sign = ["Kind regards,", "Your Beispiel Air customer service"]
+    make_flight_email(
+        "flight_delay_bx2041",
+        sent="Sunday, 4 October 2026, 09:12",
+        subject="Beispiel Air – Information about your flight BX 2041",
+        intro=[
+            "Dear Ms Beispiel,",
+            "we are sorry that your flight arrived late. Here are the details of your journey:",
+        ],
+        rows=[
+            ("Passenger", "Erika Beispiel"),
+            ("Booking reference", "BX7Q2K"),
+            ("Flight", "BX 2041"),
+            ("Route", "Düsseldorf (DUS) → Tenerife South (TFS)"),
+            ("Date of flight", "3 October 2026"),
+            ("Scheduled arrival", "14:10"),
+            ("Actual arrival", "18:20 (4 h 10 min late)"),
+            ("Reason", "late arrival of the aircraft from an earlier flight"),
+        ],
+        outro=[
+            "You can submit a request at beispiel-air.example/claim. Please have your booking reference and your "
+            "boarding pass ready.",
+            "We hope to welcome you on board again soon.",
+            *sign,
+        ],
+    )
+    make_flight_email(
+        "flight_delay_short",
+        sent="Tuesday, 13 October 2026, 08:40",
+        subject="Beispiel Air – Information about your flight BX 1180",
+        intro=[
+            "Dear Ms Beispiel,",
+            "we are sorry that your flight arrived late. Here are the details of your journey:",
+        ],
+        rows=[
+            ("Passenger", "Erika Beispiel"),
+            ("Booking reference", "BX4M8P"),
+            ("Flight", "BX 1180"),
+            ("Route", "Düsseldorf (DUS) → Palma de Mallorca (PMI)"),
+            ("Date of flight", "12 October 2026"),
+            ("Scheduled arrival", "11:05"),
+            ("Actual arrival", "12:25 (1 h 20 min late)"),
+            ("Reason", "busy airspace"),
+        ],
+        outro=["We hope to welcome you on board again soon.", *sign],
+    )
+    make_flight_email(
+        "flight_cancel_notice",
+        sent="Monday, 26 October 2026, 10:05",
+        subject="Beispiel Air – Change to your flight BX 2305",
+        intro=[
+            "Dear Ms Beispiel,",
+            "we have had to cancel your flight BX 2305 on 20 November 2026. We have already booked you on another "
+            "flight on the same day at no extra cost:",
+        ],
+        rows=[
+            ("Passenger", "Erika Beispiel"),
+            ("Booking reference", "BX9R3T"),
+            ("Cancelled flight", "BX 2305, 20 November 2026, 07:40"),
+            ("Route", "Köln/Bonn (CGN) → Lisbon (LIS)"),
+            ("Your new flight", "BX 2307, 20 November 2026, 09:15"),
+            ("New arrival", "11:50 (scheduled before: 10:15)"),
+        ],
+        outro=[
+            "You do not need to do anything. If the new flight does not suit you, you can ask for a refund of your "
+            "ticket at beispiel-air.example/refund.",
+            "We are sorry for the change.",
+            *sign,
+        ],
+    )
+    make_flight_email(
+        "flight_cancel_late",
+        sent="Saturday, 10 October 2026, 18:30",
+        subject="Beispiel Air – Your flight BX 2305 has been cancelled",
+        intro=[
+            "Dear Ms Beispiel,",
+            "we are sorry to tell you that your flight BX 2305 on 14 October 2026 has been cancelled.",
+        ],
+        rows=[
+            ("Passenger", "Erika Beispiel"),
+            ("Booking reference", "BX5L7W"),
+            ("Cancelled flight", "BX 2305, 14 October 2026, 07:40"),
+            ("Route", "Köln/Bonn (CGN) → Lisbon (LIS)"),
+            ("Other flight", "none on this route this week"),
+        ],
+        outro=[
+            "Unfortunately we cannot offer you another flight. You can ask for a refund of your ticket at "
+            "beispiel-air.example/refund. You can submit a request at beispiel-air.example/claim.",
+            "We apologise for the inconvenience.",
+            *sign,
+        ],
+    )
+    make_boarding_pass()
+
+
+def make_boarding_pass() -> None:
+    """One-page boarding pass of the flight in flight_delay_bx2041: the document Pip attaches to the claim."""
+    c = Canvas(str(OUT / "boarding_pass_bx2041.pdf"), pagesize=A4)
+    c.setTitle("Beispiel Air – Boarding pass BX 2041 (Beispiel)")
+    x0, y0, w, h = 20 * mm, H - 120 * mm, W - 40 * mm, 95 * mm
+    c.setStrokeColor(AIR_DARK)
+    c.setLineWidth(1)
+    c.roundRect(x0, y0, w, h, 4 * mm, fill=0)
+    c.setFillColor(AIR)
+    c.roundRect(x0, y0 + h - 16 * mm, w, 16 * mm, 4 * mm, fill=1, stroke=0)
+    c.rect(x0, y0 + h - 16 * mm, w, 6 * mm, fill=1, stroke=0)
+    c.setFillColor(white)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(x0 + 6 * mm, y0 + h - 11 * mm, "Beispiel Air")
+    c.drawRightString(x0 + w - 6 * mm, y0 + h - 11 * mm, "BOARDING PASS")
+    c.setFillColor(black)
+
+    def cell(x: float, y: float, label: str, value: str, size: float = 13) -> None:
+        c.setFont("Helvetica", 7.5)
+        c.setFillColor(GREY)
+        c.drawString(x, y, label)
+        c.setFillColor(black)
+        c.setFont("Helvetica-Bold", size)
+        c.drawString(x, y - 6 * mm, value)
+
+    top = y0 + h - 26 * mm
+    cell(x0 + 6 * mm, top, "PASSENGER", "BEISPIEL / ERIKA MS")
+    cell(x0 + 110 * mm, top, "BOOKING REFERENCE", "BX7Q2K")
+    cell(x0 + 6 * mm, top - 17 * mm, "FROM", "DÜSSELDORF DUS", 15)
+    cell(x0 + 70 * mm, top - 17 * mm, "TO", "TENERIFE SOUTH TFS", 15)
+    cell(x0 + 6 * mm, top - 34 * mm, "FLIGHT", "BX 2041")
+    cell(x0 + 40 * mm, top - 34 * mm, "DATE", "03 OCT 2026")
+    cell(x0 + 80 * mm, top - 34 * mm, "BOARDING", "09:20")
+    cell(x0 + 108 * mm, top - 34 * mm, "GATE", "B14")
+    cell(x0 + 130 * mm, top - 34 * mm, "SEAT", "14C")
+    # An invented bar code: plain stripes, it encodes nothing.
+    bx, by = x0 + 6 * mm, y0 + 6 * mm
+    widths = [0.4, 0.8, 0.4, 1.2, 0.4, 0.4, 0.8, 1.2, 0.4, 0.8] * 9
+    for i, bw in enumerate(widths):
+        if i % 2 == 0:
+            c.rect(bx, by, bw * mm, 10 * mm, fill=1, stroke=0)
+        bx += bw * mm
+    c.setFont("Helvetica", 8)
+    c.setFillColor(GREY)
+    c.drawString(x0 + 110 * mm, y0 + 12 * mm, "Gate closes 20 minutes before departure.")
+    c.drawString(x0 + 110 * mm, y0 + 8 * mm, "Departure 10:05 · Arrival 14:10")
+    c.setFillColor(black)
+    footer(c, ["Beispiel Air · Flughafenstraße 1 · 40999 Beispielstadt · www.beispiel-air.example"])
+    c.showPage()
+    c.save()
+
+
 # --------------------------------------------------------------------------- PNG + photo
 
 
@@ -464,6 +695,12 @@ def make_photo(src_png: pathlib.Path, dst: pathlib.Path) -> None:
 
 
 def main() -> None:
+    if sys.argv[1:] == ["flight"]:
+        # Only the flight family (the other letters stay byte for byte as they are).
+        make_flight_letters()
+        render_png("flight_delay_bx2041")
+        print("ok: flight letters")
+        return
     make_au(
         "au_erika_erst",
         first=True,
@@ -483,7 +720,9 @@ def main() -> None:
     make_insurer_letter()
     make_bescheid()
     make_uni()
-    for name in ["au_erika_erst", "au_erika_folge", "insurer_letter", "bescheid_wohngeld", "uni_rueckmeldung"]:
+    make_flight_letters()
+    for name in ["au_erika_erst", "au_erika_folge", "insurer_letter", "bescheid_wohngeld", "uni_rueckmeldung",
+                 "flight_delay_bx2041"]:
         render_png(name)
     make_photo(OUT / "au_erika_erst.png", OUT / "au_erika_erst_foto.jpg")
     print("ok:", sorted(p.name for p in OUT.iterdir() if p.suffix in {".pdf", ".png", ".jpg"}))

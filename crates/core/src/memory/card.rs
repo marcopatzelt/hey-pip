@@ -22,6 +22,9 @@ pub struct Tally {
     pub deadlines_kept: u64,
     pub reminders_on_time: u64,
     pub seconds_saved: u64,
+    /// Euros claimed back with Pip (flight claims marked done; claimed, never "received"). The least amount of a
+    /// range counts.
+    pub euros_claimed: u64,
     /// The day of the oldest thing Pip remembers.
     pub since: Option<NaiveDate>,
 }
@@ -35,6 +38,7 @@ impl Tally {
             && self.deadlines_kept == 0
             && self.reminders_on_time == 0
             && self.seconds_saved == 0
+            && self.euros_claimed == 0
     }
 }
 
@@ -60,8 +64,37 @@ pub fn tally(mem: &Memory) -> Result<Tally> {
         deadlines_kept: mem.deadlines_done_count()?,
         reminders_on_time: mem.reminders_fired_count()?,
         seconds_saved,
+        euros_claimed: euros_claimed(mem)?,
         since: mem.first_event_at()?.map(|t| t.date_naive()),
     })
+}
+
+/// Sum of the amounts in the titles of done `eu261_claim` deadlines ("Claim EUR 400 from …"). Counted from the
+/// deadlines themselves, so it holds whoever closed them (the deadline list, a reminder, or the run that sent the
+/// claim). Nothing is stored for it: no profile key the model or "What Pip knows" could show.
+pub fn euros_claimed(mem: &Memory) -> Result<u64> {
+    use crate::docs::DocType;
+    use crate::memory::DeadlineStatus;
+    use crate::rules::flight::{EU261_RULE, amount_in_title};
+    let mut sum = 0u64;
+    for t in [
+        DocType::Brief,
+        DocType::Sonstiges,
+        DocType::Rechnung,
+        DocType::Bescheid,
+        DocType::Mahnung,
+        DocType::Vertrag,
+        DocType::AuBescheinigung,
+    ] {
+        for row in mem.documents_of_type(t)? {
+            for dl in mem.deadlines_for_document(row.id)? {
+                if dl.status == DeadlineStatus::Done && dl.rule_id.as_deref() == Some(EU261_RULE) {
+                    sum = sum.saturating_add(u64::from(amount_in_title(&dl.title).unwrap_or(0)));
+                }
+            }
+        }
+    }
+    Ok(sum)
 }
 
 /// Pip, happy (the same picture as in the app).
@@ -217,6 +250,10 @@ fn subline(first_name: Option<&str>, since: Option<NaiveDate>, lang: Lang) -> St
 /// letters tile always stays (the card is never empty); the time tile stays as long as any time was saved.
 fn tiles(t: &Tally, lang: Lang) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
+    if t.euros_claimed > 0 {
+        let (label, sentence) = claimed_words(t.euros_claimed, lang);
+        out.push((format!("+EUR {}", t.euros_claimed), label.to_string(), sentence));
+    }
     let counted = [
         (Kind::Letters, t.letters_read, true),
         (Kind::Forms, t.forms_filled, false),
@@ -236,6 +273,14 @@ fn tiles(t: &Tally, lang: Lang) -> Vec<(String, String, String)> {
         out.push((format!("<small>{about}</small> {}", esc(&big)), l.to_string(), saved_phrase(t.seconds_saved, lang)));
     }
     out
+}
+
+/// ("claimed", "+EUR 400 claimed"): claimed, never "received" or "earned" (the airline may still say no).
+fn claimed_words(euros: u64, lang: Lang) -> (&'static str, String) {
+    match lang {
+        Lang::En => ("claimed", format!("+EUR {euros} claimed")),
+        Lang::De => ("beantragt", format!("+EUR {euros} beantragt")),
+    }
 }
 
 /// HTML escape for text and attribute values.
@@ -374,6 +419,9 @@ pub fn share_text(t: &Tally, lang: Lang) -> String {
     let n = |n: u64, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let mut parts = Vec::new();
     let en = lang == Lang::En;
+    if t.euros_claimed > 0 {
+        parts.push(claimed_words(t.euros_claimed, lang).1);
+    }
     if t.letters_read > 0 {
         parts.push(if en {
             n(t.letters_read, "letter read", "letters read")
@@ -449,6 +497,7 @@ mod tests {
             deadlines_kept: 1,
             reminders_on_time: 2,
             seconds_saved: 1500,
+            euros_claimed: 0,
             since: Some(d(2026, 10, 14)),
         }
     }
@@ -605,6 +654,7 @@ mod tests {
             deadlines_kept: u64::MAX,
             reminders_on_time: u64::MAX,
             seconds_saved: u64::MAX,
+            euros_claimed: u64::MAX,
             since: None,
         };
         for lang in [Lang::En, Lang::De] {
@@ -628,6 +678,36 @@ mod tests {
         assert!(html.contains("etwa 25 Minuten gespart"));
         let s = share_text(&t, Lang::De);
         assert!(!s.contains('{') && s.starts_with("Das hat Pip für mich erledigt: 3 Briefe gelesen"), "{s}");
+    }
+
+    #[test]
+    fn a_done_flight_claim_shows_as_claimed_never_received() {
+        use crate::rules::RuleEngine;
+        use crate::rules::flight::tests::{flight, notice_doc};
+        let m = std::sync::Arc::new(Memory::open_in_memory().unwrap());
+        let clock = std::sync::Arc::new(crate::clock::FixedClock::new(local_at(d(2026, 10, 28), 9, 0)));
+        let rules = RuleEngine::new(m.clone(), clock);
+        m.profile_set("lang", "en").unwrap();
+        let doc = notice_doc(flight("DUS", "TFS", Some(250), false, None));
+        let id = m.insert_document(std::path::Path::new("air.pdf"), "sha-air", &doc, "x").unwrap();
+        let claim = rules.apply_document(id, &doc).unwrap().remove(0);
+        assert_eq!(tally(&m).unwrap().euros_claimed, 0, "open: nothing claimed yet");
+        rules.deadline_done(claim.id, Lang::En).unwrap();
+        let t = tally(&m).unwrap();
+        assert_eq!(t.euros_claimed, 400);
+        assert!(!t.is_empty());
+        let html = card_html(&t, Some("Erika"), Lang::En);
+        assert!(html.contains("aria-label=\"+EUR 400 claimed\""), "{html}");
+        let post = share_text(&t, Lang::En);
+        assert!(post.starts_with("Pip did this for me: +EUR 400 claimed, 1 letter read"), "{post}");
+        for text in [html.to_lowercase(), post.to_lowercase()] {
+            for w in ["received", "earned", "paid out"] {
+                assert!(!text.contains(w), "{w}");
+            }
+        }
+        assert!(!m.profile_all().unwrap().iter().any(|(k, _)| k.contains("claimed")), "no hidden profile key");
+        // Zero claimed: no tile.
+        assert!(!card_html(&demo_tally(), None, Lang::En).contains("claimed"));
     }
 
     /// Writes target/card-preview.html from the demo numbers, to look at in a browser.

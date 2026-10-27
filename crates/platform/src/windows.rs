@@ -808,9 +808,7 @@ fn at_point(uia: &UIAutomation, item: &OutlineItem) -> uiautomation::Result<Opti
         if e.get_process_id().ok() == Some(std::process::id()) {
             break;
         }
-        if role_of(&e) == Some(item.role.as_str())
-            && short(&e.get_name().unwrap_or_default(), 100) == item.name
-        {
+        if role_of(&e) == Some(item.role.as_str()) && short(&e.get_name().unwrap_or_default(), 100) == item.name {
             return Ok(Some(e));
         }
         cur = walker.get_parent(&e).ok();

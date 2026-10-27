@@ -618,7 +618,23 @@ impl Memory {
 
     /// The stored letter whose file is `path` (compared without case and with either slash), newest first.
     pub fn document_by_path(&self, path: &str) -> Result<Option<DocumentRow>> {
-        let norm = |s: &str| s.trim().trim_matches('"').replace('\\', "/").to_lowercase();
+        // Same file however it is written: quotes, backslashes, case, and "." / ".." parts
+        // ("C:/app/core/../fixtures/a.pdf" is "C:/app/fixtures/a.pdf").
+        let norm = |s: &str| {
+            let flat = s.trim().trim_matches('"').replace('\\', "/").to_lowercase();
+            let mut parts: Vec<&str> = Vec::new();
+            for (i, p) in flat.split('/').enumerate() {
+                match p {
+                    "." => {}
+                    "" if i > 0 => {}
+                    ".." if parts.last().is_some_and(|l| !l.is_empty() && *l != "..") => {
+                        parts.pop();
+                    }
+                    _ => parts.push(p),
+                }
+            }
+            parts.join("/")
+        };
         let want = norm(path);
         if want.is_empty() {
             return Ok(None);

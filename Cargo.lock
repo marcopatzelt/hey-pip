@@ -3620,6 +3620,7 @@ dependencies = [
  "image",
  "pip-core",
  "pip-platform",
+ "regex",
  "serde",
  "serde_json",
  "tokio",

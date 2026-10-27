@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thank you – Beispiel Air</title>
+<!-- Confirmation page of the INVENTED airline's claim form (index.html shows the same text in place after "Send
+     claim"; this page is for a direct link). ?ref=XXXXXX names the claim (default BX7Q2K). Nothing leaves the page. -->
+<style>
+  :root { --red: #c8102e; --navy: #1d2b4f; --ink: #1d2433; --muted: #5d6779; --line: #d3d9e4; --bg: #f3f5f9; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 18px/1.5 "Segoe UI", system-ui, -apple-system, Arial, sans-serif; color: var(--ink); background: var(--bg); }
+  .demo-bar { background: #fff4d6; color: #6b4e00; text-align: center; font-size: 15px; padding: 6px 16px; border-bottom: 1px solid #f0dca0; }
+  header { background: #fff; border-bottom: 1px solid var(--line); }
+  .top { max-width: 1080px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 12px; color: var(--red); }
+  .logo-mark { width: 44px; height: 44px; border-radius: 8px; background: var(--red); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 22px; }
+  .logo-text b { display: block; font-size: 24px; line-height: 1.1; }
+  .logo-text span { font-size: 13px; color: var(--muted); }
+  main { max-width: 860px; margin: 0 auto; padding: 28px 24px 40px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 22px 28px; }
+  h1 { font-size: 28px; margin: 0 0 8px; }
+  .ok { width: 64px; height: 64px; border-radius: 50%; background: var(--navy); color: #fff; display: grid; place-items: center; font-size: 36px; margin-bottom: 12px; }
+  footer { text-align: center; font-size: 14px; color: var(--muted); padding: 0 24px 32px; }
+</style>
+</head>
+<body>
+<div class="demo-bar">Demo page of an invented airline. Nothing is sent.</div>
+<header><div class="top"><div class="logo-mark">BX</div><div class="logo-text"><b>Beispiel Air</b><span>Fly from Beispielstadt</span></div></div></header>
+<main>
+  <div class="card">
+    <div class="ok">✓</div>
+    <h1>Thank you, your claim <span id="t-ref">BX7Q2K</span> was received on <span id="t-when"></span></h1>
+    <p>We will answer by e-mail within 6 weeks. You do not need to do anything else.</p>
+  </div>
+</main>
+<footer>Beispiel Air is invented. Invented example for tests; no data leaves the computer.</footer>
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const ref = (params.get("ref") || "BX7Q2K").replace(/[^A-Za-z0-9]/g, "").slice(0, 6).toUpperCase();
+  document.getElementById("t-ref").textContent = ref || "BX7Q2K";
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  document.getElementById("t-when").textContent =
+    `${now.getDate()} ${now.toLocaleString("en-GB", { month: "long" })} ${now.getFullYear()} at ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+})();
+</script>
+</body>
+</html>

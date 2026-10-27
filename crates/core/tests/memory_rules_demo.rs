@@ -29,6 +29,7 @@ fn sick_note() -> DocumentExtract {
         requests: vec![],
         deadlines: vec![],
         au: Some(AuInfo { from: d(2026, 10, 20), until: d(2026, 10, 30), first_or_follow: AuKind::Erst, issued: None }),
+        flight: None,
         consequences_if_ignored: None,
         confidence: 0.95,
     }
@@ -69,12 +70,39 @@ fn demo_profile_brief_offers_the_questionnaire() {
     let url = "file:///C:/Pip/fixtures/demo-insurer/services.html";
     let name = mem.profile_get("name").unwrap();
     let brief = daily_brief(&mem, now, Lang::En, name.as_deref(), Some((url, &html))).unwrap().expect("a brief");
+    // Money first: the flight line opens the brief and the claim page is the offer.
+    let body = brief.text.strip_prefix("Hi Erika! Here's what's coming up. ").expect("greeting");
+    assert!(
+        body.starts_with(
+            "Good to know: your flight BX 2041 on Saturday, 3 October was about 4 hours late; under EU rule 261/2004 \
+             you may be owed EUR 400 from Beispiel Air; please check."
+        ),
+        "{}",
+        brief.text
+    );
     let offer = brief.offer.expect("an offer");
-    assert_eq!(offer.heading, "Return your questionnaire online");
-    assert!(offer.task.contains(url), "{}", offer.task);
+    assert_eq!(offer.heading, "Claim compensation for a delayed or cancelled flight");
+    let claim = mem.deadline(offer.deadline_id).unwrap().expect("the claim deadline");
+    assert_eq!(claim.rule_id.as_deref(), Some("eu261_claim"));
+    let form = mem.profile_get("airline_claim_form").unwrap().expect("the demo claim page");
+    assert_eq!(
+        offer.task,
+        format!(
+            "Open {form} and claim EUR 400 from Beispiel Air for flight BX 2041 on 3 October 2026 (deadline #{}). \
+             Fill in what you know about me, attach my boarding pass, and stop at the send button.",
+            claim.id
+        )
+    );
     assert!(brief.text.contains("Erika") && brief.text.contains("sick note"), "{}", brief.text);
     assert!(!brief.text.contains('{'), "{}", brief.text);
     println!("{}", brief.text);
+
+    // Once the claim was offered, the next brief offers the questionnaire again.
+    mem.add_event("suggestion_declined", &offer.heading).unwrap();
+    let brief = daily_brief(&mem, now, Lang::En, name.as_deref(), Some((url, &html))).unwrap().expect("a brief");
+    let offer = brief.offer.expect("an offer");
+    assert_eq!(offer.heading, "Return your questionnaire online");
+    assert!(offer.task.contains(url), "{}", offer.task);
 }
 
 /// The same opening shot on the judges' day (Friday 6.11.): the story moved with the clock, so the insurer's
@@ -90,8 +118,14 @@ fn demo_profile_brief_offers_the_questionnaire_on_any_day() {
     let html = std::fs::read_to_string(root.join("demo-insurer/services.html")).unwrap();
     let url = "file:///C:/Pip/fixtures/demo-insurer/services.html";
     let brief = daily_brief(&mem, now, Lang::En, Some("Erika"), Some((url, &html))).unwrap().expect("a brief");
-    assert_eq!(brief.offer.expect("an offer").heading, "Return your questionnaire online");
+    // The flight moved with the story (12 October): the claim is still open and offered first.
+    let offer = brief.offer.expect("an offer");
+    assert_eq!(offer.heading, "Claim compensation for a delayed or cancelled flight");
+    assert!(offer.task.contains("flight BX 2041 on 12 October 2026"), "{}", offer.task);
     assert!(brief.text.contains("sick note") && !brief.text.contains("passed"), "{}", brief.text);
+    mem.add_event("suggestion_accepted", &offer.heading).unwrap();
+    let brief = daily_brief(&mem, now, Lang::En, Some("Erika"), Some((url, &html))).unwrap().expect("a brief");
+    assert_eq!(brief.offer.expect("an offer").heading, "Return your questionnaire online");
     // The after-task offer moves with the story too: the letter's date is one day before `now`.
     let o = offer_after_task(&mem, now, Lang::En, (url, &html)).unwrap().expect("an offer");
     assert_eq!(o.offer.heading, "Return your questionnaire online");

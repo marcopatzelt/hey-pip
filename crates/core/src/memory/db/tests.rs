@@ -442,3 +442,17 @@ fn card_counters_count_done_deadlines_fired_reminders_and_the_first_event() {
     m.add_event_at(early, "done", "Sent the sick note").unwrap();
     assert_eq!(m.first_event_at().unwrap(), Some(early));
 }
+
+#[test]
+fn a_document_is_found_by_its_path_however_it_is_written() {
+    let m = mem();
+    let au = au_doc(d(2026, 10, 20), d(2026, 10, 30));
+    let id =
+        m.insert_document(Path::new("/app/crates/core/../../fixtures/letters/au.pdf"), "sha-au", &au, "AU").unwrap();
+    for p in ["/app/fixtures/letters/au.pdf", "\"/APP/fixtures/./letters/au.pdf\"", "\\app\\fixtures\\letters\\au.pdf"]
+    {
+        assert_eq!(m.document_by_path(p).unwrap().map(|d| d.id), Some(id), "{p}");
+    }
+    assert!(m.document_by_path("/app/fixtures/letters/other.pdf").unwrap().is_none());
+    assert!(m.document_by_path("").unwrap().is_none());
+}

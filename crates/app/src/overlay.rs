@@ -477,10 +477,10 @@ mod hook {
         INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT, SendInput,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GA_ROOT, GUITHREADINFO, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetGUIThreadInfo,
-        GetMessageW, GetWindowLongPtrW, HC_ACTION, MSG, MSLLHOOKSTRUCT, PostThreadMessageW, SetWindowLongPtrW,
-        SetWindowsHookExW, UnhookWindowsHookEx, WH_MOUSE_LL, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-        WS_EX_LAYERED, WS_EX_TRANSPARENT, WindowFromPoint,
+        CallNextHookEx, GA_ROOT, GUITHREADINFO, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetGUIThreadInfo, GetMessageW,
+        GetWindowLongPtrW, HC_ACTION, MSG, MSLLHOOKSTRUCT, PostThreadMessageW, SetWindowLongPtrW, SetWindowsHookExW,
+        UnhookWindowsHookEx, WH_MOUSE_LL, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WS_EX_LAYERED,
+        WS_EX_TRANSPARENT, WindowFromPoint,
     };
 
     use super::{ClickGuard, ClickRecord, MouseEv, Resend, Verdict, inside_any};
@@ -589,7 +589,13 @@ mod hook {
         if ev == MouseEv::LeftDown && !own {
             // The window under the cursor is looked up by the poll (WindowFromPoint sends WM_NCHITTEST to other
             // threads' windows: a busy one would stall the hook, and Windows drops a slow hook without a word).
-            let rec = ClickRecord { at: p, inside, click_through: live, rescued: verdict == Verdict::Rescue, capture_class: capture() };
+            let rec = ClickRecord {
+                at: p,
+                inside,
+                click_through: live,
+                rescued: verdict == Verdict::Rescue,
+                capture_class: capture(),
+            };
             if let Ok(tx) = s.clicks.lock() {
                 let _ = tx.send(rec);
             }

@@ -361,6 +361,49 @@ fn hole_final_buttons_not_in_word_list() {
     assert!(missed.is_empty(), "final/irreversible buttons classified as Act: {missed:?}");
 }
 
+fn click_q(desc: &str, query: &str) -> Tool {
+    Tool::Click {
+        sam_query: query.into(),
+        description: desc.into(),
+        is_commit: false,
+        commit_what: None,
+        commit_to: None,
+        element: None,
+    }
+}
+
+#[test]
+fn hole_link_under_a_send_heading_is_no_send_button() {
+    // Run 2: the link „contact page“ under "Where do I send my sick note?" became a send card.
+    let g = Gate::new(false);
+    let desc = "the link „contact page“ under the heading Where do I send my sick note?";
+    let link = click_q(desc, "contact page link");
+    assert_eq!(g.classify(&link, Some("contact page")), Risk::Act, "element path: only the names count");
+    // Picture path (no UI name): the word list on the description still counts.
+    assert_eq!(g.classify(&link, None), Risk::Commit, "picture path keeps the word list");
+}
+
+#[test]
+fn hole_taskbar_icon_is_no_commit() {
+    let g = Gate::new(false);
+    let icon = click_q("the Edge icon „Microsoft Edge“ in the taskbar", "browser icon");
+    assert_eq!(g.classify(&icon, Some("Microsoft Edge")), Risk::Act);
+}
+
+#[test]
+fn hole_named_target_still_commits_on_names_and_query() {
+    let g = Gate::new(false);
+    // An unquoted description: the UI name alone decides.
+    assert_eq!(g.classify(&click_q("the blue button", "blue button"), Some("Send claim")), Risk::Commit);
+    // A final quoted label is a commit whatever the UI name says.
+    for ui in [Some("Weiter"), Some("contact page"), None] {
+        assert_eq!(g.classify(&click_q("den Knopf „Antrag absenden“", "blue button"), ui), Risk::Commit, "{ui:?}");
+    }
+    // The SAM query counts on the element path too.
+    let q = click_q("the button „Continue“ at the bottom", "submit button");
+    assert_eq!(g.classify(&q, Some("Continue")), Risk::Commit);
+}
+
 #[test]
 fn hole_key_shortcuts_that_send_or_delete() {
     let g = Gate::new(false);

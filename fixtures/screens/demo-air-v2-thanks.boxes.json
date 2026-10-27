@@ -1,0 +1,7 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-air-v2-thanks.png",
+  "targets": {}
+}

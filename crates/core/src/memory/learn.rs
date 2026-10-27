@@ -111,6 +111,7 @@ pub fn is_protected_key(key: &str) -> bool {
         "iban",
         "konto",
         "insurer",
+        "airline",
         "arbeitgeber",
         "employer",
         "versichert",
@@ -273,6 +274,13 @@ pub fn learn_from_run(mem: &Memory, run: &RunSummary) -> Result<Learned> {
 /// After a new letter: the person's full name, the insurer and the insurance number (source "letter:<id>").
 /// Never replaces what the user said or confirmed. Returns the keys that were saved.
 pub fn learn_from_letter(mem: &Memory, doc_id: i64, x: &DocumentExtract) -> Result<Vec<String>> {
+    learn_from_letter_text(mem, doc_id, x, "")
+}
+
+/// `learn_from_letter`, plus from an airline's notice (`flight`): the airline (`airline`) and, when the letter's
+/// text or summary names a claim page (an http(s) link near "claim", "compensation", "refund", "Entschädigung"
+/// or "Erstattung"), that page as `airline_claim_form`. Other links are never kept.
+pub fn learn_from_letter_text(mem: &Memory, doc_id: i64, x: &DocumentExtract, text: &str) -> Result<Vec<String>> {
     let source = format!("letter:{doc_id}");
     let insurer = crate::docs::pipeline::insurer_from(x);
     let mut facts: Vec<(&str, String)> = Vec::new();
@@ -285,6 +293,17 @@ pub fn learn_from_letter(mem: &Memory, doc_id: i64, x: &DocumentExtract) -> Resu
     let from_insurer = x.doc_type == DocType::AuBescheinigung || insurer.is_some();
     if from_insurer && let Some(n) = x.reference.as_deref().and_then(insurance_number) {
         facts.push(("versichertennummer", n));
+    }
+    if let Some(f) = &x.flight {
+        let airline = f.airline.trim();
+        let airline = if airline.is_empty() { x.sender.trim() } else { airline };
+        if !airline.is_empty() && airline.chars().count() <= 60 {
+            facts.push(("airline", airline.to_string()));
+        }
+        let all = format!("{text}\n{}\n{}", x.summary_simple, x.requests.join("\n"));
+        if let Some(url) = claim_url(&all) {
+            facts.push(("airline_claim_form", url));
+        }
     }
     let mut saved = Vec::new();
     for (key, value) in facts {
@@ -299,6 +318,45 @@ pub fn learn_from_letter(mem: &Memory, doc_id: i64, x: &DocumentExtract) -> Resu
         }
     }
     Ok(saved)
+}
+
+/// Words that mark a link as the airline's claim page.
+const CLAIM_WORDS: &[&str] =
+    &["claim", "compensation", "refund", "entschädigung", "entschaedigung", "erstattung", "antrag"];
+
+/// The first http(s) link that is a claim page: the link itself or the words before it in its sentence (at most
+/// 120 characters, no other link) name a claim.
+/// Without query or fragment; never a file or other scheme.
+fn claim_url(text: &str) -> Option<String> {
+    let low = text.to_lowercase();
+    let mut from = 0;
+    while let Some(at) = low[from..].find("http").map(|i| from + i) {
+        from = at + 4;
+        let rest = &text[at..];
+        if !(rest.to_lowercase().starts_with("https://") || rest.to_lowercase().starts_with("http://")) {
+            continue;
+        }
+        let end =
+            rest.find(|c: char| c.is_whitespace() || matches!(c, '"' | '<' | '>' | ')' | ']')).unwrap_or(rest.len());
+        let url = strip_query(rest[..end].trim_end_matches(['.', ',', ';', ':']));
+        let mut start = at.saturating_sub(120);
+        while !low.is_char_boundary(start) {
+            start -= 1;
+        }
+        // Only the words of this sentence before the link, never another link ("claim.html … https://news").
+        let mut before = &low[start..at];
+        if let Some(i) = before.rfind(['.', '\n']).filter(|i| before[i + 1..].starts_with([' ', '\n'])) {
+            before = &before[i + 1..];
+        }
+        if let Some(i) = before.rfind("://") {
+            before = before[i..].split_once(char::is_whitespace).map_or("", |(_, b)| b);
+        }
+        let near = format!("{before} {}", url.to_lowercase());
+        if url.len() > "https://".len() + 3 && CLAIM_WORDS.iter().any(|w| near.contains(w)) {
+            return Some(url);
+        }
+    }
+    None
 }
 
 /// German health insurance number (one letter + nine digits), spaces removed. None for file numbers.
@@ -426,6 +484,7 @@ mod tests {
             requests: vec![],
             deadlines: vec![],
             au: Some(AuInfo { from: d(10, 20), until: d(10, 30), first_or_follow: AuKind::Erst, issued: None }),
+            flight: None,
             consequences_if_ignored: None,
             confidence: 0.9,
         }
@@ -456,6 +515,49 @@ mod tests {
         bescheid.reference = Some("50.2-WG-2026-04711".into());
         let m2 = Memory::open_in_memory().unwrap();
         assert_eq!(learn_from_letter(&m2, 7, &bescheid).unwrap(), ["full_name"]);
+    }
+
+    #[test]
+    fn an_airline_notice_teaches_the_airline_and_its_claim_page() {
+        use crate::docs::extract::FlightInfo;
+        let d = |m, day| NaiveDate::from_ymd_opt(2026, m, day).unwrap();
+        let mut x = au_letter();
+        x.doc_type = DocType::Brief;
+        x.sender = "Beispiel Air Customer Care".into();
+        x.reference = Some("BX7Q2K".into());
+        x.au = None;
+        x.flight = Some(FlightInfo {
+            airline: "Beispiel Air".into(),
+            flight_no: "BX 2041".into(),
+            date: d(10, 3),
+            from: "DUS".into(),
+            to: "TFS".into(),
+            delay_minutes: Some(250),
+            cancelled: false,
+            notice_days: None,
+            booking_ref: Some("BX7Q2K".into()),
+        });
+        let text = "We are sorry. Our newsletter: https://news.beispiel-air.example/offers. To claim compensation, \
+                    visit https://www.beispiel-air.example/claims?ref=BX7Q2K.";
+        let m = Memory::open_in_memory().unwrap();
+        let saved = learn_from_letter_text(&m, 9, &x, text).unwrap();
+        assert_eq!(saved, ["full_name", "airline", "airline_claim_form"]);
+        assert_eq!(m.profile_get("airline").unwrap().as_deref(), Some("Beispiel Air"));
+        assert_eq!(
+            m.profile_get("airline_claim_form").unwrap().as_deref(),
+            Some("https://www.beispiel-air.example/claims"),
+            "the claim link, without the booking code"
+        );
+        assert!(m.profile_get("versichertennummer").unwrap().is_none(), "a booking code is no insurance number");
+        // Never over what the user said; a link without a claim word or a file link is not kept.
+        let m = Memory::open_in_memory().unwrap();
+        m.profile_set_with("airline", "Other Air", "user", 1.0).unwrap();
+        let saved = learn_from_letter_text(&m, 9, &x, "See file:///C:/claim.html or https://beispiel-air.example/news")
+            .unwrap();
+        assert_eq!(saved, ["full_name"]);
+        assert_eq!(m.profile_get("airline").unwrap().as_deref(), Some("Other Air"));
+        assert!(m.profile_get("airline_claim_form").unwrap().is_none());
+        assert!(is_protected_key("airline") && is_protected_key("airline_claim_form"));
     }
 
     #[test]

@@ -8,6 +8,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Duration, Local};
 
+use super::flight::{self, CLAIM_HEADING, EU261_RULE, PROFILE_CLAIM_FORM};
 use super::text::{fmt_date, fmt_date_mid, join, tr};
 use super::tips::{self, Tip};
 use crate::agent::tools::truncate;
@@ -47,8 +48,12 @@ pub struct Brief {
     pub tip: Option<Tip>,
 }
 
-/// The brief for `now`, or None when nothing is due within BRIEF_DAYS (the app then says "welcome back").
-/// `services`: (page URL, its HTML) when the insurer's services page is known and readable.
+/// The brief for `now`, or None when nothing is due within BRIEF_DAYS and no flight claim is open (the app then
+/// says "welcome back"). `services`: (page URL, its HTML) when the insurer's services page is known and readable.
+/// Money first: the first open `eu261_claim` deadline comes before the dated ones whatever its due date (it is
+/// due years ahead), said by its "Good to know" tip when that tip is due, else by a plain sentence. When profile
+/// `airline_claim_form` is set, the offer is the airline's claim page (heading CLAIM_HEADING); it wins over a
+/// services heading (one offer per brief).
 /// A "Good to know" tip (`tips::for_brief`) comes after the deadlines and before the offer (whose buttons follow
 /// it); its deadline then drops the sentence the tip says anyway. Saying it writes the event `tip_shown`.
 pub fn daily_brief(
@@ -60,9 +65,20 @@ pub fn daily_brief(
 ) -> Result<Option<Brief>> {
     let today = now.date_naive();
     let until = today + Duration::days(BRIEF_DAYS);
+    let open = mem.open_deadlines()?;
+    let is_claim = |dl: &Deadline| dl.rule_id.as_deref() == Some(EU261_RULE);
+    // The first claim whose letter still says a flight that may give money (by due date, then id).
+    let mut claim = None;
+    for dl in open.iter().filter(|dl| is_claim(dl) && dl.due >= today) {
+        let Some(row) = dl.doc_id.map(|id| mem.document_by_id(id)).transpose()?.flatten() else { continue };
+        if flight::claim_of(&row.extract).is_some() {
+            claim = Some((dl.clone(), row.extract));
+            break;
+        }
+    }
     let items: Vec<Deadline> =
-        mem.open_deadlines()?.into_iter().filter(|dl| dl.due <= until).take(BRIEF_MAX_ITEMS).collect();
-    if items.is_empty() {
+        open.into_iter().filter(|dl| !is_claim(dl) && dl.due <= until).take(BRIEF_MAX_ITEMS).collect();
+    if items.is_empty() && claim.is_none() {
         return Ok(None);
     }
 
@@ -72,17 +88,56 @@ pub fn daily_brief(
     };
     let tip = tips::for_brief(mem, now, lang)?;
     let tip_deadline = tip.as_ref().and_then(|t| t.deadline_id);
+    let mut tip_said = false;
+    if let Some((dl, extract)) = &claim {
+        match &tip {
+            Some(t) if tip_deadline == Some(dl.id) => {
+                text = join(&text, &t.text);
+                tip_said = true;
+            }
+            _ => {
+                if let Some((f, c)) = flight::claim_of(extract) {
+                    text = join(&text, &flight::brief_line(f, &c, lang));
+                }
+            }
+        }
+    }
     for dl in &items {
         text = join(&text, &item_sentence(mem, dl, now, lang, tip_deadline == Some(dl.id))?);
     }
     if let Some(t) = &tip {
-        text = join(&text, &t.text);
+        if !tip_said {
+            text = join(&text, &t.text);
+        }
         tips::mark_shown(mem, t, now)?;
     }
 
     // A heading the user already said yes or "Not now" to is not offered again: no sentence, no button.
     let asked = asked_headings(mem)?;
-    let offer = services.and_then(|(url, html)| find_offer(&items, url, html, |h| is_asked(&asked, h)));
+    let claim_offer = claim.as_ref().and_then(|(dl, extract)| {
+        let url = mem
+            .profile_get(PROFILE_CLAIM_FORM)
+            .ok()
+            .flatten()
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty())?;
+        if is_asked(&asked, CLAIM_HEADING) {
+            return None;
+        }
+        let (f, c) = flight::claim_of(extract)?;
+        // The stored page belongs to the airline in the profile: never open one airline's page for another's flight.
+        let known_airline = mem.profile_get("airline").ok().flatten().unwrap_or_default();
+        if !known_airline.trim().is_empty()
+            && !f.airline.trim().is_empty()
+            && !known_airline.trim().eq_ignore_ascii_case(f.airline.trim())
+        {
+            return None;
+        }
+        let task = flight::claim_task(&url, f, &c, dl.id);
+        Some(BriefOffer { heading: CLAIM_HEADING.to_string(), deadline_id: dl.id, task })
+    });
+    let offer =
+        claim_offer.or_else(|| services.and_then(|(url, html)| find_offer(&items, url, html, |h| is_asked(&asked, h))));
     if let Some(o) = &offer {
         text = join(&text, &tr("brief_offer", lang, &[("quote", &o.heading)]));
     }
@@ -834,5 +889,118 @@ mod tests {
         mem.add_event(EV_ACCEPTED, "Return your questionnaire online").unwrap();
         assert!(already_suggested(&mem, " return your QUESTIONNAIRE online").unwrap());
         assert!(!already_suggested(&mem, "Order a new insurance card").unwrap());
+    }
+
+    /// Erika's memory plus Beispiel Air's delay notice and its open claim (due 31 Dec 2029).
+    fn erika_with_flight() -> (Memory, i64, i64) {
+        use crate::rules::flight::tests::{flight, notice_doc};
+        let (mem, q) = erika();
+        let doc = mem
+            .insert_document(
+                Path::new("air.pdf"),
+                "sha-air",
+                &notice_doc(flight("DUS", "TFS", Some(250), false, None)),
+                "x",
+            )
+            .unwrap();
+        let claim = add(
+            &mem,
+            "Claim EUR 400 from Beispiel Air for flight BX 2041 (3 Oct 2026)",
+            d(2029, 12, 31),
+            EU261_RULE,
+            Some(doc),
+        );
+        (mem, q, claim)
+    }
+
+    const AIR: &str = "file:///C:/Pip/fixtures/demo-air/index.html";
+
+    #[test]
+    fn brief_starts_with_the_money_and_offers_the_claim() {
+        let (mem, _, claim) = erika_with_flight();
+        mem.profile_set(PROFILE_CLAIM_FORM, AIR).unwrap();
+        let now = local_at(d(2026, 10, 28), 9, 0);
+        let b = daily_brief(&mem, now, Lang::En, Some("Erika"), Some((URL, SERVICES))).unwrap().unwrap();
+        let body = b.text.strip_prefix("Hi Erika! Here's what's coming up. ").expect("greeting first");
+        assert!(
+            body.starts_with(
+                "Good to know: your flight BX 2041 on Saturday, 3 October was about 4 hours late; under EU rule \
+                 261/2004 you may be owed EUR 400 from Beispiel Air; please check."
+            ),
+            "{}",
+            b.text
+        );
+        assert_eq!(b.tip.as_ref().map(|t| t.id), Some("eu261_delay"));
+        assert_eq!(b.text.matches("Good to know").count(), 1, "one tip per brief: {}", b.text);
+        // The dated deadlines follow the money.
+        assert!(b.text.contains("Your sick note ends on Friday, October 30."), "{}", b.text);
+        let offer = b.offer.expect("the claim wins over the questionnaire heading");
+        assert_eq!(offer.heading, CLAIM_HEADING);
+        assert_eq!(offer.deadline_id, claim);
+        assert_eq!(
+            offer.task,
+            format!(
+                "Open {AIR} and claim EUR 400 from Beispiel Air for flight BX 2041 on 3 October 2026 (deadline \
+                 #{claim}). Fill in what you know about me, attach my boarding pass, and stop at the send button."
+            )
+        );
+        assert!(b.text.ends_with(&format!("I can do \"{CLAIM_HEADING}\" for you right now.")), "{}", b.text);
+
+        // The tip was said today: the next brief names the money in a plain sentence, still first.
+        let again = daily_brief(&mem, now, Lang::En, Some("Erika"), None).unwrap().unwrap();
+        assert!(
+            again.text.starts_with(
+                "Hi Erika! Here's what's coming up. Your flight BX 2041 on Saturday, 3 October was about 4 hours late; \
+                 you may be owed EUR 400 from Beispiel Air."
+            ),
+            "{}",
+            again.text
+        );
+        for text in [&b.text, &again.text] {
+            let low = text.to_lowercase();
+            assert!(!low.contains("earned") && !low.contains("entitled") && !low.contains("will get"), "{text}");
+        }
+    }
+
+    #[test]
+    fn claim_offer_needs_the_page_and_is_asked_only_once() {
+        let (mem, q, _) = erika_with_flight();
+        let now = local_at(d(2026, 10, 28), 9, 0);
+        // No claim page known: the services heading as before.
+        let b = daily_brief(&mem, now, Lang::En, Some("Erika"), Some((URL, SERVICES))).unwrap().unwrap();
+        assert_eq!(b.offer.map(|o| o.deadline_id), Some(q));
+        // A claim heading already offered: not again; the services heading may come.
+        mem.profile_set(PROFILE_CLAIM_FORM, AIR).unwrap();
+        mem.add_event(EV_DECLINED, CLAIM_HEADING).unwrap();
+        assert!(already_suggested(&mem, CLAIM_HEADING).unwrap());
+        let b = daily_brief(&mem, now, Lang::En, Some("Erika"), Some((URL, SERVICES))).unwrap().unwrap();
+        assert_eq!(b.offer.map(|o| o.heading), Some("Return your questionnaire online".to_string()));
+        // The stored page is another airline's: no claim offer there (the services heading instead).
+        let (mem, q, _) = erika_with_flight();
+        mem.profile_set(PROFILE_CLAIM_FORM, AIR).unwrap();
+        mem.profile_set("airline", "Other Air").unwrap();
+        let b = daily_brief(&mem, now, Lang::En, Some("Erika"), Some((URL, SERVICES))).unwrap().unwrap();
+        assert_eq!(b.offer.map(|o| o.deadline_id), Some(q));
+        mem.profile_set("airline", "beispiel air").unwrap();
+        let b = daily_brief(&mem, now, Lang::En, Some("Erika"), None).unwrap().unwrap();
+        assert_eq!(b.offer.map(|o| o.heading), Some(CLAIM_HEADING.to_string()), "case does not count");
+    }
+
+    #[test]
+    fn a_claim_alone_is_enough_for_a_brief() {
+        use crate::rules::flight::tests::{flight, notice_doc};
+        let mem = Memory::open_in_memory().unwrap();
+        let doc = mem
+            .insert_document(
+                Path::new("air.pdf"),
+                "sha-air",
+                &notice_doc(flight("DUS", "TFS", Some(250), false, None)),
+                "x",
+            )
+            .unwrap();
+        add(&mem, "Claim", d(2029, 12, 31), EU261_RULE, Some(doc));
+        let b = daily_brief(&mem, local_at(d(2026, 10, 28), 9, 0), Lang::De, Some("Erika"), None).unwrap().unwrap();
+        assert!(b.text.contains("Dein Flug BX 2041 am Samstag, 3. Oktober war etwa 4 Stunden zu spät"), "{}", b.text);
+        assert!(b.text.contains("400 Euro von Beispiel Air"), "{}", b.text);
     }
 }

@@ -3,8 +3,18 @@
 # Usage: tools/shot.sh <scene> <out.png> [extra query, e.g. "reduce=1"]  (PORT=... to choose the port)
 # Profile in $SCRATCH/ffprof (default: a temp folder). Snap Firefox cannot see /tmp: then the profile and the raw
 # PNG live in ~/snap/firefox/common/pip-shot (Firefox's own folder, not the user's profile) and the PNG is copied out.
+#        tools/shot.sh tip-story [out dir]  = the four "Good to know" pictures (letter, tip with its three buttons,
+#        Why?, the drafted question) as <out dir>/tip-{letter,bubble,why,offer}.png (default: design/readme).
 set -euo pipefail
 scene="${1:?scene name, e.g. celebrate}"
+if [ "$scene" = "tip-story" ]; then
+  self="$(realpath "$0")"
+  dir="$(realpath -m "${2:-$(dirname "$self")/../../../design/readme}")"
+  for part in letter bubble why offer; do
+    "$self" "tip-$part" "$dir/tip-$part.png" "${3:-}"
+  done
+  exit 0
+fi
 out="$(realpath -m "${2:?output png}")"
 extra="${3:-}"
 here="$(cd "$(dirname "$0")" && pwd)"

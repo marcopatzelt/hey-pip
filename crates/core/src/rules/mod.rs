@@ -1,6 +1,7 @@
 //! Deadline rules (Rust code with source + tests, never invented by the model),
 //! NRW holidays 2026/27, reminder engine, the page guard (`guard`: warning signs, no model call) and
-//! "Good to know" tips with sources (`tips`).
+//! "Good to know" tips with sources (`tips`), and money the user may be owed (`flight`: EU 261 for a delayed or
+//! cancelled flight).
 //!
 //! OWNER: agent "memory-rules".
 
@@ -9,6 +10,7 @@ pub mod brief;
 pub mod calendar;
 pub mod daily;
 pub mod engine;
+pub mod flight;
 pub mod guard;
 pub mod text;
 pub mod tips;
@@ -27,6 +29,7 @@ pub use daily::{
     offer_after_task,
 };
 pub use engine::RuleEngine;
+pub use flight::Eu261Claim;
 pub use tips::Tip;
 pub use widerspruch::WiderspruchBescheid;
 
@@ -47,9 +50,9 @@ pub trait Rule: Send + Sync {
     fn apply(&self, doc: &DocumentExtract, today: NaiveDate) -> Vec<DeadlineProposal>;
 }
 
-/// AuLueckenlos, WiderspruchBescheid, FristAusBrief.
+/// AuLueckenlos, WiderspruchBescheid, FristAusBrief, Eu261Claim.
 pub fn all_rules() -> Vec<Box<dyn Rule>> {
-    vec![Box::new(AuLueckenlos), Box::new(WiderspruchBescheid), Box::new(FristAusBrief)]
+    vec![Box::new(AuLueckenlos), Box::new(WiderspruchBescheid), Box::new(FristAusBrief), Box::new(Eu261Claim)]
 }
 
 /// due-3d 09:00, due-1d 18:00, due 09:00 (local); past ones (relative to `now`) dropped.
@@ -126,7 +129,7 @@ mod tests {
     #[test]
     fn all_rules_ids() {
         let ids: Vec<_> = all_rules().iter().map(|r| r.id()).collect();
-        assert_eq!(ids, ["au_lueckenlos", "widerspruch_bescheid", "frist_aus_brief"]);
+        assert_eq!(ids, ["au_lueckenlos", "widerspruch_bescheid", "frist_aus_brief", "eu261_claim"]);
     }
 }
 
@@ -153,6 +156,7 @@ pub(crate) mod tests_support {
             requests: vec![],
             deadlines: vec![],
             au: Some(AuInfo { from, until, first_or_follow: AuKind::Erst, issued: Some(from) }),
+            flight: None,
             consequences_if_ignored: None,
             confidence: 0.9,
         }
@@ -171,6 +175,7 @@ pub(crate) mod tests_support {
             requests: vec!["Unterlagen nachreichen".into()],
             deadlines: vec![],
             au: None,
+            flight: None,
             consequences_if_ignored: Some("Der Bescheid wird bestandskräftig.".into()),
             confidence: 0.8,
         }

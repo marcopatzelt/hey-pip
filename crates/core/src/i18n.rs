@@ -643,6 +643,61 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("share_scam_many", "{n} falsche Seiten gestoppt", "{n} fake pages stopped"),
     ("tray_always_show", "Pip immer zeigen", "Always show Pip"),
     ("peek_hint", "Brauchst du Hilfe? Klick mich an", "Need help? Click me"),
+    // "Good to know" tips in the app: the next steps after a tip (bridge.rs), and the tray switch.
+    ("tip_btn_remind", "Erinnere mich am {day}", "Remind me on {day}"),
+    ("tip_btn_question", "Schreib eine kurze Frage", "Write a short question"),
+    ("tip_btn_why", "Warum?", "Why?"),
+    (
+        "tip_why_text",
+        "Das sagt die Regel {source} ({url}). Es ist ein Hinweis, keine Rechtsberatung. Du entscheidest.",
+        "That comes from the rule {source} ({url}). It is a hint, not legal advice. You decide.",
+    ),
+    ("tip_reminded", "Gut, ich erinnere dich am {day}.", "Okay, I'll remind you on {day}."),
+    (
+        "tip_question_draft_au",
+        "Guten Tag, meine Krankschreibung endet am {until}. Wenn ich dann noch krank bin: Bis wann muss die nächste \
+         Krankschreibung ausgestellt sein, damit mein Krankengeld ohne Lücke weiterläuft? Viele Grüße, {full_name}",
+        "Dear {insurer}, my sick note ends on {until}. If I am still ill, by which date does the next note have to be \
+         issued so there is no gap in my sick pay? Kind regards, {full_name}",
+    ),
+    (
+        "tip_question_draft_generic",
+        "Guten Tag, ich habe Ihren Brief vom {date} bekommen. Bis wann muss ich antworten, und was passiert, wenn ich \
+         zu spät bin? Viele Grüße, {full_name}",
+        "Dear {sender}, I received your letter of {date}. Could you tell me by when I have to reply and what happens \
+         if I am late? Kind regards, {full_name}",
+    ),
+    (
+        "tip_question_offer",
+        "Hier ist mein Entwurf: „{draft}“ Soll ich ihn über das Kontaktformular von {insurer} schicken?",
+        "Here is my draft: \"{draft}\" Shall I send it through the {insurer} contact form?",
+    ),
+    ("btn_yes_send_it", "Ja, schick sie", "Yes, send it"),
+    (
+        "tip_question_task",
+        "Öffne {url} und schick diese Nachricht an {insurer}. Tipp sie genau so in das Nachrichtenfeld: „{draft}“. \
+         Trag meinen Namen und meine Versichertennummer aus dem ein, was du über mich weißt, dann drück den Knopf zum \
+         Abschicken.",
+        "Open {url} and send this message to {insurer}. Type it into the message field exactly: \"{draft}\". Fill in \
+         my name and insurance number from what you know about me, then press the send button.",
+    ),
+    (
+        "tip_question_no_form",
+        "Hier ist mein Entwurf: „{draft}“ Ich kenne die Kontaktseite deiner Krankenkasse noch nicht. Öffne sie und \
+         drück „Schau auf meinen Bildschirm“.",
+        "Here is my draft: \"{draft}\" I don't know your insurer's contact page yet. Open it and press Look at my \
+         screen.",
+    ),
+    ("tray_fewer_tips", "Weniger Tipps", "Fewer tips"),
+    ("tips_off_said", "Alles klar, ich halte mich mit Tipps zurück.", "All right, I'll hold back the tips."),
+    ("tip_dear_unknown", "Damen und Herren", "Sir or Madam"),
+    ("tip_insurer_unknown", "deiner Krankenkasse", "your insurer"),
+    (
+        "tip_question_elsewhere",
+        "Hier ist mein Entwurf: „{draft}“ Öffne die Kontaktseite von {sender} und drück „Schau auf meinen Bildschirm“.",
+        "Here is my draft: \"{draft}\" Open the contact page of {sender} and press Look at my screen.",
+    ),
+    ("tip_sender_unknown", "dem Absender", "the sender"),
 ];
 
 /// Lookup. Unknown key -> the key itself (visible in tests, never panics).
@@ -694,6 +749,38 @@ mod tests {
         assert_eq!(
             tf("sent_trusted", Lang::En, &[("to", "x.example")]),
             "Sent. You told me I don't need to ask for x.example."
+        );
+    }
+
+    #[test]
+    fn tip_next_steps_are_filled_and_honest() {
+        for lang in [Lang::De, Lang::En] {
+            assert!(t("tip_why_text", lang).contains("{source}") && t("tip_why_text", lang).contains("{url}"));
+            for key in ["tip_btn_remind", "tip_reminded"] {
+                assert!(!tf(key, lang, &[("day", "x")]).contains('{'), "{key}");
+            }
+            let offer = tf("tip_question_offer", lang, &[("draft", "D"), ("insurer", "I")]);
+            assert!(!offer.contains('{') && offer.contains('D'), "{offer}");
+            let none = tf("tip_question_no_form", lang, &[("draft", "D")]);
+            assert!(!none.contains('{') && none.contains(t("btn_look_screen", lang)), "{none}");
+        }
+        assert!(t("tip_why_text", Lang::En).contains("not legal advice"));
+        assert!(t("tip_why_text", Lang::De).contains("keine Rechtsberatung"));
+        let draft = tf(
+            "tip_question_draft_au",
+            Lang::En,
+            &[("insurer", "Evergreen Health"), ("until", "Friday, 30 October"), ("full_name", "Erika Beispiel")],
+        );
+        assert_eq!(
+            draft,
+            "Dear Evergreen Health, my sick note ends on Friday, 30 October. If I am still ill, by which date does \
+             the next note have to be issued so there is no gap in my sick pay? Kind regards, Erika Beispiel"
+        );
+        let task = tf("tip_question_task", Lang::En, &[("url", "U"), ("insurer", "I"), ("draft", "D")]);
+        assert_eq!(
+            task,
+            "Open U and send this message to I. Type it into the message field exactly: \"D\". Fill in my name and \
+             insurance number from what you know about me, then press the send button."
         );
     }
 

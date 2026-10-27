@@ -258,6 +258,40 @@ Oct 26, first run (5 letters, 4 click targets, 1 German agent task, no PAGE ELEM
 
 Still to come: runs on real Windows apps and browsers, more runs per task, and more screens than the demo forms.
 
+### What the eval covers since loop run 3 (Oct 27, 2026)
+
+The set grew from the 10 tasks above to 9 letters, 16 click targets and 23 agent rows (`eval/README.md` has every
+field and pass bar):
+
+- **The flight family (the hero: money a delayed flight may be owed).** An invented airline, "Beispiel Air", on
+  `.example` hosts only. Four printed e-mails: a 4 h 10 min delay (DUS → TFS, the "Good to know" tip `eu261_delay` and
+  the claim deadline `eu261_claim` 31.12.2029), a 1 h 20 min delay (no tip), a cancellation 25 days ahead with a new
+  flight (no tip), a cancellation 4 days ahead without one (tip and deadline). The letter check compares the new
+  `flight` block (flight number, date, airports, minutes late, cancelled, days of notice) and the tip id. Two claim
+  pages: `demo-air` (two steps, a date field, an IBAN field that refuses spaces, Yes/No radios, a boarding-pass
+  upload) and `demo-air-v2` (one page, German labels in another order, a cookie banner, the date as a TT.MM.JJJJ text
+  field). Pip must send each with ONE send card, type the booking reference and the IBAN without spaces, keep the
+  guard silent, in all five memory conditions; the brief's exact task ("Open … and claim EUR 400 … attach my
+  boarding pass, and stop at the send button") must also attach the boarding pass. The core types a value that is
+  exactly one IBAN in groups of four without its spaces (memory keeps the print). Picking the user's own stored letter
+  in the file dialog needs no card; in the dialog only that letter's path goes in (no field by element or by picture),
+  a stored letter is found however its path is written (case, slashes, `..` parts), and after a wrong file the dialog
+  stays usable for the right one. The dry run shows the dialog (`fixtures/screens/file-dialog.png` pasted onto the
+  picture after a click on `file_button`, window title "Open"), so the attach is measured, not skipped.
+- **A new guard page.** `demo-air-refund-check`, a lookalike "Beispiel Air – refund center" asking for card number,
+  CVV and an SMS code "within 24 hours or your EUR 400 refund expires". With an empty memory the guard knows no
+  airline; a miss there is reported as a known miss.
+- **Last run's failures as evals.** The insurer's help page now has a next screen (its "contact page" link leads to
+  the form; a click on a link must not raise a card); option questions are answered by keyword ("still unable to
+  work => Yes") or declined like a user would, and every fallback answer is marked; a run that ends on an unanswered
+  question with buttons is not counted as finished; the click-target table names the path the core took (agree,
+  pick, point, zoom) per sample, on a second busy page with low contrast.
+- **The memory sweep.** Every family that sends something runs twice on each of five memories (full, without the
+  playbook, without profile facts, without letters, empty). A task that already takes at most 4 steps is judged by
+  its own learning bar (run 2 at most 1 step slower, no questions).
+- **Real sites:** besides httpbin's test form, the Selenium project's static test form (made for automation): fill
+  in a name and stop at the refused send card. One page load per capture, nothing approved.
+
 ## Repository layout
 
 ```

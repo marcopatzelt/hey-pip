@@ -1,0 +1,48 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-air.png",
+  "targets": {
+    "booking_field": {
+      "box": [
+        423,
+        322,
+        1176,
+        374
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Booking reference\""
+    },
+    "flight_field": {
+      "box": [
+        423,
+        449,
+        1176,
+        501
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Flight number\""
+    },
+    "date_field": {
+      "box": [
+        423,
+        551,
+        1176,
+        603
+      ],
+      "sam_query": "text input field",
+      "description": "Date field \"Date of flight\""
+    },
+    "next_button": {
+      "box": [
+        1041,
+        620,
+        1176,
+        675
+      ],
+      "sam_query": "button",
+      "description": "Red button \"Next\" below the fields"
+    }
+  }
+}

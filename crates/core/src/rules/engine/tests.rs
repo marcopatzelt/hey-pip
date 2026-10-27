@@ -313,3 +313,59 @@ fn snooze_after_due_day_says_the_deadline_ended() {
     let (text, _, _) = reminder_parts(e.eng.reminder_event(&fired[0], Lang::En));
     assert!(text.starts_with("The deadline to object to the decision ended on Monday, November 16."), "{text}");
 }
+
+#[test]
+fn delayed_flight_gives_one_claim_deadline_in_english() {
+    use crate::rules::flight::tests::{flight, notice_doc};
+    let e = env(local_at(d(2026, 10, 4), 10, 0));
+    e.mem.profile_set("lang", "en").unwrap();
+    let doc = notice_doc(flight("DUS", "TFS", Some(250), false, None));
+    let (_, dls) = ingest(&e, "air1", &doc);
+    assert_eq!(dls.len(), 1, "{dls:?}");
+    let dl = &dls[0];
+    assert_eq!((dl.rule_id.as_deref(), dl.due), (Some("eu261_claim"), d(2029, 12, 31)));
+    assert_eq!(dl.title, "Claim EUR 400 from Beispiel Air for flight BX 2041 (3 Oct 2026)");
+    assert!(dl.why.contains("may be owed EUR 400 from Beispiel Air"), "{}", dl.why);
+    assert!(dl.why.contains("The airline can refuse this in extraordinary circumstances, for example a storm."));
+    assert!(dl.why.ends_with("This is a hint, not legal advice."), "{}", dl.why);
+    assert_eq!(dl.remind_at, vec![local_at(d(2026, 10, 5), 9, 0)]);
+
+    // The same notice read again (photo after PDF), even with another letter date: no second deadline.
+    let mut again = doc.clone();
+    again.date = Some(d(2026, 10, 5));
+    again.reference = None;
+    let (_, dls2) = ingest(&e, "air2", &again);
+    assert_eq!(dls2.iter().map(|x| x.id).collect::<Vec<_>>(), vec![dl.id]);
+    assert_eq!(e.mem.open_deadlines().unwrap().len(), 1);
+    // Another flight is another claim.
+    let mut other = doc.clone();
+    other.flight.as_mut().unwrap().flight_no = "BX 2042".into();
+    ingest(&e, "air3", &other);
+    assert_eq!(e.mem.open_deadlines().unwrap().len(), 2);
+
+    // A short delay or a cancellation told three weeks ahead: no deadline.
+    let e = env(local_at(d(2026, 10, 4), 10, 0));
+    assert!(ingest(&e, "s", &notice_doc(flight("DUS", "PMI", Some(80), false, None))).1.is_empty());
+    assert!(ingest(&e, "c", &notice_doc(flight("CGN", "LIS", None, true, Some(21)))).1.is_empty());
+    let (_, c4) = ingest(&e, "c4", &notice_doc(flight("CGN", "LIS", None, true, Some(4))));
+    assert_eq!(c4.len(), 1);
+}
+
+#[test]
+fn flight_claim_reminder_says_the_money_and_offers_tomorrow() {
+    use crate::rules::flight::tests::{flight, notice_doc};
+    let e = env(local_at(d(2026, 10, 4), 10, 0));
+    e.mem.profile_set("lang", "en").unwrap();
+    ingest(&e, "air1", &notice_doc(flight("DUS", "TFS", Some(250), false, None)));
+    e.clock.set(local_at(d(2026, 10, 5), 9, 0));
+    let fired = e.eng.tick().unwrap();
+    assert_eq!(fired.len(), 1);
+    let (text, why, buttons) = reminder_parts(e.eng.reminder_event(&fired[0], Lang::En));
+    assert_eq!(
+        text,
+        "Your flight BX 2041 on Saturday, 3 October was about 4 hours late; you may be owed EUR 400 from Beispiel \
+         Air. Shall I help you claim it?"
+    );
+    assert!(why.contains("Regulation (EC) No 261/2004"), "{why}");
+    assert!(buttons[0].id.starts_with("remind:2026-10-06T09:00:00"), "{buttons:?}");
+}

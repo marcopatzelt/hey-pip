@@ -134,6 +134,7 @@ pub fn to_extract(x: &Value) -> Result<DocumentExtract> {
         requests: vec![],
         deadlines,
         au,
+        flight: x.get("flight").cloned().and_then(|f| serde_json::from_value(f).ok()),
         consequences_if_ignored: None,
         confidence: 1.0,
     })

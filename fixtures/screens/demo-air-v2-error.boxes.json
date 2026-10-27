@@ -1,0 +1,108 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-air-v2-error.png",
+  "targets": {
+    "flight_field": {
+      "box": [
+        313,
+        276,
+        625,
+        328
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Flugnummer\", the first field top left of the form"
+    },
+    "date_field": {
+      "box": [
+        644,
+        276,
+        955,
+        328
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Flugdatum\" (TT.MM.JJJJ), the middle field in the top row"
+    },
+    "booking_field": {
+      "box": [
+        974,
+        276,
+        1286,
+        328
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Buchungsnummer\", the right field in the top row"
+    },
+    "name_field": {
+      "box": [
+        313,
+        378,
+        625,
+        430
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Vor- und Nachname\", left in the second row"
+    },
+    "email_field": {
+      "box": [
+        644,
+        378,
+        955,
+        430
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"E-Mail-Adresse\", the middle field in the second row"
+    },
+    "iban_field": {
+      "box": [
+        974,
+        378,
+        1286,
+        430
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"IBAN\", right in the second row"
+    },
+    "voucher_yes_radio": {
+      "box": [
+        318,
+        543,
+        339,
+        564
+      ],
+      "sam_query": "radio button",
+      "description": "Radio button \"Ja\" under \"Gutschein erhalten?\", left of \"Nein\""
+    },
+    "voucher_no_radio": {
+      "box": [
+        401,
+        543,
+        422,
+        564
+      ],
+      "sam_query": "radio button",
+      "description": "Radio button \"Nein\" under \"Gutschein erhalten?\", right of \"Ja\""
+    },
+    "file_button": {
+      "box": [
+        664,
+        545,
+        934,
+        595
+      ],
+      "sam_query": "button",
+      "description": "Button \"Bordkarte hochladen\" with a paper clip, in the dashed upload box"
+    },
+    "submit_button": {
+      "box": [
+        1052,
+        166,
+        1286,
+        219
+      ],
+      "sam_query": "button",
+      "description": "Red button \"Antrag absenden\" top right of the form"
+    }
+  }
+}

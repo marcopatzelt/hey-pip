@@ -1,0 +1,246 @@
+{
+ "note": "UI Automation outline of demo-busy-2.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-busy/light.html, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-busy-2.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "Catalogue",
+   "value": null,
+   "rect": {
+    "x": 1036,
+    "y": 25,
+    "w": 72,
+    "h": 23
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "Events",
+   "value": null,
+   "rect": {
+    "x": 1130,
+    "y": 25,
+    "w": 46,
+    "h": 23
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "My loans",
+   "value": null,
+   "rect": {
+    "x": 1198,
+    "y": 25,
+    "w": 63,
+    "h": 23
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "link",
+   "name": "Help",
+   "value": null,
+   "rect": {
+    "x": 1283,
+    "y": 25,
+    "w": 33,
+    "h": 23
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "button",
+   "name": "Search",
+   "value": null,
+   "rect": {
+    "x": 1342,
+    "y": 24,
+    "w": 24,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "button",
+   "name": "×",
+   "value": null,
+   "rect": {
+    "x": 1346,
+    "y": 83,
+    "w": 20,
+    "h": 20
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "text",
+   "name": "My loans",
+   "value": null,
+   "rect": {
+    "x": 259,
+    "y": 157,
+    "w": 756,
+    "h": 40
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "button",
+   "name": "Export",
+   "value": null,
+   "rect": {
+    "x": 259,
+    "y": 406,
+    "w": 80,
+    "h": 37
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "button",
+   "name": "Print",
+   "value": null,
+   "rect": {
+    "x": 349,
+    "y": 406,
+    "w": 68,
+    "h": 37
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 10,
+   "role": "button",
+   "name": "E-mail",
+   "value": null,
+   "rect": {
+    "x": 427,
+    "y": 406,
+    "w": 77,
+    "h": 37
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 11,
+   "role": "link",
+   "name": "the renewal page",
+   "value": null,
+   "rect": {
+    "x": 304,
+    "y": 531,
+    "w": 138,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 12,
+   "role": "text",
+   "name": "Account",
+   "value": null,
+   "rect": {
+    "x": 1083,
+    "y": 151,
+    "w": 266,
+    "h": 23
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 13,
+   "role": "link",
+   "name": "Reservations",
+   "value": null,
+   "rect": {
+    "x": 1083,
+    "y": 182,
+    "w": 266,
+    "h": 34
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 14,
+   "role": "link",
+   "name": "Reading history",
+   "value": null,
+   "rect": {
+    "x": 1083,
+    "y": 216,
+    "w": 266,
+    "h": 34
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 15,
+   "role": "link",
+   "name": "Fees (0.00 euros)",
+   "value": null,
+   "rect": {
+    "x": 1083,
+    "y": 250,
+    "w": 266,
+    "h": 34
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 16,
+   "role": "link",
+   "name": "Settings",
+   "value": null,
+   "rect": {
+    "x": 1083,
+    "y": 285,
+    "w": 266,
+    "h": 34
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

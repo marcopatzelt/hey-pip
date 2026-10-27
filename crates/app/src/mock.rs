@@ -4,10 +4,13 @@
 
 use std::time::Duration;
 
+use chrono::NaiveDate;
 use pip_core::agent::{APPROVAL_TIMEOUT, AgentOutcome, ApprovalAnswer, ApprovalCard, CancellationToken};
 use pip_core::events::{Bus, Button, PipState, UiEvent};
 use pip_core::i18n::{Lang, t, tf};
 use pip_core::platform::PhysRect;
+use pip_core::rules::Tip;
+use pip_core::rules::tips::{TIPS, tip_date};
 use uuid::Uuid;
 
 use crate::overlay::OverlayInfo;
@@ -37,11 +40,42 @@ fn pick<'a>(lang: Lang, de: &'a str, en: &'a str) -> &'a str {
 
 pub struct MockLetter {
     pub bubble: String,
+    /// The scripted "Good to know" tip (au_gap) for this sick note.
+    pub tip: Option<Tip>,
+    /// The sick note's last day and the follow-up note's due date (the rule deadline the tip is about).
+    pub until: NaiveDate,
+    pub due: NaiveDate,
+}
+
+/// The invented sick note of the mock story: 20.10. to Friday 30.10.2026, the next note is due Monday 2.11.
+const MOCK_UNTIL: (i32, u32, u32) = (2026, 10, 30);
+const MOCK_DUE: (i32, u32, u32) = (2026, 11, 2);
+
+fn mock_date((y, m, d): (i32, u32, u32)) -> NaiveDate {
+    NaiveDate::from_ymd_opt(y, m, d).expect("valid mock date")
+}
+
+/// The au_gap tip exactly as `rules::tips` words it, filled with the mock sick note's dates.
+pub fn tip(lang: Lang) -> Tip {
+    let rule = TIPS.iter().find(|r| r.id == "au_gap").expect("au_gap tip in the table");
+    let text = match lang {
+        Lang::En => rule.text_en,
+        Lang::De => rule.text_de,
+    };
+    let text = text
+        .replace("{due}", &tip_date(mock_date(MOCK_DUE), lang))
+        .replace("{until}", &tip_date(mock_date(MOCK_UNTIL), lang));
+    Tip { id: rule.id, text, source: rule.source, url: rule.url, deadline_id: None }
 }
 
 pub async fn ingest(lang: Lang) -> MockLetter {
     tokio::time::sleep(Duration::from_millis(1800)).await;
-    MockLetter { bubble: tf("doc_au_summary", lang, &[("from", "20.10."), ("until", "30.10.")]) }
+    MockLetter {
+        bubble: tf("doc_au_summary", lang, &[("from", "20.10."), ("until", "30.10.")]),
+        tip: Some(tip(lang)),
+        until: mock_date(MOCK_UNTIL),
+        due: mock_date(MOCK_DUE),
+    }
 }
 
 pub fn reminder(lang: Lang) -> UiEvent {
@@ -361,6 +395,18 @@ mod tests {
         let out = run_guard_paced(&bus, screen(), Lang::En, CancellationToken::new(), 0.0).await;
         assert!(seen.await.unwrap());
         assert!(matches!(out, AgentOutcome::Done(ref s) if s.starts_with("Good.")), "{out:?}");
+    }
+
+    #[test]
+    fn mock_tip_is_the_au_gap_rule_with_its_source() {
+        let tip = tip(Lang::En);
+        assert_eq!(tip.id, "au_gap");
+        assert_eq!(tip.source, "§ 46 Satz 2 SGB V");
+        assert!(tip.url.starts_with("https://"));
+        assert!(tip.text.starts_with("Good to know:"), "{}", tip.text);
+        assert!(tip.text.contains("Monday, 2 November") && tip.text.contains("Friday, 30 October"), "{}", tip.text);
+        assert!(!tip.text.contains('{'));
+        assert!(super::tip(Lang::De).text.starts_with("Gut zu wissen:"));
     }
 
     #[test]

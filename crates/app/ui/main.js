@@ -17,6 +17,7 @@ const GAP = 24;        // distance between Pip and a target
 const EDGE = 8;        // keep this far from screen edges
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const Peek = window.Peek;  // ui/peek.js: rest / hover / up state machine and geometry
+const Tip = window.Tip;    // ui/tip.js: "Good to know" bubble parts
 const PIP_TITLE = "Click to ask me. Hold to talk to me.";
 let peekSecs = 10;         // PIP_PEEK_SECS from the app: quiet this long -> back to the edge (0 = never)
 
@@ -39,6 +40,7 @@ const st = {
   bubbleKind: null,
   bubbleQid: null,       // question id of the bubble on screen (a guard bubble asked by a run)
   guardPose: false,      // the guard bubble put Pip in the "ask" pose; cleared when it closes
+  tipLabel: "",          // "Good to know" of the last tip bubble (its "Why?" bubble shows the same label)
   bubbleSticky: false,   // the bubble waits for an answer (buttons, question, reminder, onboarding)
   bubbleTimer: 0,
   queue: [],             // sticky bubbles waiting for the one on screen: { text, opts }
@@ -550,6 +552,7 @@ function showBubble(text, opts = {}) {
   // The same sentence again (core and app both confirm a stop): update quietly, no second pop.
   const same = !el.bubble.hidden && el.bText.textContent === text && st.bubbleKind === (opts.kind || "say");
   el.bubble.className = "bubble" + (opts.kind ? ` ${opts.kind}` : "");
+  if (opts.label) el.bubble.dataset.label = opts.label; else delete el.bubble.dataset.label;
   st.bubbleKind = opts.kind || "say";
   st.bubbleQid = opts.qid || null;
   // the guard bubble (also one shown later from the queue) puts Pip in the ask pose until it closes
@@ -683,6 +686,26 @@ function guardBubble(ev, qid) {
     ...cont.map((b) => ({ label: b.label, primary: false, cls: "minor", id: b.id })),
   ].map((b) => ({ ...b, onClick: () => { hideBubble(); runButton(b.id, qid); } }));
   say(title, { kind: "guard", sticky: true, qid, buttons, extra });
+}
+
+// "Good to know" (ui/tip.js): a small label, the tip, its source as a chip, the app's buttons and a close x.
+// Sticky like a question (it waits behind the letter's [OK]); it raises Pip from the edge like a brief, and after
+// it closes the quiet clock lowers him again.
+function tipBubble(ev, qid) {
+  const p = Tip.parts(ev.text);
+  if (p.label) st.tipLabel = p.label;
+  const extra = [];
+  if (p.source) {
+    const chip = document.createElement("span");
+    chip.className = "source";
+    chip.textContent = p.source;
+    extra.push(chip);
+  }
+  const buttons = ev.buttons.map((b) => ({
+    label: b.label, primary: b.primary,
+    onClick: () => { hideBubble(); runButton(b.id, qid); },
+  }));
+  say(p.body, { kind: "tip", label: p.label || st.tipLabel, sticky: true, closeX: true, qid, buttons, extra });
 }
 
 function runButton(id, qid) {
@@ -1030,6 +1053,7 @@ function onUi(ev) {
       const qid = ev.question_id;
       if (qid && ev.buttons.some((b) => b.id === "__text__")) { openQuestion(ev, qid); break; }
       if (isGuard(ev.buttons)) { guardBubble(ev, qid); break; }
+      if (Tip.isTip(ev.buttons)) { tipBubble(ev, qid); break; }
       say(ev.text, {
         buttons: ev.buttons.map((b) => ({
           label: b.label, primary: b.primary,

@@ -9,6 +9,7 @@ use chrono::{DateTime, Duration, Local, NaiveDate, SecondsFormat};
 
 use super::au::au_end;
 use super::calendar::days_before;
+use super::flight::{self, EU261_RULE};
 use super::text::{fmt_date, fmt_date_mid, fmt_day, fmt_time, join, tr};
 use super::{DeadlineProposal, all_rules, local_at};
 use crate::clock::Clock;
@@ -28,6 +29,17 @@ pub struct RuleEngine {
 /// Does AU `new` close the gap after an older AU that ended on `old_end` (follow-up due `old_due`)?
 fn au_covers(new: &AuInfo, old_end: NaiveDate, old_due: NaiveDate) -> bool {
     new.until > old_end && new.from <= old_due
+}
+
+/// Two notices about one flight: the same flight number (spaces and case do not count) on the same day.
+fn same_flight(a: &DocumentExtract, b: &DocumentExtract) -> bool {
+    let norm = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+    match (&a.flight, &b.flight) {
+        (Some(x), Some(y)) => {
+            x.date == y.date && !norm(&x.flight_no).is_empty() && norm(&x.flight_no) == norm(&y.flight_no)
+        }
+        _ => false,
+    }
 }
 
 /// Two reads of one letter: same type, date, sender and (non-empty) reference.
@@ -78,6 +90,12 @@ fn localize(mut p: DeadlineProposal, doc: &DocumentExtract, lang: Lang) -> Deadl
                     en(known),
                     p.source
                 );
+            }
+        }
+        EU261_RULE => {
+            if let Some((f, c)) = flight::claim_of(doc) {
+                p.title = flight::title(f, &c, Lang::En);
+                p.why = flight::why(f, &c, Lang::En);
             }
         }
         _ => {
@@ -177,7 +195,11 @@ impl RuleEngine {
         open_elsewhere: &[Deadline],
     ) -> Result<Option<Deadline>> {
         for dl in open_elsewhere {
-            if dl.rule_id.as_deref() != Some(p.rule_id) || dl.due != p.due || dl.title != p.title {
+            if dl.rule_id.as_deref() != Some(p.rule_id) || dl.due != p.due {
+                continue;
+            }
+            // One flight gives one claim, whatever the second notice says about the amount (title).
+            if dl.title != p.title && p.rule_id != EU261_RULE {
                 continue;
             }
             if p.rule_id == "au_lueckenlos" {
@@ -186,7 +208,10 @@ impl RuleEngine {
             let Some(other) = dl.doc_id.map(|id| self.memory.document_by_id(id)).transpose()?.flatten() else {
                 continue;
             };
-            if same_letter(doc, &other.extract) {
+            if p.rule_id == EU261_RULE && same_flight(doc, &other.extract) {
+                return Ok(Some(dl.clone()));
+            }
+            if dl.title == p.title && same_letter(doc, &other.extract) {
                 return Ok(Some(dl.clone()));
             }
         }
@@ -282,6 +307,14 @@ impl RuleEngine {
                 let why = [tr("rem_au_why", lang, &[]), tr("rem_au_why_detail", lang, &[]), hint.clone()].join(" ");
                 (text, why)
             }
+            Some(EU261_RULE) if doc.as_ref().and_then(flight::claim_of).is_some() => {
+                let (f, c) = doc.as_ref().and_then(flight::claim_of).expect("checked above");
+                let ask = match lang {
+                    Lang::En => "Shall I help you claim it?",
+                    Lang::De => "Soll ich dir helfen, das Geld zurückzuholen?",
+                };
+                (join(&flight::brief_line(f, &c, lang), ask), flight::why(f, &c, lang))
+            }
             Some("widerspruch_bescheid") => {
                 let first = if dl.due <= today {
                     tr("rem_widerspruch_ends_today", lang, &[])
@@ -317,7 +350,13 @@ impl RuleEngine {
         };
 
         let mut buttons = Vec::new();
-        if let Some(at) = remind_target(dl.due, is_au, now) {
+        // A claim is due years ahead: "remind me" means tomorrow morning, not the day before the end.
+        let target = if dl.rule_id.as_deref() == Some(EU261_RULE) {
+            Some(local_at(today + Duration::days(1), 9, 0))
+        } else {
+            remind_target(dl.due, is_au, now)
+        };
+        if let Some(at) = target {
             let day = fmt_day(at.date_naive(), today, lang);
             buttons.push(Button::new(format!("remind:{}", rfc(at)), tr("btn_remind_on", lang, &[("day", &day)]), true));
         }

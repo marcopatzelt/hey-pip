@@ -1,0 +1,48 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-air-refund-check.png",
+  "targets": {
+    "card_field": {
+      "box": [
+        547,
+        314,
+        1052,
+        368
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Card number\""
+    },
+    "cvv_field": {
+      "box": [
+        913,
+        418,
+        1052,
+        472
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"CVV\""
+    },
+    "sms_field": {
+      "box": [
+        547,
+        522,
+        1052,
+        576
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"SMS code\""
+    },
+    "submit_button": {
+      "box": [
+        547,
+        593,
+        1052,
+        650
+      ],
+      "sam_query": "button",
+      "description": "Red button \"Get my refund now\""
+    }
+  }
+}

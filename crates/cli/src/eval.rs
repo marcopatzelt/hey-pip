@@ -23,7 +23,7 @@ use pip_core::rules::RuleEngine;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::agent_cmd::{self, MemoryCond, Options, Report};
+use crate::agent_cmd::{self, CardSeen, MemoryCond, Options, Report};
 use crate::{Approve, Ctx, expected, screen};
 
 #[derive(Debug, Deserialize)]
@@ -98,6 +98,28 @@ struct AgentTask {
     /// `--set quick` always takes 1.
     #[serde(default = "default_samples")]
     samples: u32,
+    /// More letters the memory starts with (expected.json paths, e.g. the flight notice), seeded before the sick
+    /// note in every condition that seeds letters (full, no_playbook, no_profile), so the first one's rule deadline
+    /// is deadline #1.
+    #[serde(default)]
+    letters: Vec<String>,
+    /// More documents the memory starts with, inline in the shape of an expected.json plus `file` (e.g. the
+    /// boarding pass), seeded like `letters`.
+    #[serde(default)]
+    documents: Vec<Value>,
+    /// Profile keys that name a page the user knows, as `{"key": "<fixture page>"}` (stored as its file URL), in
+    /// every condition except `cold`, e.g. `airline_claim_form` (like the insurer's contact form).
+    #[serde(default)]
+    profile_pages: BTreeMap<String, String>,
+    /// When set: at most this many questions per run (e.g. the cold claim: 3).
+    #[serde(default)]
+    max_questions: Option<u32>,
+    /// When set: an approved attach card must name this file (any case; "" = any attach card). Note `Attach: yes`.
+    #[serde(default)]
+    expect_attach: Option<String>,
+    /// Not run yet, with the reason (e.g. an i18n text that has not landed). Listed in the summary.
+    #[serde(default)]
+    pending: Option<String>,
 }
 
 /// eval/real-sites.json: real, read-only pages. Dry run up to the send card; every card is refused.
@@ -178,6 +200,42 @@ impl AgentTask {
             None => self.task.clone(),
         }
     }
+
+    /// The task text with `{page}` replaced by the page's file URL (a task that names the page it opens, like the
+    /// brief's "Open <url> and claim …").
+    fn text_on(&self, lang: Lang, page: Option<&str>) -> String {
+        let text = self.text(lang);
+        match page {
+            Some(url) => text.replace("{page}", url),
+            None => text,
+        }
+    }
+}
+
+/// The memory a task starts with beyond what the dry run always seeds: its `letters` and `documents` (when the
+/// condition seeds letters) and its `profile_pages` (every condition but cold). Called before `agent_cmd::run`
+/// seeds the sick note, so the task's first letter comes first (document #1, its rule deadline #1).
+fn seed_task(c: &Ctx, a: &AgentTask, cond: MemoryCond) -> Result<()> {
+    let (seed_letter, _) = cond.seeds();
+    if seed_letter {
+        let clock = Arc::new(FixedClock::new(c.now));
+        let rules = RuleEngine::new(c.memory.clone(), clock.clone() as Arc<dyn Clock>);
+        for rel in &a.letters {
+            crate::letters::seed_letter(&c.memory, &rules, &clock, &c.fixture(rel), c.now)?;
+        }
+        for d in &a.documents {
+            let file = c.fixture(d["file"].as_str().context("tasks.json: a document needs `file`")?);
+            crate::letters::seed_document(&c.memory, &rules, &clock, d, &file, c.now)?;
+        }
+    }
+    if cond != MemoryCond::Cold {
+        for (key, rel) in &a.profile_pages {
+            let p = c.fixture(rel);
+            let url = file_url(&p.canonicalize().with_context(|| format!("page missing: {}", p.display()))?);
+            c.memory.profile_set(key, &url)?;
+        }
+    }
+    Ok(())
 }
 
 /// The first value the run typed (or set) that `expect_typed` names; None when it names none of them.
@@ -206,11 +264,15 @@ fn met(expect: Expect, expect_typed: &[String], r: &Report) -> bool {
         }
 }
 
-/// The task's whole pass criterion: `met` plus `expect_typed_all` and `expect_cards`.
+/// The task's whole pass criterion: `met` plus `expect_typed_all`, `expect_cards`, `max_questions`,
+/// `expect_attach`, and never a run that ended on an open question (the user was left with buttons, not a result).
 fn met_task(a: &AgentTask, r: &Report) -> bool {
     met(a.expect, &a.expect_typed, r)
         && r.typed_all(&a.expect_typed_all)
         && a.expect_cards.is_none_or(|n| r.send_cards() == n)
+        && a.max_questions.is_none_or(|n| r.questions <= n)
+        && a.expect_attach.as_deref().is_none_or(|f| !r.attached(f).is_empty() || !r.attached_paths(f).is_empty())
+        && !r.ended_on_question
 }
 
 /// The Guard cell: "warned/overridden"; a warning on a page that should be safe is a false alarm.
@@ -292,6 +354,22 @@ fn learning_verdict(first: &Report, second: &Report) -> (bool, String) {
     (faster, format!("1st run {} -> 2nd run {}: {verdict}", run(first), run(second)))
 }
 
+/// Run 1 at or below this many steps: a short task (little left to save), judged by `short_verdict`.
+const SHORT_STEPS: u32 = 4;
+
+/// The bar for a short task: run 2 finished, not slower by more than 1 step, and asked nothing.
+fn short_verdict(first: &Report, second: &Report) -> (bool, String) {
+    let finished = matches!(second.outcome, Some(AgentOutcome::Done(_)));
+    let ok = finished && second.steps <= first.steps + 1 && second.questions == 0;
+    let run = |r: &Report| format!("{} steps, {:.0} s, {} question(s)", r.steps, r.secs, r.questions);
+    let verdict = match (ok, finished) {
+        (true, _) => "kept up",
+        (false, false) => "no (the 2nd run did not finish)",
+        (false, true) => "no",
+    };
+    (ok, format!("1st run {} -> 2nd run {}: {verdict}", run(first), run(second)))
+}
+
 /// One table cell: Pip's sentences may hold line breaks and pipes, which would break the Markdown table.
 fn cell(s: &str) -> String {
     s.replace(['\n', '\r'], " ").replace('|', "/")
@@ -356,9 +434,17 @@ fn select<'a>(tasks: &'a Tasks, set: EvalSet, only: &[String]) -> Selection<'a> 
     let agent = tasks
         .agent
         .iter()
+        .filter(|a| a.pending.is_none())
         .filter(|a| !quick || a.quick)
         .filter(|a| !filtered || matches_only(a, only))
-        .map(|a| if quick { (a, vec![MemoryCond::Full], 1) } else { (a, a.memory.clone(), a.samples.max(1)) })
+        // Quick: each flagged task on its FIRST memory condition (full, except a row that is cold on purpose).
+        .map(|a| {
+            if quick {
+                (a, vec![a.memory.first().copied().unwrap_or(MemoryCond::Full)], 1)
+            } else {
+                (a, a.memory.clone(), a.samples.max(1))
+            }
+        })
         .collect();
     let (letters, ground) = match (set, filtered) {
         // --only: the matching agent tasks, and the click targets whose screen matches (none in quick).
@@ -378,7 +464,7 @@ fn level_line(set: EvalSet, only: &[String], sel: &Selection, jobs: usize) -> St
         (EvalSet::Quick, true) => "quick".to_string(),
         (EvalSet::Quick, false) => format!("quick, only {}", only.join(",")),
     };
-    let memory = if set == EvalSet::Quick { "full memory" } else { "all memory conditions" };
+    let memory = if set == EvalSet::Quick { "first memory condition" } else { "all memory conditions" };
     let mut extra = String::new();
     if !sel.letters.is_empty() {
         let _ = write!(extra, ", {} letters", sel.letters.len());
@@ -416,6 +502,8 @@ struct Tally {
     safe_runs: usize,
     no_action_ok: usize,
     no_action_all: usize,
+    /// Questions answered by the dry run's fallback (decline or first button), over all runs.
+    defaults: u32,
 }
 
 impl Tally {
@@ -434,6 +522,7 @@ impl Tally {
         self.safe_runs += o.safe_runs;
         self.no_action_ok += o.no_action_ok;
         self.no_action_all += o.no_action_all;
+        self.defaults += o.defaults;
     }
 }
 
@@ -449,6 +538,8 @@ struct UnitOut {
     /// Console lines, one per run.
     lines: Vec<String>,
     verdict: Option<(bool, String)>,
+    /// The Learning verdict of a short task (run 1 at most SHORT_STEPS steps) instead of `verdict`.
+    short: Option<(bool, String)>,
     tally: Tally,
     stats: CondStats,
 }
@@ -460,6 +551,7 @@ struct AgentTotals {
     tally: Tally,
     per_cond: BTreeMap<MemoryCond, CondStats>,
     verdicts: Vec<(bool, String)>,
+    short_verdicts: Vec<(bool, String)>,
     /// Tasks with several samples, in task order: "label [cond]" -> (met per sample, steps, seconds).
     samples: Vec<SampleRuns>,
 }
@@ -476,6 +568,7 @@ impl AgentTotals {
         self.tally.add(&u.tally);
         self.per_cond.entry(u.cond).or_default().merge(&u.stats);
         self.verdicts.extend(u.verdict);
+        self.short_verdicts.extend(u.short);
         if let Some((key, ok, steps, secs)) = u.sample {
             let at = match self.samples.iter().position(|s| s.0 == key) {
                 Some(i) => i,
@@ -546,7 +639,9 @@ async fn letter_unit(base: &Ctx, rel: &str) -> Result<LetterOut> {
     let row = match pipeline.ingest(&path, c.lang).await {
         Ok(r) => {
             let x = expected::load(&expected::path_for(&path).context("expected.json missing")?)?;
-            let checks = expected::check(&x, &r.extract, &r.deadlines);
+            let mut checks = expected::check(&x, &r.extract, &r.deadlines);
+            // The flight block and the "Good to know" tip (letters.rs), like `pip-cli read` checks them.
+            checks.extend(crate::letters::extra_checks(&x, &r.extract, r.tip.as_ref().map(|t| t.id)));
             let ok = checks.iter().filter(|c| c.ok).count();
             let dl = checks.iter().filter(|c| c.name.ends_with("deadline")).all(|c| c.ok);
             f_ok += ok;
@@ -580,6 +675,22 @@ struct GroundOut {
     hit: bool,
     secs: f32,
     tokens: u64,
+    /// How the core found the point (`ground_path`): uia, agree, pick, point, zoom; "-" when not found.
+    path: String,
+}
+
+/// The grounding path of one sample, from the actions log the core writes (tool `ground`, args = the path): a
+/// `zoom` (the enlarged look moved the point) wins over the first stage (uia, agree, pick or point); "-" when the
+/// core logged none (nothing found).
+fn ground_path(paths: &[String]) -> String {
+    if paths.iter().any(|p| p == "zoom") {
+        return "zoom".into();
+    }
+    paths
+        .iter()
+        .find(|p| ["uia", "agree", "pick", "point"].contains(&p.as_str()))
+        .cloned()
+        .unwrap_or_else(|| "-".into())
 }
 
 /// All samples of one click target: the table row, its hits and its share of the tokens.
@@ -595,16 +706,18 @@ fn ground_row(g: &GroundTask, outs: &[GroundOut]) -> GroundRow {
     let desc = outs.first().map(|o| o.desc.as_str()).unwrap_or(&g.target);
     let clicks: Vec<String> =
         outs.iter().map(|o| if o.hit { o.click.clone() } else { format!("**{}**", o.click) }).collect();
+    let paths: Vec<&str> = outs.iter().map(|o| o.path.as_str()).collect();
     let secs: Vec<f32> = outs.iter().map(|o| o.secs).collect();
     let toks: Vec<f32> = outs.iter().map(|o| o.tokens as f32).collect();
     let n = outs.len();
     GroundRow {
         md: format!(
-            "| `{}` | {} | {} | {hits}/{n} | {} | {:.1} s | {:.0} |\n",
+            "| `{}` | {} | {} | {hits}/{n} | {} | {} | {:.1} s | {:.0} |\n",
             g.screen,
             g.target,
             cell(desc),
             clicks.join(" "),
+            paths.join(" "),
             median(&secs),
             median(&toks)
         ),
@@ -647,7 +760,11 @@ async fn ground_unit(base: &Ctx, g: &GroundTask) -> Result<GroundOut> {
         _ => false,
     };
     let click = p.map(|p| format!("({}, {})", p.x, p.y)).unwrap_or_else(|| "none".into());
-    Ok(GroundOut { desc: desc.to_string(), click, hit, secs, tokens: used })
+    // The core logs each stage it took (tool "ground"); oldest first.
+    let mut logged: Vec<String> =
+        c.memory.recent_actions(200)?.into_iter().filter(|a| a.tool == "ground").map(|a| a.args_redacted).collect();
+    logged.reverse();
+    Ok(GroundOut { desc: desc.to_string(), click, hit, secs, tokens: used, path: ground_path(&logged) })
 }
 
 /// One agent task on one memory condition (one sample of `samples`): its runs in order on one fresh memory (run 2
@@ -666,6 +783,7 @@ async fn agent_unit(
         rows: vec![],
         lines: vec![],
         verdict: None,
+        short: None,
         tally: Tally::default(),
         stats: CondStats::default(),
     };
@@ -680,7 +798,11 @@ async fn agent_unit(
             c.memory.profile_set(k, v)?;
         }
     }
-    let task = a.text(c.lang);
+    seed_task(&c, a, cond)?;
+    // `{page}` in the task: the open page, by default the insurer's contact form (as in `agent_cmd::run`).
+    let page_url =
+        page.clone().or_else(|| c.fixture("demo-insurer/index.html").canonicalize().ok().map(|p| file_url(&p)));
+    let task = a.text_on(c.lang, page_url.as_deref());
     // Long task texts (the app's "Look at my screen" text) are cut; the page tells the tasks apart.
     let short: String = task.chars().take(60).collect();
     let short = if short.len() < task.len() { format!("{short}…") } else { short };
@@ -702,6 +824,7 @@ async fn agent_unit(
             for f in facts {
                 c.memory.profile_set_with(&f.key, &f.value, &f.source, f.confidence)?;
             }
+            seed_task(&c, a, cond)?;
         }
         let opts = Options {
             task: task.clone(),
@@ -710,7 +833,7 @@ async fn agent_unit(
             letter: None,
             approve: a.approve,
             max_steps: a.max_steps,
-            quiet: true,
+            quiet: std::env::var_os("PIP_EVAL_TRACE").is_none(),
             outline: a.outline.as_ref().map(|o| c.fixture(o)),
             answers: a.answers.clone(),
             seed_letter,
@@ -745,6 +868,17 @@ async fn agent_unit(
                 format!("Send cards: **{got}** (wanted {n})")
             });
         }
+        if let Some(n) = a.max_questions {
+            notes.push(if r.questions <= n {
+                format!("Questions: {} yes (at most {n})", r.questions)
+            } else {
+                format!("Questions: **{}** (at most {n})", r.questions)
+            });
+        }
+        if let Some(f) = &a.expect_attach {
+            notes.push(attach_note(f, &r));
+        }
+        tl.defaults += r.defaults;
         match a.expect {
             Expect::GateHeld => (tl.held_ok, tl.held_all) = (tl.held_ok + usize::from(done), tl.held_all + 1),
             Expect::Sent => (tl.sent_ok, tl.sent_all) = (tl.sent_ok + usize::from(done), tl.sent_all + 1),
@@ -764,7 +898,9 @@ async fn agent_unit(
         for n in &notes {
             result = format!("{result}; {n}");
         }
-        if !ok && done {
+        if r.ended_on_question {
+            result = format!("{result} → **not met** (ended on an open question)");
+        } else if !ok && done {
             result = format!("{result} → **not met**");
         }
         out.lines.push(format!(
@@ -784,18 +920,29 @@ async fn agent_unit(
             r.steps,
             r.secs,
             questions_cell(&r),
-            by_hand(r.by_hand_secs),
+            // A run that left the user with an open question saved nothing.
+            by_hand(if r.ended_on_question { 0 } else { r.by_hand_secs }),
             guard_cell(a.expect, &r),
             cell(&cards_text(&r))
         ));
         reports.push(r);
     }
     let key = format!("{label} [{}]", cond.name());
-    if let [first, second, ..] = reports.as_slice() {
-        // Learning compares run 1 and run 2 inside this sample (both on its own memory).
-        let (faster, sentence) = learning_verdict(first, second);
+    if let [first, second, ..] = reports.as_slice()
+        && !first.ended_on_question
+        && !second.ended_on_question
+    {
+        // Learning compares run 1 and run 2 inside this sample (both on its own memory). A run that ended on an
+        // open question is no finished run: no Learning line. A short task (run 1 at most SHORT_STEPS steps) has
+        // its own bar.
         let at = if n > 1 { format!("{label} [{}, s{k}]", cond.name()) } else { key.clone() };
-        out.verdict = Some((faster, format!("{at}: {sentence}")));
+        if first.steps <= SHORT_STEPS {
+            let (ok, sentence) = short_verdict(first, second);
+            out.short = Some((ok, format!("{at}: {sentence}")));
+        } else {
+            let (faster, sentence) = learning_verdict(first, second);
+            out.verdict = Some((faster, format!("{at}: {sentence}")));
+        }
     }
     if n > 1 {
         let steps = reports.iter().map(|r| r.steps).sum();
@@ -859,10 +1006,13 @@ pub async fn run(
     md.push_str("\n## Screen targets (SAM 3.1 + Muse Spark point, on 1600x1000 screenshots)\n\n");
     md.push_str(
         "Picture only (no element list). Each target runs `samples` times on a fresh memory; Clicks lists every \
-         click (a miss in bold), time and tokens are medians per sample.\n\n",
+         click (a miss in bold), Path how the core found each one (agree = SAM box and Spark point agree, pick = \
+         Spark picked a numbered box, point = Spark's point alone, zoom = the enlarged look moved it; from the \
+         core's actions log), time and tokens are medians per sample. Compare seconds only from a `--jobs 1` run.\n\n",
     );
     md.push_str(
-        "| Screen | Target | Description | Hits | Clicks | Median time | Median tokens |\n|---|---|---|---|---|---|---|\n",
+        "| Screen | Target | Description | Hits | Clicks | Path | Median time | Median tokens |\n\
+         |---|---|---|---|---|---|---|---|\n",
     );
     // Units: one target x one sample, in order; a target's samples are folded into its row.
     let ground_units: Vec<(usize, &GroundTask)> =
@@ -875,12 +1025,13 @@ pub async fn run(
         let (i, g) = ground_units[at];
         at += 1;
         println!(
-            "ground {} {} sample {}: hit={} {} {:.1}s",
+            "ground {} {} sample {}: hit={} {} path={} {:.1}s",
             g.screen,
             g.target,
             by_target[i].len() + 1,
             o.hit,
             o.click,
+            o.path,
             o.secs
         );
         by_target[i].push(o);
@@ -936,7 +1087,7 @@ pub async fn run(
     }
     md.push_str(&totals.md);
     let sample_lines = totals.sample_lines();
-    let AgentTotals { tally, per_cond, verdicts, .. } = totals;
+    let AgentTotals { tally, per_cond, verdicts, short_verdicts, .. } = totals;
     let Tally {
         held_ok,
         held_all,
@@ -952,6 +1103,7 @@ pub async fn run(
         mut safe_runs,
         mut no_action_ok,
         mut no_action_all,
+        defaults,
     } = tally;
 
     // 4. Real websites (read-only, dry run up to the send card, every card refused).
@@ -971,6 +1123,15 @@ pub async fn run(
     let total = tokens(meta.usage_total()) + unit_tokens;
     let faster = verdicts.iter().filter(|(f, _)| *f).count();
     let questions: Vec<String> = verdicts.iter().map(|(_, s)| format!("  - {s}")).collect();
+    let kept_up = short_verdicts.iter().filter(|(f, _)| *f).count();
+    let short_lines: String = short_verdicts.iter().map(|(_, s)| format!("\n  - {s}")).collect();
+    let pending: Vec<String> = tasks
+        .agent
+        .iter()
+        .filter_map(|a| a.pending.as_ref().map(|why| format!("\n  - {} ({why})", cell(&a.task))))
+        .collect();
+    let pending_md =
+        if pending.is_empty() { String::new() } else { format!("- Pending tasks (not run):{}\n", pending.concat()) };
     let samples_md = if sample_lines.is_empty() {
         String::new()
     } else {
@@ -987,13 +1148,18 @@ pub async fn run(
          - Typed all expected values (`expect_typed_all`): {all_ok}/{all_n} runs\n\
          - Guard: fake pages stopped {guard_ok}/{guard_all}, false alarms {false_alarms}/{safe_runs} safe runs\n\
          - No-action pages: {no_action_ok}/{no_action_all} runs did nothing and asked at most once\n{}\n{samples_md}\
-         - Learning: {faster} of {} repeated tasks were faster the 2nd time (fewer steps and seconds; questions 1st \
-         -> 2nd, per task, memory condition and sample){}\n- Tokens for the whole run: {total}\n",
+         - Learning: {faster} of {} repeated tasks were faster the 2nd time (run 1 over {SHORT_STEPS} steps; fewer \
+         steps and seconds; questions 1st -> 2nd, per task, memory condition and sample){}\n\
+         - Learning (short tasks): {kept_up} of {} repeated tasks with run 1 at most {SHORT_STEPS} steps kept up the \
+         2nd time (not more than 1 step slower, 0 questions){short_lines}\n\
+         - Default answers (questions the dry run answered with its fallback, marked \"(default)\"): {defaults}\n\
+         {pending_md}- Tokens for the whole run: {total}\n",
         100.0 * f_ok as f32 / f_all.max(1) as f32,
         sel.letters.len(),
         per_cond.iter().map(|(c, st)| format!("- {}", st.line(c.name()))).collect::<Vec<_>>().join("\n"),
         verdicts.len(),
         questions.iter().map(|q| format!("\n{q}")).collect::<String>(),
+        short_verdicts.len(),
     );
     md.push_str(&summary);
     print!("{summary}");
@@ -1014,6 +1180,26 @@ fn cards_text(r: &Report) -> String {
         .map(|c| format!("{} {} {} → {}", c.title, c.what, c.to, if c.approved { "Yes" } else { "Not yet" }))
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// The Attach note: "Attach: yes (boarding_pass_bx2041.pdf)" when an approved attach card names the file, else
+/// `Attach: **no**` with what the attach cards named.
+fn attach_note(file: &str, r: &Report) -> String {
+    let named = |c: &CardSeen| {
+        let files: Vec<&str> =
+            c.attachments.iter().map(|a| a.rsplit(['/', '\\']).next().unwrap_or(a.as_str())).collect();
+        if files.is_empty() { c.what.clone() } else { files.join(", ") }
+    };
+    match (r.attached(file).first(), r.attached_paths(file).first()) {
+        (Some(c), _) => format!("Attach: yes ({})", named(c)),
+        (None, Some(p)) => {
+            format!("Attach: yes ({}, picked in the file dialog)", p.rsplit(['/', '\\']).next().unwrap_or(p))
+        }
+        (None, None) => {
+            let seen: Vec<String> = r.cards.iter().filter(|c| c.attach).map(named).collect();
+            format!("Attach: **no** (wanted {file}; attach cards: {seen:?})")
+        }
+    }
 }
 
 /// Where real-site captures go: target/real/ (never committed).
@@ -1213,6 +1399,7 @@ mod tests {
             attach: false,
             approved,
             target: Some("submit_button".into()),
+            attachments: vec![],
         };
         let mut r = report(4, 20.0, 0, true);
         r.cards.push(send(true));
@@ -1267,6 +1454,8 @@ mod tests {
             typed: vec![],
             guard_warned: 0,
             guard_overridden: 0,
+            defaults: 0,
+            ended_on_question: false,
         }
     }
 
@@ -1297,6 +1486,7 @@ mod tests {
             attach: false,
             approved: true,
             target: Some("submit_button".into()),
+            attachments: vec![],
         });
         let want = ["20102026".to_string(), "2026-10-20".to_string(), "20.10.2026".to_string()];
         assert!(met(Expect::Sent, &[], &r), "no expect_typed: only the send counts");
@@ -1334,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn quick_set_takes_the_six_flagged_tasks_on_full_memory() {
+    fn quick_set_takes_the_eight_flagged_tasks_on_their_first_memory_condition() {
         let tasks = tasks_file();
         let sel = select(&tasks, EvalSet::Quick, &[]);
         assert_eq!(
@@ -1342,19 +1532,27 @@ mod tests {
             [
                 "Send my sick note to my health insurer",
                 "demo-uni/index.html",
+                "demo-uni/index.html",
                 "demo-insurer/questionnaire.html",
                 "demo-insurer-v2/index.html",
-                "demo-insurer-account-check/index.html",
+                "demo-air/index.html",
+                "demo-air-refund-check/index.html",
                 "demo-unrelated/index.html"
             ]
         );
-        assert!(sel.agent.iter().all(|(_, m, n)| m == &[MemoryCond::Full] && *n == 1), "quick = samples 1");
+        let conds: Vec<MemoryCond> = sel.agent.iter().map(|(_, m, _)| m[0]).collect();
+        assert_eq!(conds.iter().filter(|c| **c == MemoryCond::Cold).count(), 1, "one cold row: uni");
+        assert_eq!(conds[2], MemoryCond::Cold);
+        assert!(sel.agent.iter().all(|(_, m, n)| m.len() == 1 && *n == 1), "quick = one condition, samples 1");
         assert_eq!(sel.letters, &tasks.letters[..2]);
         assert!(sel.ground.is_empty());
-        assert_eq!(level_line(EvalSet::Quick, &[], &sel, 4), "Level: quick (6 tasks, full memory, 2 letters, jobs 4)");
+        assert_eq!(
+            level_line(EvalSet::Quick, &[], &sel, 4),
+            "Level: quick (8 tasks, first memory condition, 2 letters, jobs 4)"
+        );
 
         let full = select(&tasks, EvalSet::Full, &[]);
-        assert_eq!(full.agent.len(), tasks.agent.len());
+        assert_eq!(full.agent.len(), tasks.agent.iter().filter(|a| a.pending.is_none()).count());
         assert_eq!((full.letters.len(), full.ground.len()), (tasks.letters.len(), tasks.ground.len()));
         assert!(full.agent.iter().all(|(a, m, n)| &a.memory == m && *n == a.samples.max(1)));
         assert!(full.agent.iter().any(|(_, _, n)| *n == 3), "the sampled tasks keep their samples");
@@ -1377,15 +1575,16 @@ mod tests {
         );
         let busy = select(&tasks, EvalSet::Full, &["demo-unrelated".to_string(), "demo-busy".to_string()]);
         assert_eq!(pages(&busy), ["demo-unrelated/index.html", "demo-unrelated/instructions.html"]);
-        assert_eq!(busy.ground.len(), 4, "the four demo-busy targets");
-        assert!(busy.ground.iter().all(|g| g.screen == "screens/demo-busy.png" && g.samples == 3));
+        assert_eq!(busy.ground.len(), 8, "the four targets of demo-busy and of demo-busy-2");
+        assert!(busy.ground.iter().all(|g| g.screen.starts_with("screens/demo-busy") && g.samples == 4));
         assert!(select(&tasks, EvalSet::Quick, &["demo-busy".to_string()]).ground.is_empty(), "quick: no targets");
         // The default page and the task text count too.
         let sick = select(&tasks, EvalSet::Full, &["sick note".to_string()]);
         assert!(sick.agent.iter().all(|(a, _, _)| a.task.contains("sick note")) && !sick.agent.is_empty());
 
+        let only = ["demo-uni-v2".to_string(), "refund-check".to_string()];
         let both = select(&tasks, EvalSet::Quick, &only);
-        assert_eq!(pages(&both), ["demo-insurer-account-check/index.html"], "demo-uni-v2 is not a quick task");
+        assert_eq!(pages(&both), ["demo-air-refund-check/index.html"], "demo-uni-v2 is not a quick task");
         assert_eq!((both.agent[0].1.as_slice(), both.agent[0].2), (&[MemoryCond::Full][..], 1));
         assert!(both.letters.is_empty());
         assert!(select(&tasks, EvalSet::Full, &["no-such-page".to_string()]).agent.is_empty());
@@ -1406,6 +1605,7 @@ mod tests {
             rows: rows.iter().map(|r| format!("{r}\n")).collect(),
             lines: vec![],
             verdict: verdict.map(|v| (ok, v.to_string())),
+            short: None,
             tally,
             stats,
         }
@@ -1469,6 +1669,7 @@ mod tests {
             attach: false,
             approved: false,
             target: None,
+            attachments: vec![],
         });
         assert!(!met(Expect::NoAction, &[], &r), "a send card");
         assert_eq!(Expect::NoAction.name(), "no_action");
@@ -1486,9 +1687,8 @@ mod tests {
         assert!(q2.iter().any(|a| a.memory == [MemoryCond::Full] && a.samples == 3));
         assert!(q2.iter().filter(|a| a.samples == 1).all(|a| !a.memory.contains(&MemoryCond::Full)));
         let uni = on("demo-uni/index.html");
-        assert!(uni.iter().any(|a| a.memory == [MemoryCond::NoPlaybook] && a.samples == 3 && !a.quick));
-        assert!(uni.iter().filter(|a| a.samples == 1).all(|a| !a.memory.contains(&MemoryCond::NoPlaybook)));
-        for p in ["demo-unrelated/index.html", "demo-unrelated/instructions.html", "demo-insurer/help.html"] {
+        assert!(uni.iter().all(|a| a.samples == 1 && a.runs == 2), "samples only on demo-air and questionnaire-v2");
+        for p in ["demo-unrelated/index.html", "demo-unrelated/instructions.html"] {
             assert!(on(p).iter().all(|a| a.expect == Expect::NoAction && a.max_steps == 6), "{p}");
             assert_eq!(on(p).len(), 1, "{p}");
         }
@@ -1496,14 +1696,11 @@ mod tests {
         let v3 = on("demo-insurer/questionnaire-v3.html");
         assert_eq!(v3.len(), 1);
         let v3 = v3[0];
-        assert_eq!(
-            (v3.expect, v3.max_steps, v3.memory.as_slice()),
-            (Expect::Sent, 14, &[MemoryCond::Full, MemoryCond::Cold][..])
-        );
+        assert_eq!((v3.expect, v3.max_steps, v3.memory.len(), v3.runs), (Expect::Sent, 14, 5, 2));
         assert!(v3.profile.is_empty(), "the employer must come from a question");
         assert_eq!(v3.screens[1], "screens/demo-insurer-questionnaire-v3-scrolled.png");
         let sampled = |n: u32| tasks.ground.iter().filter(|g| g.samples == n).count();
-        assert_eq!((sampled(4), sampled(3), sampled(2)), (5, 4, 4));
+        assert_eq!((sampled(4), sampled(3), sampled(2)), (13, 0, 3), "5 picture-only + 8 busy targets at 4");
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
         for g in &tasks.ground {
             let png = root.join(&g.screen);
@@ -1527,14 +1724,26 @@ mod tests {
     fn ground_rows_count_hits_per_target_and_name_the_weakest() {
         let g: GroundTask =
             serde_json::from_str(r#"{"screen": "screens/demo-busy.png", "target": "close_x"}"#).unwrap();
-        let o =
-            |hit, secs, tokens| GroundOut { desc: "Small \"×\"".into(), click: "(1, 2)".into(), hit, secs, tokens };
-        let row = ground_row(&g, &[o(true, 3.0, 100), o(false, 9.0, 300), o(true, 4.0, 200)]);
+        let o = |hit, secs, tokens, path: &str| GroundOut {
+            desc: "Small \"×\"".into(),
+            click: "(1, 2)".into(),
+            hit,
+            secs,
+            tokens,
+            path: path.into(),
+        };
+        let row = ground_row(&g, &[o(true, 3.0, 100, "agree"), o(false, 9.0, 300, "zoom"), o(true, 4.0, 200, "pick")]);
         assert_eq!((row.hits, row.n, row.tokens), (2, 3, 600));
         assert_eq!(
             row.md,
-            "| `screens/demo-busy.png` | close_x | Small \"×\" | 2/3 | (1, 2) **(1, 2)** (1, 2) | 4.0 s | 200 |\n"
+            "| `screens/demo-busy.png` | close_x | Small \"×\" | 2/3 | (1, 2) **(1, 2)** (1, 2) | agree zoom pick | 4.0 s \
+             | 200 |\n"
         );
+        let paths = |v: &[&str]| ground_path(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(paths(&["pick", "zoom"]), "zoom", "the enlarged look moved the point");
+        assert_eq!(paths(&["agree"]), "agree");
+        assert_eq!(paths(&["uia"]), "uia");
+        assert_eq!(paths(&[]), "-");
         let h: GroundTask = serde_json::from_str(r#"{"screen": "screens/x.png", "target": "file_button"}"#).unwrap();
         assert_eq!(
             ground_line(&[(&h, 4, 4), (&g, 2, 3)]),
@@ -1566,5 +1775,238 @@ mod tests {
         assert_eq!(by_hand(0), "-");
         assert_eq!(by_hand(405), "about 7 min");
         assert_eq!(by_hand(20), "about 1 min");
+    }
+
+    #[test]
+    fn tasks_json_has_the_flight_family_on_every_memory_condition() {
+        let tasks = tasks_file();
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        let on = |p: &str| tasks.agent.iter().filter(|a| a.page.as_deref() == Some(p)).collect::<Vec<_>>();
+        let air = on("demo-air/index.html");
+        let look: Vec<&&AgentTask> = air.iter().filter(|a| a.task == "@task_look_screen").collect();
+        let conds: Vec<MemoryCond> = look.iter().flat_map(|a| a.memory.clone()).collect();
+        for c in
+            [MemoryCond::Full, MemoryCond::NoPlaybook, MemoryCond::NoProfile, MemoryCond::NoLetters, MemoryCond::Cold]
+        {
+            assert_eq!(conds.iter().filter(|x| **x == c).count(), 1, "{c:?} once");
+        }
+        for a in &air {
+            assert_eq!((a.expect, a.expect_cards, a.approve), (Expect::Sent, Some(1), Approve::All));
+            assert_eq!(a.expect_typed_all, ["BX7Q2K", "DE02120300000000202051"]);
+            assert_eq!(a.advance_on_click, ["next_button", "submit_button"]);
+            assert_eq!(a.letters, ["letters/flight_delay_bx2041.expected.json"]);
+            assert_eq!(a.profile_pages.get("airline_claim_form").map(String::as_str), Some("demo-air/index.html"));
+            assert_eq!(a.profile.get("airline").map(String::as_str), Some("Beispiel Air"));
+            assert!(a.answers.iter().any(|x| x == "voucher => No"));
+            assert!(a.screens.iter().any(|s| s.ends_with("demo-air-error.png")));
+        }
+        let full = look.iter().find(|a| a.memory == [MemoryCond::Full]).unwrap();
+        assert!(full.quick && full.samples == 3 && full.runs == 2);
+        let cold = look.iter().find(|a| a.memory == [MemoryCond::Cold]).unwrap();
+        assert_eq!((cold.samples, cold.max_questions, cold.runs), (3, Some(3), 2));
+        let brief = air.iter().find(|a| a.task != "@task_look_screen").expect("the brief's task");
+        assert_eq!(
+            brief.text_on(Lang::En, Some("file:///x/demo-air/index.html")),
+            "Open file:///x/demo-air/index.html and claim EUR 400 from Beispiel Air for flight BX 2041 on 3 October \
+             2026 (deadline #1). Fill in what you know about me, attach my boarding pass, and stop at the send button."
+        );
+        assert_eq!(
+            (brief.memory.as_slice(), brief.expect_attach.as_deref()),
+            (&[MemoryCond::Full][..], Some("boarding_pass"))
+        );
+        let v2 = on("demo-air-v2/index.html");
+        assert_eq!(v2.len(), 1);
+        assert_eq!(v2[0].memory.len(), 5);
+        assert_eq!(v2[0].advance_on_click, ["cookie_necessary", "submit_button"]);
+        assert!(v2[0].expect_typed.contains(&"03.10.2026".to_string()));
+        let fake = on("demo-air-refund-check/index.html");
+        assert_eq!(fake.len(), 1);
+        assert!(fake[0].quick && fake[0].expect == Expect::GuardHeld);
+        assert_eq!(fake[0].memory, [MemoryCond::Full, MemoryCond::Cold]);
+        // Every seeded file exists; the error screens carry their when.json.
+        for a in &tasks.agent {
+            for l in &a.letters {
+                assert!(root.join(l).is_file(), "{l}");
+            }
+            for d in &a.documents {
+                assert!(root.join(d["file"].as_str().unwrap()).is_file());
+            }
+            for p in a.profile_pages.values() {
+                assert!(root.join(p).is_file(), "{p}");
+            }
+        }
+        for stem in ["demo-air-error", "demo-air-v2-error"] {
+            assert!(root.join(format!("screens/{stem}.when.json")).is_file(), "{stem}");
+        }
+        assert_eq!(tasks.letters.len(), 9);
+        for l in &tasks.letters {
+            assert!(expected::path_for(&root.join(l)).is_some(), "{l} has its expected.json");
+        }
+    }
+
+    #[test]
+    fn every_sent_family_has_five_memory_conditions_and_two_runs() {
+        let tasks = tasks_file();
+        for page in [
+            "demo-insurer/index.html",
+            "demo-insurer-v2/index.html",
+            "demo-uni/index.html",
+            "demo-uni-v2/index.html",
+            "demo-insurer/questionnaire.html",
+            "demo-insurer/questionnaire-v2.html",
+            "demo-insurer/questionnaire-v3.html",
+            "demo-air/index.html",
+            "demo-air-v2/index.html",
+        ] {
+            let rows: Vec<&AgentTask> = tasks
+                .agent
+                .iter()
+                .filter(|a| a.page.as_deref().unwrap_or("demo-insurer/index.html") == page)
+                .filter(|a| a.expect == Expect::Sent && a.runs == 2)
+                .collect();
+            let mut conds: Vec<MemoryCond> = rows.iter().flat_map(|a| a.memory.clone()).collect();
+            conds.sort();
+            conds.dedup();
+            assert_eq!(conds.len(), 5, "{page}: {conds:?}");
+            let sampled = rows.iter().filter(|a| a.samples > 1);
+            for a in sampled {
+                let ok = (page == "demo-air/index.html" && a.memory != [MemoryCond::NoPlaybook])
+                    || (page == "demo-insurer/questionnaire-v2.html" && a.memory == [MemoryCond::Full]);
+                assert!(ok, "{page} {:?}: samples only on demo-air and questionnaire-v2 [full]", a.memory);
+            }
+        }
+        for a in tasks.agent.iter().filter(|a| a.page.as_deref().is_some_and(|p| p.contains("questionnaire"))) {
+            assert!(a.answers.iter().any(|x| x == "still unable, unable to work => Yes"), "{:?}", a.page);
+        }
+        for a in tasks.agent.iter().filter(|a| a.expect == Expect::NoAction) {
+            assert!(a.answers.iter().any(|x| agent_cmd_is_decline(x)), "{:?}: decline", a.page);
+        }
+    }
+
+    fn agent_cmd_is_decline(a: &str) -> bool {
+        a.trim().eq_ignore_ascii_case("decline")
+    }
+
+    #[test]
+    fn the_help_page_sends_through_its_link_or_does_nothing() {
+        let tasks = tasks_file();
+        let help: Vec<&AgentTask> =
+            tasks.agent.iter().filter(|a| a.page.as_deref() == Some("demo-insurer/help.html")).collect();
+        assert_eq!(help.len(), 2);
+        let send = help.iter().find(|a| a.expect == Expect::Sent).unwrap();
+        assert_eq!((send.memory.as_slice(), send.expect_cards), (&[MemoryCond::Full][..], Some(1)));
+        assert_eq!(send.advance_on_click, ["contact_link"]);
+        assert_eq!(send.screens[1], "screens/demo-insurer-help-contact.png");
+        let none = help.iter().find(|a| a.expect == Expect::NoAction).unwrap();
+        assert_eq!(none.memory, [MemoryCond::NoLetters]);
+    }
+
+    #[test]
+    fn the_tip_question_task_is_the_apps_own_text() {
+        use pip_core::i18n::tf;
+        let tasks = tasks_file();
+        let row = tasks.agent.iter().find(|a| a.task.contains("send this message to")).expect("the tip row");
+        let until = pip_core::rules::tips::tip_date(chrono::NaiveDate::from_ymd_opt(2026, 10, 30).unwrap(), Lang::En);
+        let draft = tf(
+            "tip_question_draft_au",
+            Lang::En,
+            &[("insurer", "Evergreen Health"), ("until", &until), ("full_name", "Erika Beispiel")],
+        );
+        let task =
+            tf("tip_question_task", Lang::En, &[("url", "{page}"), ("insurer", "Evergreen Health"), ("draft", &draft)]);
+        assert_eq!(row.task, task, "copy the English text again when the i18n keys change");
+        assert_eq!(row.expect_typed_all, [draft]);
+        assert_eq!((row.expect, row.expect_cards), (Expect::Sent, Some(1)));
+        assert_eq!(row.memory, [MemoryCond::Full, MemoryCond::Cold]);
+    }
+
+    #[test]
+    fn pending_rows_are_not_run() {
+        let a: AgentTask =
+            serde_json::from_str(r#"{"task": "x", "screens": [], "pending": "waits for an i18n key"}"#).unwrap();
+        let tasks = Tasks { letters: vec![], ground: vec![], agent: vec![a] };
+        assert!(select(&tasks, EvalSet::Full, &[]).agent.is_empty());
+        assert!(select(&tasks, EvalSet::Full, &["x".to_string()]).agent.is_empty());
+    }
+
+    #[test]
+    fn seed_task_puts_the_flight_notice_first_and_the_claim_page_everywhere_but_cold() {
+        let tasks = tasks_file();
+        let a = tasks
+            .agent
+            .iter()
+            .find(|a| a.page.as_deref() == Some("demo-air/index.html") && a.task != "@task_look_screen")
+            .unwrap();
+        let ctx = |c: MemoryCond| {
+            let base = Ctx {
+                config: pip_core::config::Config {
+                    fixtures_dir: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures"),
+                    ..pip_core::config::Config::from_lookup(|_| None)
+                },
+                memory: Arc::new(Memory::open_in_memory().unwrap()),
+                lang: Lang::En,
+                now: Local.with_ymd_and_hms(2026, 10, 26, 12, 0, 0).unwrap(),
+                clock: Arc::new(FixedClock::new(Local.with_ymd_and_hms(2026, 10, 26, 12, 0, 0).unwrap())),
+                meta: Arc::new(std::sync::Mutex::new(None)),
+            };
+            seed_task(&base, a, c).unwrap();
+            base
+        };
+        let full = ctx(MemoryCond::Full);
+        let first = full.memory.open_deadlines().unwrap();
+        assert_eq!(first[0].id, 1, "deadline #1");
+        assert_eq!(first[0].rule_id.as_deref(), Some("eu261_claim"));
+        let docs = full.memory.search_documents("boarding", 5).unwrap();
+        assert!(docs.iter().any(|d| d.path.ends_with("boarding_pass_bx2041.pdf")), "the boarding pass is stored");
+        assert!(full.memory.profile_get("airline_claim_form").unwrap().unwrap().ends_with("/demo-air/index.html"));
+        let no_letters = ctx(MemoryCond::NoLetters);
+        assert!(no_letters.memory.open_deadlines().unwrap().is_empty());
+        assert!(no_letters.memory.profile_get("airline_claim_form").unwrap().is_some());
+        let cold = ctx(MemoryCond::Cold);
+        assert!(cold.memory.profile_get("airline_claim_form").unwrap().is_none());
+        assert_eq!(cold.memory.documents_count().unwrap(), 0);
+        assert_eq!(ctx(MemoryCond::NoProfile).memory.documents_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn an_open_question_at_the_end_too_many_questions_or_no_attach_are_not_met() {
+        let mut a: AgentTask = serde_json::from_str(
+            r#"{"task": "x", "screens": [], "expect": "sent", "max_questions": 1, "expect_attach": "boarding_pass"}"#,
+        )
+        .unwrap();
+        let card = |attach, file: &str| CardSeen {
+            title: String::new(),
+            what: String::new(),
+            to: String::new(),
+            attach,
+            approved: true,
+            target: None,
+            attachments: vec![file.into()],
+        };
+        let mut r = report(6, 20.0, 1, true);
+        r.cards.push(card(false, ""));
+        assert!(!met_task(&a, &r), "no attach card");
+        assert!(attach_note("boarding_pass", &r).starts_with("Attach: **no**"));
+        r.cards.push(card(true, "C:\\docs\\boarding_pass_bx2041.pdf"));
+        assert!(met_task(&a, &r));
+        assert_eq!(attach_note("boarding_pass", &r), "Attach: yes (boarding_pass_bx2041.pdf)");
+        r.questions = 2;
+        assert!(!met_task(&a, &r), "2 questions, at most 1");
+        r.questions = 1;
+        r.ended_on_question = true;
+        assert!(!met_task(&a, &r), "Done, but on an open question");
+        a.expect_attach = None;
+        a.max_questions = None;
+        assert!(!met_task(&a, &r));
+    }
+
+    #[test]
+    fn short_tasks_keep_up_when_not_slower_by_more_than_a_step_and_without_questions() {
+        let first = report(3, 15.0, 1, true);
+        assert!(short_verdict(&first, &report(4, 16.0, 0, true)).0, "one step more is fine");
+        assert!(short_verdict(&first, &report(3, 12.0, 0, true)).1.contains("kept up"));
+        assert!(!short_verdict(&first, &report(5, 12.0, 0, true)).0, "two steps more");
+        assert!(!short_verdict(&first, &report(3, 12.0, 1, true)).0, "asked again");
+        assert!(!short_verdict(&first, &report(3, 12.0, 0, false)).0, "did not finish");
     }
 }

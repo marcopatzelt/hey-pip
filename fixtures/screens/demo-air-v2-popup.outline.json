@@ -1,0 +1,291 @@
+{
+ "note": "UI Automation outline of demo-air-v2-popup.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-air-v2/index.html?popup, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-air-v2-popup.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "BX Beispiel Air Ab Beispielstadt in die Sonne",
+   "value": null,
+   "rect": {
+    "x": 284,
+    "y": 50,
+    "w": 233,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "Buchen",
+   "value": null,
+   "rect": {
+    "x": 985,
+    "y": 61,
+    "w": 57,
+    "h": 31
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "Meine Reisen",
+   "value": null,
+   "rect": {
+    "x": 1066,
+    "y": 61,
+    "w": 100,
+    "h": 31
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "link",
+   "name": "Check-in",
+   "value": null,
+   "rect": {
+    "x": 1190,
+    "y": 61,
+    "w": 64,
+    "h": 31
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "link",
+   "name": "Hilfe",
+   "value": null,
+   "rect": {
+    "x": 1278,
+    "y": 61,
+    "w": 38,
+    "h": 31
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "text",
+   "name": "Entschädigung bei Verspätung oder Annullierung",
+   "value": null,
+   "rect": {
+    "x": 313,
+    "y": 159,
+    "w": 715,
+    "h": 42
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "button",
+   "name": "Antrag absenden",
+   "value": null,
+   "rect": {
+    "x": 1052,
+    "y": 166,
+    "w": 236,
+    "h": 54
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "edit",
+   "name": "Flugnummer",
+   "value": "",
+   "rect": {
+    "x": 313,
+    "y": 276,
+    "w": 313,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "edit",
+   "name": "Flugdatum",
+   "value": "",
+   "rect": {
+    "x": 644,
+    "y": 276,
+    "w": 313,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 10,
+   "role": "edit",
+   "name": "Buchungsnummer",
+   "value": "",
+   "rect": {
+    "x": 974,
+    "y": 276,
+    "w": 313,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 11,
+   "role": "edit",
+   "name": "Vor- und Nachname",
+   "value": "",
+   "rect": {
+    "x": 313,
+    "y": 378,
+    "w": 313,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 12,
+   "role": "edit",
+   "name": "E-Mail-Adresse",
+   "value": "",
+   "rect": {
+    "x": 644,
+    "y": 378,
+    "w": 313,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 13,
+   "role": "edit",
+   "name": "IBAN",
+   "value": "",
+   "rect": {
+    "x": 974,
+    "y": 378,
+    "w": 313,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 14,
+   "role": "radio",
+   "name": "Ja",
+   "value": "unchecked",
+   "rect": {
+    "x": 318,
+    "y": 492,
+    "w": 22,
+    "h": 22
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 15,
+   "role": "radio",
+   "name": "Nein",
+   "value": "unchecked",
+   "rect": {
+    "x": 401,
+    "y": 492,
+    "w": 22,
+    "h": 22
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 16,
+   "role": "button",
+   "name": "Bordkarte hochladen",
+   "value": null,
+   "rect": {
+    "x": 664,
+    "y": 494,
+    "w": 271,
+    "h": 51
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 17,
+   "role": "text",
+   "name": "Wir verwenden Cookies",
+   "value": null,
+   "rect": {
+    "x": 512,
+    "y": 417,
+    "w": 576,
+    "h": 36
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 18,
+   "role": "button",
+   "name": "Nur notwendige",
+   "value": null,
+   "rect": {
+    "x": 677,
+    "y": 529,
+    "w": 199,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 19,
+   "role": "button",
+   "name": "Alle akzeptieren",
+   "value": null,
+   "rect": {
+    "x": 890,
+    "y": 529,
+    "w": 198,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

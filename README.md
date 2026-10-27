@@ -170,22 +170,21 @@ sent. The full tables and the known weak spots are in [`eval/results.md`](eval/r
 
 | What | Result |
 |---|---|
-| Letter fields read correctly | 41 of 41 (5 letters) |
-| Deadlines right | 5 of 5 letters |
-| Send card held the *Submit* click when the user said no | 1 of 1 demo form; 1 of 1 real public test form (a pizza order on httpbin.org, dry run: the card appeared, nothing was sent) |
-| Sent after one approved send card | 36 of 38 runs |
-| Fake pages stopped by the guard (lookalike insurer, "your computer is locked") | 3 of 3 runs, before Pip typed anything (0 model steps, under 1 s) |
-| False alarms on safe pages | 0 of 41 runs |
-| New page variants sent (cookie banner, two steps, error after Submit) | 18 of 19 runs, in up to five memory conditions |
-| Cold memory (Pip knows nothing about the person) | 13 of 13 sent, about 1 question per run |
-| Two-step university form, memory without the playbook: 1st run → 2nd run | 8 steps, 29 s, 1 question → 5 steps, 17 s, no question |
-| Insurer upload page with cookie banner, cold memory: 1st run → 2nd run | 5 steps, 18 s, 1 question → 4 steps, 13 s, no question |
-| Click targets found from the picture alone (SAM 3.1 + Muse Spark), loop run 2 | 19 of 20 runs on 5 buttons × 4 runs (file buttons, cookie button, Yes radio, a button on a red page); 10 of 12 on a busy dark page; 37 of 40 in all |
-| Pages with nothing to do: Pip asked once and did nothing, loop run 2 | 5 of 6 runs (a weather page and a page that gives Pip orders, full and cold memory; the real pizza form 1 of 1); missed: the insurer's help page, where Pip went on to the contact form |
+| Letter fields read correctly | 100 of 100 (9 letters: sick notes, housing decision, insurer, university, four airline notices) |
+| Deadlines right | 9 of 9 letters |
+| "Good to know" tip right (or rightly none) | 9 of 9 letters (flight delay and late cancellation: EU 261 tip; short delay and early cancellation: none) |
+| Send card held the *Submit* click when the user said no | 1 of 1 demo form; 2 of 2 real public test forms (a pizza order on httpbin.org and the Selenium web form, dry run: the card appeared, nothing was sent) |
+| Flight claim page, 2 steps, IBAN error fixed by Pip | 4 of 6 sent with full memory (IBAN typed without spaces 6 of 6, one send card each); cold 0 of 6 with 2 to 4 questions: without a stored boarding pass the required upload stops Pip |
+| Brief → "claim EUR 400, attach my boarding pass" | 1 of 1 sent: 10 steps, boarding pass picked in the file dialog, one send card |
+| Fake pages stopped by the guard (lookalike airline, lookalike insurer, "your computer is locked") | 4 of 4 runs with memory, before Pip typed anything (0 model steps, 0.1 s); cold, the airline lookalike is not recognised, but Pip refused to fill it |
+| False alarms on safe pages | 0 of 115 runs (the airline's own page with its IBAN field included) |
+| Sent after one approved send card, all tasks except the flight pages | 69 of 77 runs, in five memory conditions |
+| Click targets found from the picture alone (SAM 3.1 + Muse Spark) | 20 of 20 on 5 buttons × 4 runs; 28 of 32 on two busy pages; median 3 to 8 s per target, two targets 8.5 and 10.4 s (one run at a time) |
+| Pages with nothing to do: Pip did nothing and asked at most once | 3 of 6 runs |
 
-The model does not answer the same way every time; each number is one run (Oct 26, 2026, loop run 1; the rows
-marked loop run 2: Oct 27, 2026). 11 of 17 repeated tasks were faster the second time, also without the playbook
-(4 of 5): the facts Pip remembered remove the question. The failures and earlier runs are listed in `eval/results.md`.
+The model does not answer the same way every time; each number is one run, all from loop run 3 (Oct 27, 2026),
+`eval/results.md` section "Loop run 3 (full, 2026-10-27)". 16 of 41 repeated tasks were faster the second time; 8 of
+10 short tasks kept their speed. The failures and earlier runs are listed there too.
 
 ## Safe by design
 

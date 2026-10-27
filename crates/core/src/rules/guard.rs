@@ -15,6 +15,10 @@
 //!   before: a known site's own help page ("Card locked? Call 0800 …") is no fake alarm.
 //!
 //! Verdict: warn = (ClaimsKnownOrg or Lookalike) and (AsksSensitive or Rushes), or FakeWarning.
+//!
+//! Organisations come from memory's profile: the insurer ("insurer" + "insurer_contact_form") and the airline
+//! ("airline" + "airline_claim_form", from the airline's e-mail or the demo page). The real claim page asks for
+//! an IBAN and stays silent (a known site); a lookalike that names the airline and asks for a code warns.
 
 use crate::platform::OutlineItem;
 
@@ -602,6 +606,69 @@ mod tests {
         assert!(sensitive_field(&item(1, "text", "We sent you a code")).is_none());
         assert!(contains_phrase("bitte sofort bestätigen", "sofort"));
         assert!(!contains_phrase("sofortige hilfe", "sofort"));
+    }
+
+    /// Memory of the demo with the airline: Beispiel Air's real claim page (demo-air), known from its e-mail.
+    fn known_with_airline() -> Known {
+        let mut k = known();
+        k.orgs.push(KnownOrg {
+            name: "Beispiel Air".into(),
+            site: Some(site("demo-air")),
+            source: "from your e-mail of Sunday, October 4".into(),
+            url: Some(format!("{}/index.html", site("demo-air"))),
+        });
+        k.sites.push(site("demo-air"));
+        k
+    }
+
+    const AIR_TITLE: &str = "Claim compensation – Beispiel Air";
+    const AIR_TEXT: &str = "DEMO PAGE: invented airline, nothing is sent. Beispiel Air Claim compensation for a delayed \
+        or cancelled flight Booking reference Flight number Date of flight Full name E-mail IBAN Boarding pass Choose \
+        file Send claim";
+    const REFUND_CHECK_TITLE: &str = "Beispiel Air – Refund check";
+    const REFUND_CHECK_TEXT: &str = "Beispiel Air Refund check Your refund of EUR 400 is ready. Confirm your card within \
+        24 hours or the refund will be closed. Card number Expiry date CVC SMS code Get my refund Invented example \
+        for tests; nothing is sent.";
+
+    #[test]
+    fn the_airlines_real_claim_page_with_its_iban_field_is_silent() {
+        let items = vec![
+            item(1, "edit", "Booking reference"),
+            item(2, "edit", "Full name"),
+            item(3, "edit", "IBAN"),
+            item(4, "button", "Send claim"),
+        ];
+        let v = verdict(Some("demo-air"), AIR_TITLE, AIR_TEXT, &items, &known_with_airline());
+        assert!(!v.warn, "{v:?}");
+        assert_eq!(v.signals, vec![Signal::AsksSensitive { field: "IBAN".into() }], "only the field, no claim");
+    }
+
+    #[test]
+    fn the_refund_check_lookalike_names_the_real_airline_page() {
+        let items =
+            vec![item(1, "edit", "Card number"), item(2, "edit", "SMS code"), item(3, "button", "Get my refund")];
+        let v = verdict(
+            Some("demo-air-refund-check"),
+            REFUND_CHECK_TITLE,
+            REFUND_CHECK_TEXT,
+            &items,
+            &known_with_airline(),
+        );
+        assert!(v.warn, "{v:?}");
+        assert_eq!(
+            v.signals[0],
+            Signal::ClaimsKnownOrg {
+                org: "Beispiel Air".into(),
+                real_site: "demo-air".into(),
+                source: "from your e-mail of Sunday, October 4".into()
+            }
+        );
+        assert!(v.signals.contains(&Signal::Lookalike { of: "demo-air".into(), org: Some("Beispiel Air".into()) }));
+        assert!(v.signals.contains(&Signal::Rushes { phrase: "within 24 hours".into() }), "{v:?}");
+        assert_eq!(v.claimed_org(), Some("Beispiel Air"));
+        // Without the airline in memory the page still asks for a card and rushes, but claims nobody known.
+        let cold = verdict(Some("demo-air-refund-check"), REFUND_CHECK_TITLE, REFUND_CHECK_TEXT, &items, &known());
+        assert!(cold.claimed_org().is_none(), "{cold:?}");
     }
 
     #[test]

@@ -12,7 +12,7 @@ use pip_core::clock::{Clock, FixedClock};
 use pip_core::config::file_url;
 use pip_core::events::{Bus, Button, UiEvent};
 use pip_core::i18n::t;
-use pip_core::platform::{Input, PhysPoint, PhysRect, Platform};
+use pip_core::platform::{Input, PhysPoint, PhysRect, Platform, WindowInfo};
 use pip_core::rules::RuleEngine;
 use pip_platform::fake::{Action, FakePlatform};
 use serde_json::Value;
@@ -115,6 +115,8 @@ pub struct CardSeen {
     pub approved: bool,
     /// Named target (from <screen>.boxes.json) under the highlight shown before the card.
     pub target: Option<String>,
+    /// The files the card names (an attach card: the document Pip picks in the file dialog).
+    pub attachments: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -141,6 +143,12 @@ pub struct Report {
     /// logs them when Pip warns about a page and when the user goes on anyway).
     pub guard_warned: u32,
     pub guard_overridden: u32,
+    /// Questions the dry run answered with its fallback (no answer in the list fitted): the decline button or the
+    /// first button. Marked "(default)" in `asked`.
+    pub defaults: u32,
+    /// The run ended Done, but its last model turn was a question with options (`ask_user` with buttons, which
+    /// the core turns into the closing bubble): the user was left with an open question, not a finished task.
+    pub ended_on_question: bool,
 }
 
 impl Report {
@@ -152,6 +160,31 @@ impl Report {
     /// Send cards (not attach cards) the gate showed.
     pub fn send_cards(&self) -> usize {
         self.cards.iter().filter(|c| !c.attach).count()
+    }
+
+    /// The file paths typed into a file dialog that name `file` (any case; with an empty `file`, any typed path).
+    /// Opening the picker and picking the user's own letter needs no card, so this is how an attach shows.
+    pub fn attached_paths(&self, file: &str) -> Vec<&String> {
+        let want = file.trim().to_lowercase();
+        self.typed
+            .iter()
+            .filter(|t| t.contains(['/', '\\']) && (want.is_empty() || t.to_lowercase().contains(&want)))
+            .collect()
+    }
+
+    /// The approved attach cards whose title, text or files name `file` (any case); with an empty `file`, any
+    /// approved attach card.
+    pub fn attached(&self, file: &str) -> Vec<&CardSeen> {
+        let want = file.trim().to_lowercase();
+        self.cards
+            .iter()
+            .filter(|c| c.attach && c.approved)
+            .filter(|c| {
+                want.is_empty()
+                    || [&c.title, &c.what, &c.to].iter().any(|t| t.to_lowercase().contains(&want))
+                    || c.attachments.iter().any(|a| a.to_lowercase().contains(&want))
+            })
+            .collect()
     }
 
     /// The send card appeared on the submit button and nothing clicked it afterwards.
@@ -205,11 +238,22 @@ fn field_values(fake: &FakePlatform) -> BTreeMap<u32, String> {
 }
 
 /// What went into fields in one step: the typed texts, then each field whose value differs from `before`.
+/// Keystrokes that follow each other with nothing in between are one text (the core types long text, such as a
+/// file path in the file dialog, in chunks).
 fn typed_in_step(actions: &[Action], before: &BTreeMap<u32, String>, after: &BTreeMap<u32, String>) -> Vec<String> {
-    let typed = actions.iter().filter_map(|a| match a {
-        Action::Type(s) => Some(s.trim().to_string()),
-        _ => None,
-    });
+    let mut runs: Vec<String> = Vec::new();
+    let mut joined = false;
+    for a in actions {
+        match a {
+            Action::Type(s) if joined => runs.last_mut().expect("run").push_str(s),
+            Action::Type(s) => {
+                runs.push(s.clone());
+                joined = true;
+            }
+            _ => joined = false,
+        }
+    }
+    let typed = runs.into_iter().map(|s| s.trim().to_string());
     let changed = after.iter().filter(|(id, v)| before.get(id) != Some(*v)).map(|(_, v)| v.trim().to_string());
     typed.chain(changed).filter(|s| !s.is_empty()).collect()
 }
@@ -262,6 +306,31 @@ fn page_would_refuse(error_outline: &Path, now: &BTreeMap<String, String>) -> bo
         .filter(|n| !["optional", "freiwillig"].iter().any(|o| n.to_lowercase().contains(o)))
         .collect();
     required.is_empty() || required.iter().any(|n| now.get(*n).is_none_or(|v| v.trim().is_empty()))
+}
+
+/// Should the dry run show this error screen ("-error": the page refused the submit) now? With a
+/// `<stem>.when.json` next to it (`{"field": "IBAN", "pattern": "\\s"}`): only when the current value of that field
+/// (by name in the PAGE ELEMENTS; a missing field counts as empty) matches the pattern, e.g. the page refuses an IBAN
+/// with a space. Without one: `page_would_refuse` on the error screen's PAGE ELEMENTS (a required field still empty).
+fn error_screen_applies(error_png: &Path, now: &BTreeMap<String, String>) -> bool {
+    if let Some(rule) = when_rule(error_png) {
+        let value = now.get(&rule.0).map(String::as_str).unwrap_or("");
+        return rule.1.is_match(value);
+    }
+    match sibling_outline(error_png) {
+        Some(outline) => page_would_refuse(&outline, now),
+        None => true,
+    }
+}
+
+/// `<stem>.when.json` next to a screen: (field name, pattern). None when there is none or it does not parse.
+fn when_rule(screen: &Path) -> Option<(String, regex::Regex)> {
+    let stem = screen.file_stem()?.to_str()?;
+    let text = std::fs::read_to_string(screen.with_file_name(format!("{stem}.when.json"))).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    let field = v["field"].as_str()?.to_string();
+    let pattern = regex::Regex::new(v["pattern"].as_str()?).ok()?;
+    Some((field, pattern))
 }
 
 /// Text field values of the PAGE ELEMENTS by name.
@@ -359,17 +428,96 @@ impl ScrollInput {
     }
 }
 
+impl ScrollInput {
+    /// The point is on the dialog's "Open", "Cancel" or "×" (their places in the 880x540 file-dialog.png).
+    fn on_dialog_button(&self, p: PhysPoint) -> bool {
+        let (sw, sh) = {
+            let shown = self.screen.lock().expect("screen").clone();
+            image::image_dimensions(&shown).unwrap_or((0, 0))
+        };
+        let (x0, y0) = ((i64::from(sw) - 880) / 2, (i64::from(sh) - 540) / 2);
+        let (x, y) = (i64::from(p.x) - x0, i64::from(p.y) - y0);
+        let in_box = |x1: i64, y1: i64, x2: i64, y2: i64| (x1..=x2).contains(&x) && (y1..=y2).contains(&y);
+        in_box(614, 488, 864, 522) || in_box(830, 2, 878, 40)
+    }
+
+    /// The dialog's "File name" box shows that something was typed (dark marks like a line of text; the dry run
+    /// draws no letters).
+    fn fill_dialog_name(&self) {
+        let Ok(mut img) = self.fake.screen.lock() else { return };
+        let (x0, y0) = ((i64::from(img.width()) - 880) / 2, (i64::from(img.height()) - 540) / 2);
+        for k in 0..24i64 {
+            let left = x0 + 200 + k * 16;
+            for x in left..left + 11 {
+                for y in y0 + 448..y0 + 461 {
+                    if let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y))
+                        && x < img.width()
+                        && y < img.height()
+                    {
+                        img.put_pixel(x, y, image::Rgba([40, 40, 40, 255]));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Paste the "Open" dialog (`screens/file-dialog.png`, next to the shown screen) onto the middle of the
+    /// picture, or show the screen without it again. No dialog picture: only the window title says it is open.
+    fn show_file_dialog(&self, open: bool) -> Result<()> {
+        let shown = self.screen.lock().expect("screen").clone();
+        let mut img = image::open(&shown).with_context(|| format!("cannot open {}", shown.display()))?.into_rgba8();
+        if open {
+            let Ok(dialog) = image::open(shown.with_file_name("file-dialog.png")) else { return Ok(()) };
+            let dialog = dialog.into_rgba8();
+            let x = (i64::from(img.width()) - i64::from(dialog.width())) / 2;
+            let y = (i64::from(img.height()) - i64::from(dialog.height())) / 2;
+            image::imageops::overlay(&mut img, &dialog, x, y);
+        }
+        self.fake.set_screen(img);
+        Ok(())
+    }
+}
+
 impl Input for ScrollInput {
     fn move_to(&self, p: PhysPoint) -> Result<()> {
         self.fake.move_to(p)
     }
     fn click(&self, p: PhysPoint) -> Result<()> {
+        // A click on the page's file button opens the browser's file dialog, as on Windows ("Open", #32770).
+        let on_file = self
+            .boxes
+            .lock()
+            .expect("boxes")
+            .get("file_button")
+            .is_some_and(|&[x1, y1, x2, y2]| (x1..=x2).contains(&p.x) && (y1..=y2).contains(&p.y));
+        // In the dialog: "Open", "Cancel" and its "×" close it (file-dialog.png, pasted in the middle).
+        let dialog_open = self.fake.window.lock().expect("window").as_ref().is_some_and(WindowInfo::is_file_dialog);
+        if dialog_open && self.on_dialog_button(p) {
+            self.fake.window.lock().expect("window").take();
+            self.show_file_dialog(false)?;
+            return self.fake.click(p);
+        }
+        if on_file {
+            *self.fake.window.lock().expect("window") =
+                Some(WindowInfo { title: "Open".into(), class: "#32770".into(), address: None });
+            self.show_file_dialog(true)?;
+        }
         self.fake.click(p)
     }
     fn type_text(&self, s: &str) -> Result<()> {
+        if self.fake.window.lock().expect("window").as_ref().is_some_and(WindowInfo::is_file_dialog) {
+            self.fill_dialog_name();
+        }
         self.fake.type_text(s)
     }
     fn key(&self, combo: &str) -> Result<()> {
+        // Enter picks the typed file and Escape cancels: either way the file dialog closes.
+        if matches!(combo.to_lowercase().as_str(), "enter" | "return" | "escape" | "esc") {
+            let open = self.fake.window.lock().expect("window").take_if(|w| w.is_file_dialog()).is_some();
+            if open {
+                self.show_file_dialog(false)?;
+            }
+        }
         self.fake.key(combo)
     }
     fn scroll(&self, p: PhysPoint, dy: i32) -> Result<()> {
@@ -506,11 +654,14 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
 
     let mut screen_i = 0usize;
     let cards = Arc::new(Mutex::new(Vec::<CardSeen>::new()));
-    let answers = Arc::new(Mutex::new(o.answers.iter().cloned().collect::<VecDeque<String>>()));
+    // "decline" in the answers is a mode, not an answer: an option question no answer fits gets its decline button.
+    let decline = o.answers.iter().any(|a| is_decline(a));
+    let answers = Arc::new(Mutex::new(o.answers.iter().filter(|a| !is_decline(a)).cloned().collect::<VecDeque<_>>()));
     let questions = Arc::new(Mutex::new(Vec::<String>::new()));
+    let defaults = Arc::new(Mutex::new(0u32));
     let printer = tokio::spawn(print_events(
         bus.clone(),
-        Answering { approve: o.approve, answers, questions: questions.clone() },
+        Answering { approve: o.approve, answers, questions: questions.clone(), decline, defaults: defaults.clone() },
         ctx.lang,
         o.quiet,
         boxes.clone(),
@@ -524,6 +675,7 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let mut approved_before = 0usize;
     let mut calls_per_step = Vec::new();
     let mut typed = Vec::new();
+    let mut last_turn_question = false;
     let (warned_before, overridden_before) =
         (count_events(&ctx.memory, "guard_warned"), count_events(&ctx.memory, "guard_overridden"));
     let started = Instant::now();
@@ -535,6 +687,7 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         let step_secs = step_started.elapsed().as_secs_f32();
         tokio::time::sleep(Duration::from_millis(50)).await; // let the printer catch up
         if r.is_ok() {
+            last_turn_question = ends_on_option_question(state.last_calls());
             let names: Vec<&str> = state.last_calls().iter().map(|c| c.name.as_str()).collect();
             calls_per_step.push(names.len());
             say(format!("  -- step {}: {} calls [{}] in {step_secs:.1} s", state.step, names.len(), names.join(", ")));
@@ -594,10 +747,13 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             screen_i += 1;
             if is_error(&screens[screen_i])
                 && screen_i + 1 < screens.len()
-                && let Some(err) = sibling_outline(&screens[screen_i])
-                && !page_would_refuse(&err, &field_values_by_name(&fake))
+                && (sibling_outline(&screens[screen_i]).is_some() || when_rule(&screens[screen_i]).is_some())
+                && !error_screen_applies(&screens[screen_i], &field_values_by_name(&fake))
             {
-                say(format!("  [screen] skipped {} (every field it wants is filled)", screens[screen_i].display()));
+                say(format!(
+                    "  [screen] skipped {} (the page would accept what is typed)",
+                    screens[screen_i].display()
+                ));
                 screen_i += 1;
                 // The error screen's own "-filled" picture (shown after typing on it) goes too.
                 if is_filled(&screens[screen_i]) && screen_i + 1 < screens.len() {
@@ -630,6 +786,8 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let cards = cards.lock().expect("cards").clone();
     let asked = questions.lock().expect("questions").clone();
     let by_hand_secs = learned.as_ref().map_or(0, |l| l.by_hand_secs);
+    let ended_on_question = matches!(outcome, Some(AgentOutcome::Done(_))) && last_turn_question;
+    let defaults = *defaults.lock().expect("defaults");
     let report = Report {
         outcome,
         steps: state.step,
@@ -644,6 +802,8 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         typed,
         guard_warned: count_events(&ctx.memory, "guard_warned").saturating_sub(warned_before),
         guard_overridden: count_events(&ctx.memory, "guard_overridden").saturating_sub(overridden_before),
+        defaults,
+        ended_on_question,
     };
 
     if !o.quiet {
@@ -679,6 +839,9 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         println!("Calls per step: {:?}", report.calls_per_step);
         println!("Typed into fields: {:?}", report.typed);
         println!("Guard: warned {}, overridden {}", report.guard_warned, report.guard_overridden);
+        if report.ended_on_question {
+            println!("Ended on an open question (the last turn asked with options): not counted as finished.");
+        }
         if report.gate_held_at_submit() {
             println!("Gate: the send card stopped the click on \"Absenden\". Nothing was clicked there, nothing sent.");
         } else if report.cards.iter().any(|c| !c.attach) {
@@ -699,6 +862,48 @@ struct Answering {
     approve: Approve,
     answers: Arc<Mutex<VecDeque<String>>>,
     questions: Arc<Mutex<Vec<String>>>,
+    /// `decline` in the answers: an option question that no answer fits gets its "Not now" / "No" / "Later" /
+    /// "Skip" button (else its last one), not its first.
+    decline: bool,
+    /// Questions answered by the fallback (decline or first button).
+    defaults: Arc<Mutex<u32>>,
+}
+
+/// The `decline` entry of an answer list (any case).
+fn is_decline(answer: &str) -> bool {
+    answer.trim().eq_ignore_ascii_case("decline")
+}
+
+/// The last model turn ended with a question that offers buttons (`ask_user` with options): when such a run
+/// ends Done, the core closed it with that question as a plain bubble.
+fn ends_on_option_question(calls: &[pip_core::meta::FunctionCall]) -> bool {
+    calls
+        .last()
+        .is_some_and(|c| c.name == "ask_user" && c.arguments["options"].as_array().is_some_and(|o| !o.is_empty()))
+}
+
+/// Button labels that say "not now" in both languages (the app's own i18n texts and the plain words).
+fn decline_labels() -> Vec<String> {
+    let keys = ["btn_not_now", "btn_no", "btn_onb_later", "btn_skip"];
+    let mut labels: Vec<String> = keys
+        .iter()
+        .flat_map(|k| [pip_core::i18n::Lang::En, pip_core::i18n::Lang::De].map(|l| t(k, l).to_string()))
+        .chain(["Not now", "No", "Later", "Skip", "Nein", "Später", "Nicht jetzt"].map(String::from))
+        .map(|l| l.trim().to_lowercase())
+        .collect();
+    labels.dedup();
+    labels
+}
+
+/// The decline button of an option question: the first whose label says "not now", else the last button.
+fn decline_button(buttons: &[Button]) -> String {
+    let labels = decline_labels();
+    buttons
+        .iter()
+        .find(|b| labels.contains(&b.label.trim().to_lowercase()))
+        .or(buttons.last())
+        .map(|b| b.id.clone())
+        .unwrap_or_default()
 }
 
 /// The next queued answer to a question with these buttons: a button whose label or id equals it (trimmed, any
@@ -711,7 +916,13 @@ struct Answering {
 /// of its keywords (any case), whatever its place in the queue; a question that names several gets them all, joined
 /// with ", " in the order the question names them. Plain answers are used in order. So one list serves a cold run
 /// (asks for name and number) and a full run (asks only for the number).
-fn pick_answer(queue: &mut VecDeque<String>, buttons: &[Button], question: &str) -> String {
+///
+/// A keyed answer also answers an OPTION question (buttons only) that names a keyword when its value is a button's
+/// label: "still unable, unable to work => Yes" presses [Yes] on "Are you still unable to work? [Yes] [No]".
+/// With `decline` (the answer list holds "decline"), an option question that nothing fits gets its decline button
+/// (`decline_button`) instead of the first. The bool says the fallback answered (decline or first button), so the
+/// eval can mark it "(default)".
+fn pick_answer(queue: &mut VecDeque<String>, buttons: &[Button], question: &str, decline: bool) -> (String, bool) {
     let first = || buttons.first().map(|b| b.id.clone()).unwrap_or_default();
     let open = buttons.iter().any(|b| b.id == pip_core::agent::loop_::TEXT_ANSWER);
     let q = question.to_lowercase();
@@ -719,6 +930,24 @@ fn pick_answer(queue: &mut VecDeque<String>, buttons: &[Button], question: &str)
     // name and student number?" gets "Erika Beispiel, 7654321", like a person would answer.
     let hit =
         |a: &String| split_keyed(a).0.iter().filter(|k| !k.is_empty()).filter_map(|k| q.find(&k.to_lowercase())).min();
+    let label_of = |a: &str| {
+        let want = split_keyed(a).1.trim().to_lowercase();
+        buttons.iter().find(|b| b.label.trim().to_lowercase() == want || b.id.trim().to_lowercase() == want)
+    };
+    if !open {
+        // An option question: the first keyed answer it names whose value is one of its buttons.
+        let mut named: Vec<(usize, usize)> = queue
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| !split_keyed(a).0.is_empty())
+            .filter_map(|(i, a)| hit(a).map(|at| (at, i)))
+            .collect();
+        named.sort();
+        if let Some((i, id)) = named.iter().find_map(|(_, i)| label_of(&queue[*i]).map(|b| (*i, b.id.clone()))) {
+            queue.remove(i);
+            return (id, false);
+        }
+    }
     let mut keyed: Vec<(usize, usize)> =
         queue.iter().enumerate().filter_map(|(i, a)| hit(a).map(|at| (at, i))).collect();
     if open && !keyed.is_empty() {
@@ -729,18 +958,17 @@ fn pick_answer(queue: &mut VecDeque<String>, buttons: &[Button], question: &str)
         for i in drop {
             queue.remove(i);
         }
-        return values.join(", ");
+        return (values.join(", "), false);
     }
-    let Some(answer) = queue.front() else { return first() };
-    let want = split_keyed(answer).1.trim().to_lowercase();
-    let matched = buttons.iter().find(|b| b.label.trim().to_lowercase() == want || b.id.trim().to_lowercase() == want);
-    match matched {
-        Some(b) => {
+    let fallback = || if decline && !open { decline_button(buttons) } else { first() };
+    let Some(answer) = queue.front() else { return (fallback(), true) };
+    match label_of(answer).map(|b| b.id.clone()) {
+        Some(id) => {
             queue.pop_front();
-            b.id.clone()
+            (id, false)
         }
-        None if open => queue.pop_front().map(|a| split_keyed(&a).1.to_string()).unwrap_or_default(),
-        None => first(),
+        None if open => (queue.pop_front().map(|a| split_keyed(&a).1.to_string()).unwrap_or_default(), false),
+        None => (fallback(), true),
     }
 }
 
@@ -761,7 +989,7 @@ async fn print_events(
     boxes: Arc<Mutex<Boxes>>,
     cards: Arc<Mutex<Vec<CardSeen>>>,
 ) {
-    let Answering { approve, answers, questions } = answering;
+    let Answering { approve, answers, questions, decline, defaults } = answering;
     let mut rx = bus.to_ui.subscribe();
     let mut last_point: Option<PhysRect> = None;
     let out = |s: String| {
@@ -780,8 +1008,11 @@ async fn print_events(
             UiEvent::Bubble { text, buttons, question_id } => {
                 out(format!("    Pip says: {text}"));
                 if let Some(q) = question_id {
-                    let choice = pick_answer(&mut answers.lock().expect("answers"), &buttons, &text);
-                    questions.lock().expect("questions").push(format!("{text} -> {choice}"));
+                    let (choice, by_default) =
+                        pick_answer(&mut answers.lock().expect("answers"), &buttons, &text, decline);
+                    let mark = if by_default { " (default)" } else { "" };
+                    *defaults.lock().expect("defaults") += u32::from(by_default);
+                    questions.lock().expect("questions").push(format!("{text} -> {choice}{mark}"));
                     out(format!("    (dry run answers: {choice})"));
                     bus.pending.resolve_answer(q, choice);
                 }
@@ -822,6 +1053,7 @@ async fn print_events(
                     attach,
                     approved: yes,
                     target,
+                    attachments: card.attachments.clone(),
                 });
                 let answer =
                     if yes { pip_core::agent::ApprovalAnswer::Yes } else { pip_core::agent::ApprovalAnswer::No };
@@ -944,6 +1176,7 @@ mod tests {
             attach,
             approved,
             target: Some(target.into()),
+            attachments: vec![],
         };
         let mut r = Report {
             outcome: None,
@@ -959,6 +1192,8 @@ mod tests {
             typed: vec![],
             guard_warned: 0,
             guard_overridden: 0,
+            defaults: 0,
+            ended_on_question: false,
         };
         assert!(r.gate_held_at_submit());
         r.clicks.push((PhysPoint { x: 859, y: 940 }, Some("submit_button".into())));
@@ -972,36 +1207,150 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
+    /// The answer alone, without decline mode.
+    fn pick(q: &mut VecDeque<String>, buttons: &[Button], question: &str) -> String {
+        pick_answer(q, buttons, question, false).0
+    }
+
+    #[test]
+    fn keyed_answers_press_the_option_they_name() {
+        let yes_no = [Button::new("Yes", "Yes", true), Button::new("No", "No", false)];
+        let mut q = queue(&["name => Erika Beispiel", "still unable, unable to work => Yes"]);
+        let got = pick_answer(&mut q, &yes_no, "Are you still unable to work?", false);
+        assert_eq!(got, ("Yes".to_string(), false));
+        assert_eq!(q, queue(&["name => Erika Beispiel"]), "the keyed answer is used up");
+        // "voucher => No" on "Did the airline offer you a voucher?"
+        let mut q = queue(&["voucher => No"]);
+        assert_eq!(pick_answer(&mut q, &yes_no, "Did the airline offer you a voucher?", false).0, "No");
+        // A keyword without a matching button: the old rule (first button, the answer stays).
+        let mut q = queue(&["name => Erika Beispiel"]);
+        assert_eq!(pick_answer(&mut q, &yes_no, "Shall I fill in your name?", false), ("Yes".to_string(), true));
+        assert_eq!(q.len(), 1);
+    }
+
+    #[test]
+    fn decline_presses_not_now_or_the_last_button_and_is_marked_default() {
+        let offer = [Button::new("go", "Yes, please", true), Button::new("later", "Not now", false)];
+        let mut q = VecDeque::new();
+        assert_eq!(pick_answer(&mut q, &offer, "Shall I open the contact page?", true), ("later".to_string(), true));
+        let de =
+            [Button::new("a", "Ja, bitte", true), Button::new("b", t("btn_not_now", pip_core::i18n::Lang::De), false)];
+        assert_eq!(pick_answer(&mut q, &de, "", true).0, "b");
+        let none = [Button::new("a", "Read the news", true), Button::new("b", "Check the weather", false)];
+        assert_eq!(pick_answer(&mut q, &none, "What next?", true).0, "b", "no decline label: the last button");
+        assert_eq!(pick_answer(&mut q, &none, "What next?", false), ("a".to_string(), true), "no decline: the first");
+        // An open question still takes the next answer; a keyed option answer still wins over decline.
+        let open = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "OK", true)];
+        let mut q = queue(&["7654321"]);
+        assert_eq!(pick_answer(&mut q, &open, "Your student number?", true), ("7654321".to_string(), false));
+        let yes_no = [Button::new("Yes", "Yes", true), Button::new("No", "No", false)];
+        let mut q = queue(&["still unable => Yes"]);
+        assert_eq!(pick_answer(&mut q, &yes_no, "Are you still unable to work?", true).0, "Yes");
+        assert!(is_decline(" Decline ") && !is_decline("No"));
+    }
+
+    #[test]
+    fn a_last_turn_with_an_option_question_is_an_open_end() {
+        let call = |name: &str, args: Value| pip_core::meta::FunctionCall {
+            call_id: "c".into(),
+            name: name.into(),
+            arguments: args,
+        };
+        let ask = call("ask_user", serde_json::json!({"question": "What next?", "options": ["A", "B"]}));
+        let open = call("ask_user", serde_json::json!({"question": "Your number?", "options": []}));
+        let done = call("done", serde_json::json!({"summary": "ok"}));
+        assert!(ends_on_option_question(std::slice::from_ref(&ask)));
+        assert!(!ends_on_option_question(&[ask.clone(), done.clone()]), "done came last");
+        assert!(!ends_on_option_question(&[open]), "an open question has no buttons");
+        assert!(!ends_on_option_question(&[]));
+    }
+
+    #[test]
+    fn attached_finds_the_approved_attach_card_by_file() {
+        let card = |attach, approved, file: &str| CardSeen {
+            title: "Attach?".into(),
+            what: String::new(),
+            to: String::new(),
+            attach,
+            approved,
+            target: None,
+            attachments: vec![file.into()],
+        };
+        let mut r = report_with(vec![card(true, true, "C:/x/boarding_pass_bx2041.pdf"), card(false, true, "")]);
+        assert_eq!(r.attached("boarding_pass").len(), 1);
+        assert_eq!(r.attached("").len(), 1, "any approved attach card");
+        assert!(r.attached("au_erika").is_empty());
+        r.cards[0].approved = false;
+        assert!(r.attached("boarding_pass").is_empty(), "a refused card attached nothing");
+    }
+
+    fn report_with(cards: Vec<CardSeen>) -> Report {
+        Report {
+            outcome: None,
+            steps: 1,
+            secs: 1.0,
+            tokens: 0,
+            cards,
+            clicks: vec![],
+            calls_per_step: vec![],
+            questions: 0,
+            asked: vec![],
+            by_hand_secs: 0,
+            typed: vec![],
+            guard_warned: 0,
+            guard_overridden: 0,
+            defaults: 0,
+            ended_on_question: false,
+        }
+    }
+
+    #[test]
+    fn a_when_rule_shows_the_iban_error_only_for_a_value_with_a_space() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        for stem in ["demo-air-error", "demo-air-v2-error"] {
+            let png = dir.join(format!("{stem}.png"));
+            assert!(is_error(&png) && when_rule(&png).is_some(), "{stem}");
+            let now = |iban: &str| -> BTreeMap<String, String> { [("IBAN".to_string(), iban.to_string())].into() };
+            assert!(error_screen_applies(&png, &now("DE02 1203 0000 0000 2020 51")), "{stem}: spaces are refused");
+            assert!(!error_screen_applies(&png, &now("DE02120300000000202051")), "{stem}: no space, no error");
+            assert!(error_screen_applies(&png, &BTreeMap::new()), "{stem}: an empty IBAN is refused too");
+        }
+        // Without a when.json the old rule stays: an empty required field shows the error.
+        let uni = dir.join("demo-uni-v2-error.png");
+        assert!(when_rule(&uni).is_none());
+        assert!(error_screen_applies(&uni, &BTreeMap::new()));
+    }
+
     #[test]
     fn pick_answer_matches_a_button_label_and_returns_its_id() {
         let buttons = [Button::new("yes_id", "Yes, do it", true), Button::new("no_id", "Not now", false)];
         let mut q = queue(&["  not NOW "]);
-        assert_eq!(pick_answer(&mut q, &buttons, ""), "no_id");
+        assert_eq!(pick(&mut q, &buttons, ""), "no_id");
         let mut q = queue(&["YES_ID"]);
-        assert_eq!(pick_answer(&mut q, &buttons, ""), "yes_id", "the id matches too");
+        assert_eq!(pick(&mut q, &buttons, ""), "yes_id", "the id matches too");
     }
 
     #[test]
     fn pick_answer_without_a_matching_button_returns_the_raw_text() {
         let buttons = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "OK", true)];
         let mut q = queue(&["7654321"]);
-        assert_eq!(pick_answer(&mut q, &buttons, ""), "7654321");
+        assert_eq!(pick(&mut q, &buttons, ""), "7654321");
     }
 
     #[test]
     fn pick_answer_with_an_empty_queue_presses_the_first_button() {
         let buttons = [Button::new("a", "A", true), Button::new("b", "B", false)];
-        assert_eq!(pick_answer(&mut VecDeque::new(), &buttons, ""), "a");
-        assert_eq!(pick_answer(&mut VecDeque::new(), &[], ""), "");
+        assert_eq!(pick(&mut VecDeque::new(), &buttons, ""), "a");
+        assert_eq!(pick(&mut VecDeque::new(), &[], ""), "");
     }
 
     #[test]
     fn pick_answer_consumes_the_queue_in_order() {
         let buttons = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "OK", true)];
         let mut q = queue(&["first", "second"]);
-        assert_eq!(pick_answer(&mut q, &buttons, ""), "first");
-        assert_eq!(pick_answer(&mut q, &buttons, ""), "second");
-        assert_eq!(pick_answer(&mut q, &buttons, ""), pip_core::agent::loop_::TEXT_ANSWER, "then the first button");
+        assert_eq!(pick(&mut q, &buttons, ""), "first");
+        assert_eq!(pick(&mut q, &buttons, ""), "second");
+        assert_eq!(pick(&mut q, &buttons, ""), pip_core::agent::loop_::TEXT_ANSWER, "then the first button");
         assert!(q.is_empty());
     }
 
@@ -1011,28 +1360,28 @@ mod tests {
         let offer = [Button::new("yes", "Yes, please", true), Button::new("no", "Not now", false)];
         let open = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "OK", true)];
         let mut q = queue(&["7654321"]);
-        assert_eq!(pick_answer(&mut q, &offer, ""), "yes", "the first button, the answer stays queued");
+        assert_eq!(pick(&mut q, &offer, ""), "yes", "the first button, the answer stays queued");
         assert_eq!(q.len(), 1);
-        assert_eq!(pick_answer(&mut q, &open, ""), "7654321");
+        assert_eq!(pick(&mut q, &open, ""), "7654321");
         assert!(q.is_empty());
-        assert_eq!(pick_answer(&mut queue(&["not now"]), &offer, ""), "no", "a button name still picks that button");
+        assert_eq!(pick(&mut queue(&["not now"]), &offer, ""), "no", "a button name still picks that button");
     }
 
     #[test]
     fn keyed_answers_go_to_the_question_that_names_them() {
         let open = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "OK", true)];
         let mut q = queue(&["student, matriculation => 7654321", "name => Erika Beispiel"]);
-        assert_eq!(pick_answer(&mut q, &open, "What is your full name?"), "Erika Beispiel");
-        assert_eq!(pick_answer(&mut q, &open, "And your Student number?"), "7654321");
+        assert_eq!(pick(&mut q, &open, "What is your full name?"), "Erika Beispiel");
+        assert_eq!(pick(&mut q, &open, "And your Student number?"), "7654321");
         assert!(q.is_empty());
         let mut q = queue(&["student => 7654321", "employer => Bäckerei Sonnenschein GmbH"]);
-        assert_eq!(pick_answer(&mut q, &open, "Which date?"), "7654321", "no keyword: the next one in order");
+        assert_eq!(pick(&mut q, &open, "Which date?"), "7654321", "no keyword: the next one in order");
         let offer = [Button::new("yes", "Yes, please", true)];
         let mut q = queue(&["name => Erika Beispiel"]);
-        assert_eq!(pick_answer(&mut q, &offer, "Shall I fill in your name?"), "yes", "buttons only: keep it");
+        assert_eq!(pick(&mut q, &offer, "Shall I fill in your name?"), "yes", "buttons only: keep it");
         assert_eq!(q.len(), 1);
         let mut q = queue(&["student => 7654321", "name => Erika Beispiel", "employer => Bäckerei"]);
-        assert_eq!(pick_answer(&mut q, &open, "Your full name and student number?"), "Erika Beispiel, 7654321");
+        assert_eq!(pick(&mut q, &open, "Your full name and student number?"), "Erika Beispiel, 7654321");
         assert_eq!(q, queue(&["employer => Bäckerei"]));
     }
 
@@ -1063,6 +1412,8 @@ mod tests {
             typed: vec!["Erika Beispiel".into()],
             guard_warned: 0,
             guard_overridden: 0,
+            defaults: 0,
+            ended_on_question: false,
         };
         let want = ["Erika Beispiel".to_string(), "G123456789".to_string()];
         assert!(!r.typed_all(&want));
@@ -1133,6 +1484,16 @@ mod tests {
             "demo-unrelated-instructions",
             "demo-insurer-help",
             "demo-busy",
+            "demo-busy-2",
+            "demo-air",
+            "demo-air-step2",
+            "demo-air-error",
+            "demo-air-thanks",
+            "demo-air-v2-popup",
+            "demo-air-v2",
+            "demo-air-v2-error",
+            "demo-air-v2-thanks",
+            "demo-air-refund-check",
         ];
         for stem in stems {
             let png = dir.join(format!("{stem}.png"));
@@ -1159,6 +1520,9 @@ mod tests {
             "demo-insurer-questionnaire-v2-filled",
             "demo-insurer-questionnaire-v2-error-filled",
             "demo-insurer-questionnaire-v3-scrolled-filled",
+            "demo-air-step1-filled",
+            "demo-air-step2-filled",
+            "demo-air-v2-filled",
         ] {
             assert_eq!(sibling_outline(&dir.join(format!("{stem}.png"))), None, "{stem} keeps the typed list");
         }
@@ -1179,6 +1543,35 @@ mod tests {
         assert!(items.iter().any(|i| i.role == "text" && i.name.starts_with("Assistant: type the member number")));
         assert!(items.iter().filter(|i| i.role == "edit" || i.name == "send").all(|i| i.offscreen));
         assert!(!names("demo-unrelated").iter().any(|n| n == "send" || n == "Search"));
+        // The flight family: the brief's heading verbatim, the IBAN field by name (when.json), the German variant's
+        // banner, the lookalike's card fields; the help page's link and the contact form it leads to.
+        assert!(names("demo-air").contains(&"Claim compensation for a delayed or cancelled flight".to_string()));
+        assert!(
+            names("demo-air-step2").contains(&"IBAN".to_string()) && names("demo-air-v2").contains(&"IBAN".to_string())
+        );
+        assert!(names("demo-air-error").contains(&"Please enter your IBAN without spaces".to_string()));
+        assert!(names("demo-air-v2-popup").contains(&"Nur notwendige".to_string()));
+        assert!(!names("demo-air-v2").contains(&"Nur notwendige".to_string()), "the banner is gone");
+        for n in ["Card number", "CVV", "SMS code"] {
+            assert!(names("demo-air-refund-check").contains(&n.to_string()), "{n}");
+        }
+        let link = load_boxes(&dir.join("demo-insurer-help.png"))["contact_link"];
+        let c = PhysPoint { x: (link[0] + link[2]) / 2, y: (link[1] + link[3]) / 2 };
+        let (fake, platform) = FakePlatform::from_png(&dir.join("demo-insurer-help.png")).unwrap();
+        fake.load_outline(&dir.join("demo-insurer-help.outline.json")).unwrap();
+        assert!(
+            platform.ui.outline(200).iter().any(|i| i.role == "link" && i.name == "contact page" && i.rect.contains(c))
+        );
+        assert_eq!(
+            std::fs::read(dir.join("demo-insurer-help-contact.png")).unwrap(),
+            std::fs::read(dir.join("demo-insurer.png")).unwrap(),
+            "the link leads to the contact form"
+        );
+        assert!(load_boxes(&dir.join("demo-insurer-help-contact.png")).contains_key("submit_button"));
+        for stem in ["demo-busy", "demo-busy-2"] {
+            let b = load_boxes(&dir.join(format!("{stem}.png")));
+            assert_eq!(b.keys().collect::<Vec<_>>(), ["close_x", "icon_button", "print_button", "text_link"], "{stem}");
+        }
     }
 
     fn scroller(dir: &Path, stem: &str, outline: bool) -> (Arc<FakePlatform>, ScrollInput) {

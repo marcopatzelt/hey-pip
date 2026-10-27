@@ -172,6 +172,62 @@ async fn pdf_goes_straight_to_spark_as_file() {
     );
 }
 
+/// Beispiel Air's delay notice: Spark gives the `flight` block, Rust knows EU 261 (deadline + tip), memory learns
+/// the airline and its claim page from the e-mail text.
+#[tokio::test]
+async fn airline_notice_gives_a_claim_deadline_and_a_may_be_owed_tip() {
+    let s = setup().await;
+    s.memory.profile_set("lang", "en").unwrap();
+    let args = json!({
+        "doc_type": "brief", "sender": "Beispiel Air", "recipient": "Erika Beispiel",
+        "date": "2026-10-04", "reference": "BX7Q2K", "person": "Erika Beispiel",
+        "summary_simple": "Your flight BX 2041 on 3 Oct 2026 arrived 4 h 10 min late.",
+        "requests": ["Claim on our page if you like."], "deadlines": [], "au": null,
+        "flight": {"airline": "Beispiel Air", "flight_no": "BX 2041", "date": "2026-10-03", "from": "DUS", "to": "TFS",
+            "delay_minutes": 250, "cancelled": false, "notice_days": null, "booking_ref": "BX7Q2K"},
+        "consequences_if_ignored": null, "confidence": 0.93,
+        "letter_text": "Beispiel Air. Your flight BX 2041 arrived 4 h 10 min late. To claim compensation, go to https://www.beispiel-air.example/claim"
+    });
+    mount_spark(&s.server, spark_tool_answer(&args)).await;
+    let r = s.pipeline.ingest(&fixture("flight_delay_bx2041.pdf"), Lang::En).await.unwrap();
+    let f = r.extract.flight.as_ref().expect("the flight block");
+    assert_eq!((f.flight_no.as_str(), f.delay_minutes, f.date), ("BX 2041", Some(250), d("2026-10-03")));
+    assert_eq!(r.deadlines.len(), 1, "{:?}", r.deadlines);
+    assert_eq!(r.deadlines[0].rule_id.as_deref(), Some("eu261_claim"));
+    assert_eq!(r.deadlines[0].due, d("2029-12-31"));
+    assert_eq!(r.deadlines[0].title, "Claim EUR 400 from Beispiel Air for flight BX 2041 (3 Oct 2026)");
+    let tip = r.tip.expect("a tip");
+    assert_eq!(tip.id, "eu261_delay");
+    assert!(tip.text.contains("may be owed EUR 400"), "{}", tip.text);
+    assert!(!tip.text.to_lowercase().contains("earned"));
+    assert_eq!(s.memory.profile_get("airline").unwrap().as_deref(), Some("Beispiel Air"));
+    assert_eq!(
+        s.memory.profile_get("airline_claim_form").unwrap().as_deref(),
+        Some("https://www.beispiel-air.example/claim")
+    );
+    assert_eq!(s.memory.profile_get("versichertennummer").unwrap(), None);
+    let body = &bodies(&s.server).await[0];
+    let text = body.to_string();
+    assert!(text.contains("flight: only when the letter or e-mail is an airline's notice"), "the read rule is sent");
+}
+
+/// The same notice without a flight block (an older model answer) or with a broken one: no claim, no error.
+#[tokio::test]
+async fn a_broken_flight_block_is_no_claim_and_no_error() {
+    let s = setup().await;
+    let args = json!({
+        "doc_type": "brief", "sender": "Beispiel Air", "recipient": "Erika Beispiel", "date": "2026-10-04",
+        "reference": "BX7Q2K", "summary_simple": "Your flight was late.", "requests": [], "deadlines": [], "au": null,
+        "flight": {"airline": "Beispiel Air", "flight_no": "BX 2041", "date": "someday", "delay_minutes": 250},
+        "consequences_if_ignored": null, "confidence": 0.8, "letter_text": "x"
+    });
+    mount_spark(&s.server, spark_tool_answer(&args)).await;
+    let r = s.pipeline.ingest(&fixture("flight_delay_bx2041.pdf"), Lang::En).await.unwrap();
+    assert!(r.extract.flight.is_none());
+    assert!(r.deadlines.iter().all(|d| d.rule_id.as_deref() != Some("eu261_claim")));
+    assert!(r.tip.is_none());
+}
+
 #[tokio::test]
 async fn text_answer_without_tool_call_still_works_and_sam_miss_reads_whole_picture() {
     let s = setup().await;

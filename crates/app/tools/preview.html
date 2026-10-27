@@ -5,7 +5,8 @@
   <title>Pip preview</title>
   <!-- Dev tool: runs ui/main.js in a normal browser with a fake Tauri bridge and an invented form
        behind it. Scenes: #onboarding #story #card #reminder #error #deadlines #ask #sleep #drag #celebrate #listen
-       #stats #stats_de #hold #celebrate_race #guard #peek-rest #peek-hover #peek-open #peek-story #peek-back (all invented data). ?shot=1 = for tools/shot.sh (headless screenshot when the
+       #stats #stats_de #hold #celebrate_race #guard #peek-rest #peek-hover #peek-open #peek-story #peek-back
+       #tip-letter #tip-bubble #tip-why #tip-offer ("Good to know" after a letter; tools/shot.sh tip-story) (all invented data). ?shot=1 = for tools/shot.sh (headless screenshot when the
        scene is ready); &reduce=1 = pretend the user asked for reduced motion; &mode=always = tray "Always show Pip";
        &peek=N = PIP_PEEK_SECS. The peek scenes draw a 48 px taskbar that Pip must never cover. -->
   <base href="../ui/">
@@ -48,6 +49,7 @@
       ask_placeholder: "Type it here. Or hold the microphone.", btn_look_screen: "Look at my screen",
       chip_send_au: "Send my sick note", chip_last_letter: "My last letter", chip_deadlines: "My deadlines",
       btn_pick_letter: "Pick a letter", tray_deadlines: "My deadlines", btn_my_card: "What Pip did for me",
+      queue_of: "Message {i} of {n}",
     };
     const params = new URLSearchParams(location.search);
     const SHOT = params.has("shot");
@@ -56,8 +58,9 @@
     if (SHOT) slow(1500);
     // How long each scene runs before the screenshot (ms after the scene starts).
     const SCENE = location.hash.slice(1) || "onboarding";
-    const PEEK_SCENE = SCENE.startsWith("peek");
-    const SHOT_AT = { "peek-rest": 400, "peek-hover": 1700, "peek-open": 900, "peek-story": 9500, "peek-back": 3200, celebrate: 450, celebrate_race: 450, story: 5200, card: 900, listen: 900, stats: 700, stats_de: 700, hold: 900, ask: 700, onboarding: 700, guard: 1100 };
+    // the tip scenes start from the edge too: the tip must raise Pip like a brief
+    const PEEK_SCENE = SCENE.startsWith("peek") || SCENE.startsWith("tip-");
+    const SHOT_AT = { "peek-rest": 400, "peek-hover": 1700, "peek-open": 900, "peek-story": 9500, "peek-back": 3200, "tip-letter": 1200, "tip-bubble": 1700, "tip-why": 2200, "tip-offer": 2200, celebrate: 450, celebrate_race: 450, story: 5200, card: 900, listen: 900, stats: 700, stats_de: 700, hold: 900, ask: 700, onboarding: 700, guard: 1100 };
     if (params.has("reduce")) {
       const real = window.matchMedia.bind(window);
       window.matchMedia = (q) => q.includes("reduce") ? { matches: true, media: q, addEventListener() {}, removeEventListener() {} } : real(q);
@@ -95,6 +98,7 @@
             }
             if (args.cmd.type === "text") story();
           }
+          if (cmd === "app_action") { log(`app_action ${args.action}`); tipAction(args.action); }
         },
       },
       event: { listen: async (name, cb) => { (handlers[name] ||= []).push(cb); } },
@@ -104,7 +108,10 @@
       emit("ui", ev);
       if (ev.type === "bubble") setTimeout(() => {
         // a guard bubble shows only its first line as the text (the rest become chips)
-        const want = ev.buttons.some((b) => b.id.startsWith("guard:")) ? ev.text.split("\n")[0] : ev.text;
+        // a tip bubble shows its text without the label and the source line, and may wait behind the letter
+        const tip = window.Tip && window.Tip.isTip(ev.buttons);
+        const want = ev.buttons.some((b) => b.id.startsWith("guard:")) ? ev.text.split("\n")[0] : tip ? window.Tip.parts(ev.text).body : ev.text;
+        if (tip && document.getElementById("bubble-text").textContent !== want) { log("tip bubble queued"); return; }
         const got = document.getElementById("bubble-text").textContent;
         const chips = document.querySelectorAll("#bubble-text .stat").length;
         if (got !== want) { console.error("bubble text changed", got); log("ERROR bubble text changed by decorateStats"); } else log(`bubble ok, ${chips} stat chip(s)`);
@@ -130,6 +137,41 @@
       ui({ type: "bubble", text: "Erledigt. Ich merke mir: Krankschreibung ist bei Evergreen Health.", buttons: [], question_id: null });
       emit("app", { type: "acting", on: false }); await wait(2000); ui({ type: "pip", state: "idle" });
     }
+    // "Good to know" after Erika's sick note, as bridge.rs sends it (English, invented data): the letter bubble,
+    // the tip bubble behind its [OK] (tip, then the source on the last line), and what the tip buttons answer.
+    const TIP = {
+      letter: "Sick note from 20.10. to 30.10. I'll make sure there is no gap.",
+      text: "Good to know: your insurer may only pay sick pay without a gap. If you're still ill, the next note usually has to be issued by Monday, 2 November (the next working day after Friday, 30 October). Please check with your insurer.",
+      source: "§ 46 Satz 2 SGB V",
+      url: "https://www.gesetze-im-internet.de/sgb_5/__46.html",
+      draft: "Dear Evergreen Health, my sick note ends on Friday, 30 October. If I am still ill, by which date does the next note have to be issued so there is no gap in my sick pay? Kind regards, Erika Beispiel",
+    };
+    const tipButtons = (why) => [
+      { id: "app:tip_remind", label: "Remind me on Monday, 2 November", primary: true },
+      { id: "app:tip_question", label: "Write a short question", primary: false },
+      ...(why ? [{ id: "app:tip_why", label: "Why?", primary: false }] : []),
+    ];
+    function tipLetter() {
+      ui({ type: "pip", state: "happy" });
+      ui({ type: "bubble", text: TIP.letter, buttons: [{ id: "close", label: "OK", primary: true }], question_id: null });
+      ui({ type: "bubble", text: `${TIP.text}\n${TIP.source}`, buttons: tipButtons(true), question_id: null });
+    }
+    function tipAction(action) {
+      if (action === "tip_why") ui({ type: "bubble", text: `That comes from the rule ${TIP.source} (${TIP.url}). It is a hint, not legal advice. You decide.\n${TIP.source}`, buttons: [{ id: "app:tip_ok", label: "OK", primary: true }], question_id: null });
+      if (action === "tip_ok") ui({ type: "bubble", text: `${TIP.text}\n${TIP.source}`, buttons: tipButtons(false), question_id: null });
+      if (action === "tip_question") {
+        ui({ type: "pip", state: "asking" });
+        ui({ type: "bubble", text: `Here is my draft: "${TIP.draft}" Shall I send it through the Evergreen Health contact form?`, buttons: [{ id: "app:tip_send", label: "Yes, send it", primary: true }, { id: "app:tip_not_now", label: "Not now", primary: false }], question_id: null });
+      }
+      if (action === "tip_remind") { ui({ type: "pip", state: "happy" }); ui({ type: "bubble", text: "Okay, I'll remind you on Monday, 2 November.", buttons: [], question_id: null }); }
+      if (action === "tip_send") story();
+    }
+    const clickButton = (label) => { const b = [...document.querySelectorAll("#bubble-buttons .btn")].find((x) => x.textContent === label); if (b) b.click(); else log(`no button "${label}"`); };
+    const tipReport = (what) => setTimeout(() => {
+      const bubble = document.getElementById("bubble");
+      const buttons = [...bubble.querySelectorAll("#bubble-buttons .btn")].map((b) => b.textContent);
+      log(`${what}: kind=${bubble.className} label=${bubble.dataset.label || "-"} source=${bubble.querySelector(".source")?.textContent || "-"} buttons=[${buttons.join(" | ")}] pip=${peekState()}`);
+    }, 150);
     // Where Pip is: "rest" | "hover" | "up", and whether his visible part ends above the taskbar.
     const peekState = () => {
       const pip = document.getElementById("pip");
@@ -173,6 +215,16 @@
       if (name === "sleep") { ui({ type: "pip", state: "sleeping" }); emit("app", { type: "paused", on: true }); ui({ type: "bubble", text: "Ich mache Pause. Klick mich an, dann bin ich wieder da.", buttons: [], question_id: null }); }
       if (name === "drag") emit("app", { type: "drag", state: "enter" });
       if (name === "peek-rest") log(`peek: ${peekState()}`);
+      if (name.startsWith("tip-")) {
+        // Pip rests at the edge; the letter raises him, the tip waits behind the letter's [OK]
+        setTimeout(() => {
+          tipLetter();
+          if (name === "tip-letter") tipReport("letter");
+          if (name !== "tip-letter") setTimeout(() => { clickButton("OK"); if (name === "tip-bubble") tipReport("tip"); }, 300);
+          if (name === "tip-why") setTimeout(() => { clickButton("Why?"); tipReport("why"); }, 700);
+          if (name === "tip-offer") setTimeout(() => { clickButton("Write a short question"); tipReport("offer"); }, 700);
+        }, 500);
+      }
       if (name === "peek-hover") {
         const pip = document.getElementById("pip");
         pip.dispatchEvent(new PointerEvent("pointerenter", { pointerId: 7, clientX: innerWidth - 60, clientY: innerHeight - 70 }));
@@ -255,8 +307,8 @@
       const lab = (t, y) => { const l = document.createElement("label"); l.textContent = t; Object.assign(l.style, { left: "18%", top: (y - .03) * 100 + "%" }); desk.append(l); };
       lab("Name", .30); lab("Versichertennummer", .40); lab("Krankschreibung", .50);
       // the README pictures (peek-rest, -hover, -open) without the debug log
-      if (/[?&]shot=1/.test(location.search) && ["#peek-rest", "#peek-hover", "#peek-open"].includes(location.hash)) document.getElementById("log").hidden = true;
-      if (location.hash.startsWith("#peek")) {
+      if (/[?&]shot=1/.test(location.search) && (["#peek-rest", "#peek-hover", "#peek-open"].includes(location.hash) || location.hash.startsWith("#tip-"))) document.getElementById("log").hidden = true;
+      if (location.hash.startsWith("#peek") || location.hash.startsWith("#tip-")) {
         const bar = document.createElement("div"); bar.className = "taskbar";
         bar.innerHTML = "<i></i><i></i><i></i><i></i><i></i><span class=clock>09:41</span>";
         desk.append(bar);
@@ -264,7 +316,7 @@
       loadScripts();
     })();
     function loadScripts() {
-      for (const src of ["peek.js", "hits.js", "main.js"]) {
+      for (const src of ["peek.js", "tip.js", "hits.js", "main.js"]) {
         const sc = document.createElement("script"); sc.src = src; sc.async = false; document.body.append(sc);
       }
     }

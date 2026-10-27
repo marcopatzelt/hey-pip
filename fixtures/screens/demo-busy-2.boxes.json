@@ -1,0 +1,48 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-busy-2.png",
+  "targets": {
+    "icon_button": {
+      "box": [
+        1342,
+        24,
+        1365,
+        47
+      ],
+      "sam_query": "icon button",
+      "description": "Small grey magnifier icon button \"Search\" at the right end of the light header"
+    },
+    "close_x": {
+      "box": [
+        1346,
+        83,
+        1365,
+        102
+      ],
+      "sam_query": "close button",
+      "description": "Small grey \"×\" close button at the right end of the white notice bar"
+    },
+    "print_button": {
+      "box": [
+        349,
+        406,
+        416,
+        442
+      ],
+      "sam_query": "button",
+      "description": "Button \"Print\", the middle one of \"Export\", \"Print\", \"E-mail\" below the table"
+    },
+    "text_link": {
+      "box": [
+        304,
+        531,
+        442,
+        554
+      ],
+      "sam_query": "link",
+      "description": "Grey link \"the renewal page\" inside the text of the lower white card"
+    }
+  }
+}

@@ -8,18 +8,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use chrono::{Datelike, NaiveDate};
+use chrono::{DateTime, Datelike, Local, NaiveDate, Weekday};
 use pip_core::agent::{AgentOutcome, CancellationToken, StopReason, Task, task_from_words};
 use pip_core::docs::DocError;
 use pip_core::docs::DocType;
 use pip_core::events::{Bus, Button, ForgetKind, OnboardingStep, PipState, UiEvent, UserCommand};
 use pip_core::i18n::{Lang, t, tf};
-use pip_core::memory::{DeadlineStatus, Knowledge, untrust_site};
+use pip_core::memory::{Deadline, DeadlineStatus, Knowledge, untrust_site};
 use pip_core::meta::MetaError;
 use pip_core::platform::{PhysPoint, PhysRect};
 use pip_core::rules::daily::{EV_ACCEPTED, EV_DECLINED, EV_SUGGESTED};
 use pip_core::rules::text::fmt_date;
-use pip_core::rules::{AfterTask, AfterTaskOffer};
+use pip_core::rules::tips::tip_date;
+use pip_core::rules::{AfterTask, AfterTaskOffer, Tip, local_at};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -27,7 +28,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
 
-use crate::backend::{Backend, DEMO_SERVICES_KEY, env_flag, guard, guard_async};
+use crate::backend::{Backend, DEMO_FORM_KEY, DEMO_SERVICES_KEY, PROFILE_TIPS, env_flag, guard, guard_async};
 use crate::overlay::{self, FocusKeeper, OverlayInfo};
 use crate::voice::{Recorder, Silent, Speaker, TooShort, TtsSpeaker};
 use crate::{mock, tray};
@@ -42,6 +43,7 @@ const MOCK_TALLY: pip_core::memory::Tally = pip_core::memory::Tally {
     deadlines_kept: 1,
     reminders_on_time: 2,
     seconds_saved: 1500,
+    euros_claimed: 400,
     since: None,
 };
 
@@ -209,6 +211,7 @@ const SETTING_KEYS: &[&str] = &[
     "brief_shown_on",
     "seconds_saved_total",
     PIP_MODE_KEY,
+    PROFILE_TIPS,
 ];
 
 /// Profile key of the overlay mode: "peek" (default: Pip rests as a head at the screen edge) or "always".
@@ -261,6 +264,122 @@ fn offer_buttons(lang: Lang, with_why: bool) -> Vec<Button> {
         b.push(Button::new("app:offer_why", t("btn_sugg_why", lang), false));
     }
     b
+}
+
+/// Memory event kinds of the "Good to know" next steps (text = the tip id).
+const EV_TIP_REMIND_SET: &str = "tip_remind_set";
+const EV_TIP_QUESTION_SENT: &str = "tip_question_accepted";
+const EV_TIP_QUESTION_DECLINED: &str = "tip_question_declined";
+/// "Remind me on …" rings at this hour.
+const TIP_REMIND_HOUR: u32 = 9;
+/// Which rule deadline a letter tip is about (tip id -> deadline rule id).
+const TIP_DEADLINE_RULES: &[(&str, &str)] =
+    &[("au_gap", "au_lueckenlos"), ("widerspruch_month", "widerspruch_bescheid")];
+
+/// What a drafted question needs from the letter the tip came with.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct LetterFacts {
+    sender: String,
+    date: Option<NaiveDate>,
+    /// The sick note's last day (au_gap).
+    au_until: Option<NaiveDate>,
+}
+
+/// A "Good to know" tip waiting for its buttons: [Remind me on …] [Write a short question] [Why?].
+#[derive(Debug, Clone, PartialEq)]
+struct PendingTip {
+    id: &'static str,
+    /// The tip as Pip says it ("Good to know: …").
+    text: String,
+    source: &'static str,
+    url: &'static str,
+    /// The rule deadline in memory (None in mock mode or when the letter made none).
+    deadline_id: Option<i64>,
+    /// When "Remind me" rings; None = no remind button (no deadline, or the day is already past).
+    remind_at: Option<DateTime<Local>>,
+    letter: LetterFacts,
+    /// The question drafted after [Write a short question].
+    draft: Option<String>,
+}
+
+/// The rule deadline a letter tip is about, from the deadlines the letter made.
+fn tip_deadline<'a>(tip: &Tip, deadlines: &'a [Deadline]) -> Option<&'a Deadline> {
+    if let Some(id) = tip.deadline_id {
+        return deadlines.iter().find(|d| d.id == id);
+    }
+    let (_, rule) = TIP_DEADLINE_RULES.iter().find(|(t, _)| *t == tip.id)?;
+    deadlines.iter().find(|d| d.rule_id.as_deref() == Some(*rule))
+}
+
+/// "Remind me": the day before the deadline at 09:00; a Saturday or Sunday becomes the Monday after it. None when
+/// that time is already past (then the button is not offered).
+fn tip_remind_at(due: NaiveDate, now: DateTime<Local>) -> Option<DateTime<Local>> {
+    let mut day = due.pred_opt()?;
+    while matches!(day.weekday(), Weekday::Sat | Weekday::Sun) {
+        day = day.succ_opt()?;
+    }
+    let at = local_at(day, TIP_REMIND_HOUR, 0);
+    (at > now).then_some(at)
+}
+
+/// The tip bubble's text: the tip, then its source on the last line (the page shows it as a chip).
+fn tip_bubble_text(text: &str, source: &str) -> String {
+    format!("{text}\n{source}")
+}
+
+/// Buttons of the tip bubble; after "Why?" without a second "Why?". Remind first when there is a day to remind.
+fn tip_buttons(lang: Lang, tip: &PendingTip, with_why: bool) -> Vec<Button> {
+    let mut b = Vec::new();
+    if let Some(at) = tip.remind_at {
+        let day = tip_date(at.date_naive(), lang);
+        b.push(Button::new("app:tip_remind", tf("tip_btn_remind", lang, &[("day", &day)]), true));
+    }
+    b.push(Button::new("app:tip_question", t("tip_btn_question", lang), b.is_empty()));
+    if with_why {
+        b.push(Button::new("app:tip_why", t("tip_btn_why", lang), false));
+    }
+    b
+}
+
+/// The question goes to the insurer (the one contact form Pip knows): only for the sick-note tip. Any other tip's
+/// question is meant for the letter's sender.
+fn tip_goes_to_insurer(tip: &PendingTip) -> bool {
+    tip.id == "au_gap"
+}
+
+/// Who the question goes to: for the sick-note tip the insurer from the profile (never the doctor who signed the
+/// note); for any other letter its sender (the insurer's name must never stand on a question meant for, say, the
+/// housing office).
+fn tip_insurer(tip: &PendingTip, insurer: Option<String>, lang: Lang) -> String {
+    if tip_goes_to_insurer(tip) {
+        return insurer.filter(|i| !i.trim().is_empty()).unwrap_or_else(|| t("tip_insurer_unknown", lang).into());
+    }
+    Some(tip.letter.sender.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| t("tip_sender_unknown", lang).into())
+}
+
+/// The short question, composed from profile facts and the letter (no model call): for a sick note "by which
+/// date does the next note have to be issued", for other letters "by when do I have to reply".
+fn tip_draft(tip: &PendingTip, profile: &dyn Fn(&str) -> Option<String>, lang: Lang) -> String {
+    let full_name = profile("full_name").or_else(|| profile("name")).unwrap_or_default();
+    let unknown = || t("tip_dear_unknown", lang).to_string();
+    match tip.letter.au_until {
+        Some(until) if tip.id == "au_gap" => {
+            let dear = profile("insurer").filter(|i| !i.trim().is_empty()).unwrap_or_else(unknown);
+            tf(
+                "tip_question_draft_au",
+                lang,
+                &[("insurer", &dear), ("until", &tip_date(until, lang)), ("full_name", &full_name)],
+            )
+        }
+        _ => {
+            // another sender's letter: never "Dear <insurer>" on it
+            let sender = Some(tip.letter.sender.clone()).filter(|s| !s.trim().is_empty()).unwrap_or_else(unknown);
+            let date = tip.letter.date.map(|d| tip_date(d, lang)).unwrap_or_default();
+            tf("tip_question_draft_generic", lang, &[("sender", &sender), ("date", &date), ("full_name", &full_name)])
+        }
+    }
 }
 
 /// App-only events for the page (not part of the core bus).
@@ -369,6 +488,8 @@ pub struct Ctx {
     brief_task: Mutex<Option<PendingOffer>>,
     /// The after-task offer behind [Yes, let's do it] [Not now] [Why?].
     offer_task: Mutex<Option<PendingOffer>>,
+    /// The "Good to know" tip behind [Remind me on …] [Write a short question] [Why?].
+    pending_tip: Mutex<Option<PendingTip>>,
 }
 
 type Shared = Arc<Ctx>;
@@ -561,6 +682,7 @@ pub fn run() -> Result<()> {
                 started: Instant::now(),
                 brief_task: Mutex::default(),
                 offer_task: Mutex::default(),
+                pending_tip: Mutex::default(),
             });
             app.manage(ctx.clone());
             if let Some(win) = app.get_webview_window("pip") {
@@ -577,7 +699,8 @@ pub fn run() -> Result<()> {
                 };
                 overlay::setup(&win, ctx.bus.clone(), windowed, mouse_stop)?;
             }
-            match tray::setup(app.handle(), ctx.lang(), ctx.always_show.load(Ordering::SeqCst)) {
+            match tray::setup(app.handle(), ctx.lang(), ctx.always_show.load(Ordering::SeqCst), ctx.backend.tips_off())
+            {
                 Ok(t) => *ctx.tray.lock().expect("tray lock") = Some(t),
                 Err(e) => tracing::warn!("tray not available: {e:#}"),
             }
@@ -782,6 +905,24 @@ pub fn toggle_always(app: &AppHandle) {
             t.set_always(on);
         }
         ctx.app_event(AppEvent::Mode { mode: mode_name(on) });
+    }
+}
+
+/// Tray "Fewer tips": profile `tips` between "off" and unset. Switched off, Pip says he holds back.
+pub fn toggle_fewer_tips(app: &AppHandle) {
+    if let Some(ctx) = ctx_of(app) {
+        let off = ctx.backend.set_tips_off(!ctx.backend.tips_off());
+        if let Some(t) = ctx.tray.lock().expect("tray lock").as_ref() {
+            t.set_fewer_tips(off);
+        }
+        if off {
+            *ctx.pending_tip.lock().expect("tip lock") = None;
+            let text = t("tips_off_said", ctx.lang()).to_string();
+            ctx.pip(PipState::Happy);
+            ctx.bus.emit(UiEvent::Speak { text: text.clone() });
+            ctx.say(text, vec![]);
+            ctx.idle_later(2500);
+        }
     }
 }
 
@@ -1424,6 +1565,18 @@ impl Ctx {
                     self.say(tf("sugg_why", lang, &[("reason", &reason)]), offer_buttons(lang, false));
                 }
             }
+            ("tip_remind", _) => self.tip_remind(),
+            ("tip_why", _) => self.tip_why(),
+            ("tip_ok", _) => self.tip_back(),
+            ("tip_question", _) => self.tip_question(),
+            ("tip_send", _) => self.tip_send(),
+            ("tip_not_now", _) => {
+                let tip = self.pending_tip.lock().expect("tip lock").take();
+                if let Some(tip) = tip {
+                    self.offer_event(EV_TIP_QUESTION_DECLINED, tip.id);
+                    self.pip(PipState::Idle);
+                }
+            }
             ("undo", id) => {
                 let Ok(id) = id.parse::<i64>() else { return };
                 let r = self.backend.rules.clone().map(|rules| guard("undo", || rules.undo_done(id, lang)));
@@ -1450,6 +1603,119 @@ impl Ctx {
             }
             (other, _) => tracing::debug!("unknown app action {other}"),
         }
+    }
+
+    /// The "Good to know" bubble after a letter: the tip with its source chip and [Remind me on …]
+    /// [Write a short question] [Why?]. Remembered as said (the daily brief does not repeat it for a week).
+    fn show_tip(&self, tip: &Tip, read: &Read) {
+        let lang = self.lang();
+        let now = self.backend.clock.now();
+        let (deadline_id, due) = read.tip_deadline.map_or((None, None), |(id, due)| (id, Some(due)));
+        let pending = PendingTip {
+            id: tip.id,
+            text: tip.text.clone(),
+            source: tip.source,
+            url: tip.url,
+            deadline_id,
+            remind_at: due.and_then(|d| tip_remind_at(d, now)),
+            letter: read.letter.clone(),
+            draft: None,
+        };
+        if let Some(mem) = &self.backend.memory
+            && let Err(e) = pip_core::rules::tips::mark_shown(mem, tip, now)
+        {
+            tracing::warn!("events write failed: {e:#}");
+        }
+        let buttons = tip_buttons(lang, &pending, true);
+        let text = tip_bubble_text(&pending.text, pending.source);
+        *self.pending_tip.lock().expect("tip lock") = Some(pending);
+        self.say(text, buttons);
+    }
+
+    /// [Remind me on …]: one more reminder for the rule's deadline at that time (memory reminder API).
+    fn tip_remind(self: &Arc<Self>) {
+        let lang = self.lang();
+        let Some(tip) = self.pending_tip.lock().expect("tip lock").take() else { return };
+        let Some(at) = tip.remind_at else { return };
+        if let Some(id) = tip.deadline_id
+            && let Err(e) = self.backend.add_tip_reminder(id, at)
+        {
+            tracing::warn!("tip reminder: {e:#}");
+            self.error(t("err_generic", lang), None, false);
+            return;
+        }
+        self.offer_event(EV_TIP_REMIND_SET, tip.id);
+        self.update_tray_tip();
+        let text = tf("tip_reminded", lang, &[("day", &tip_date(at.date_naive(), lang))]);
+        self.pip(PipState::Happy);
+        self.bus.emit(UiEvent::Speak { text: text.clone() });
+        self.say(text, vec![]);
+        self.idle_later(2500);
+    }
+
+    /// [Why?]: the rule and its link, "a hint, not legal advice", one [OK] that brings the tip back. Not spoken
+    /// (a link read aloud helps nobody).
+    fn tip_why(&self) {
+        let lang = self.lang();
+        let Some(tip) = self.pending_tip.lock().expect("tip lock").clone() else { return };
+        let why = tf("tip_why_text", lang, &[("source", tip.source), ("url", tip.url)]);
+        self.say(tip_bubble_text(&why, tip.source), vec![Button::new("app:tip_ok", t("btn_ok", lang), true)]);
+    }
+
+    /// [OK] under "Why?": the tip again, without a second "Why?".
+    fn tip_back(&self) {
+        let lang = self.lang();
+        let Some(tip) = self.pending_tip.lock().expect("tip lock").clone() else { return };
+        self.say(tip_bubble_text(&tip.text, tip.source), tip_buttons(lang, &tip, false));
+    }
+
+    /// [Write a short question]: the draft from memory, then "Shall I send it through the contact form?"
+    /// [Yes, send it] [Not now]. Without a known contact page: the draft and how to go on by hand.
+    fn tip_question(&self) {
+        let lang = self.lang();
+        let profile = |k: &str| self.backend.profile_get(k);
+        let (draft, insurer, to_insurer) = {
+            let mut slot = self.pending_tip.lock().expect("tip lock");
+            let Some(tip) = slot.as_mut() else { return };
+            let draft = tip_draft(tip, &profile, lang);
+            tip.draft = Some(draft.clone());
+            (draft, tip_insurer(tip, self.backend.profile_get("insurer"), lang), tip_goes_to_insurer(tip))
+        };
+        let form = self.backend.profile_get(DEMO_FORM_KEY).filter(|u| !u.trim().is_empty());
+        let (text, buttons) = if form.is_some() && to_insurer {
+            (
+                tf("tip_question_offer", lang, &[("draft", &draft), ("insurer", &insurer)]),
+                vec![
+                    Button::new("app:tip_send", t("btn_yes_send_it", lang), true),
+                    Button::new("app:tip_not_now", t("btn_not_now", lang), false),
+                ],
+            )
+        } else {
+            *self.pending_tip.lock().expect("tip lock") = None;
+            // Only the insurer's contact form is known: a question to another sender is drafted, not sent.
+            let key = if to_insurer { "tip_question_no_form" } else { "tip_question_elsewhere" };
+            (
+                tf(key, lang, &[("draft", &draft), ("sender", &insurer)]),
+                vec![Button::new("close", t("btn_ok", lang), true)],
+            )
+        };
+        self.pip(PipState::Asking);
+        self.bus.emit(UiEvent::Speak { text: text.clone() });
+        self.say(text, buttons);
+    }
+
+    /// [Yes, send it]: the agent opens the contact form and types the draft, like brief_go (Task::Text as an
+    /// offered job: no after-task offer, no look around). The send card is the only stop.
+    fn tip_send(self: Arc<Self>) {
+        let lang = self.lang();
+        let Some(tip) = self.pending_tip.lock().expect("tip lock").take() else { return };
+        let Some(draft) = tip.draft.clone().filter(|_| tip_goes_to_insurer(&tip)) else { return };
+        let Some(url) = self.backend.profile_get(DEMO_FORM_KEY).filter(|u| !u.trim().is_empty()) else { return };
+        let insurer = tip_insurer(&tip, self.backend.profile_get("insurer"), lang);
+        let task = tf("tip_question_task", lang, &[("url", &url), ("insurer", &insurer), ("draft", &draft)]);
+        self.offer_event(EV_TIP_QUESTION_SENT, tip.id);
+        *self.last_text.lock().expect("text lock") = Some(task.clone());
+        self.start_job(Job::Offered(Task::Text(task)));
     }
 
     /// "Was stand im letzten Brief?": the sentence Pip said after reading it.
@@ -1508,12 +1774,30 @@ impl Ctx {
             let p = path.clone();
             let result: Result<Read> = if self.backend.mock {
                 let m = mock::ingest(lang).await;
-                Ok(Read { bubble: m.bubble, unsure: false, doc_id: None })
+                Ok(Read {
+                    bubble: m.bubble,
+                    unsure: false,
+                    doc_id: None,
+                    tip: m.tip,
+                    letter: LetterFacts { sender: String::new(), date: None, au_until: Some(m.until) },
+                    tip_deadline: Some((None, m.due)),
+                })
             } else if let Some(docs) = self.backend.docs.clone() {
-                guard_async("ingest", async move { docs.ingest(&p, lang).await }).await.map(|r| Read {
-                    bubble: r.bubble,
-                    unsure: r.unsure,
-                    doc_id: Some(r.doc_id),
+                guard_async("ingest", async move { docs.ingest(&p, lang).await }).await.map(|r| {
+                    let tip_deadline =
+                        r.tip.as_ref().and_then(|tip| tip_deadline(tip, &r.deadlines)).map(|d| (Some(d.id), d.due));
+                    Read {
+                        bubble: r.bubble,
+                        unsure: r.unsure,
+                        doc_id: Some(r.doc_id),
+                        tip: r.tip,
+                        letter: LetterFacts {
+                            sender: r.extract.sender.clone(),
+                            date: r.extract.date,
+                            au_until: r.extract.au.as_ref().map(|a| a.until),
+                        },
+                        tip_deadline,
+                    }
                 })
             } else {
                 Err(anyhow::anyhow!("document pipeline not available"))
@@ -1522,19 +1806,32 @@ impl Ctx {
             match result {
                 Ok(read) => {
                     // a known letter's bubble already starts with "I already know this letter." (DocPipeline::ingest)
-                    let text = read.bubble;
+                    let text = read.bubble.clone();
+                    // "Good to know" comes as its own bubble after the letter's (the page queues it behind [OK]).
+                    let tip = read.tip.clone().filter(|_| !self.backend.tips_off());
+                    let check = read.doc_id.filter(|_| read.unsure);
                     self.pip(PipState::Happy);
-                    self.bus.emit(UiEvent::Speak { text: text.clone() });
+                    // One utterance for the letter and its tip: a second Speak would cut the first one off.
+                    let spoken = match (&tip, check) {
+                        (Some(tip), None) => format!("{text} {}", tip.text),
+                        _ => text.clone(),
+                    };
+                    self.bus.emit(UiEvent::Speak { text: spoken });
                     self.after_first_letter();
                     self.update_tray_tip();
-                    if read.unsure
-                        && let Some(doc_id) = read.doc_id
-                    {
+                    if let Some(doc_id) = check {
                         // "Ich habe als Frist Mittwoch, 18.11. gelesen …" [Stimmt] [Stimmt nicht]
                         self.check_date(text, doc_id, lang).await;
+                        if let Some(tip) = &tip {
+                            self.bus.emit(UiEvent::Speak { text: tip.text.clone() });
+                            self.show_tip(tip, &read);
+                        }
                     } else {
                         // The only place the user learns what the letter means: it stays until [Gut].
                         self.say(text, vec![Button::new("close", t("btn_ok", lang), true)]);
+                        if let Some(tip) = &tip {
+                            self.show_tip(tip, &read);
+                        }
                         tokio::time::sleep(Duration::from_secs(2)).await;
                     }
                     self.pip(PipState::Idle);
@@ -2095,6 +2392,12 @@ struct Read {
     bubble: String,
     unsure: bool,
     doc_id: Option<i64>,
+    /// "Good to know" for this letter (`IngestResult::tip`; the scripted au_gap tip in mock mode).
+    tip: Option<Tip>,
+    /// What a drafted question needs from the letter.
+    letter: LetterFacts,
+    /// The rule deadline the tip is about: memory id (None in mock mode) and due date.
+    tip_deadline: Option<(Option<i64>, NaiveDate)>,
 }
 
 /// What a run does: a new task, a task the user said yes to in an offer (brief or after-task), or "Weiter"
@@ -2169,6 +2472,136 @@ mod tests {
         assert_eq!(b[1].label, "Not now");
         let after_why: Vec<String> = offer_buttons(Lang::En, false).into_iter().map(|b| b.id).collect();
         assert_eq!(after_why, ["app:offer_go", "app:offer_no"]);
+    }
+
+    fn erika_tip() -> PendingTip {
+        let tip = crate::mock::tip(Lang::En);
+        PendingTip {
+            id: tip.id,
+            text: tip.text,
+            source: tip.source,
+            url: tip.url,
+            deadline_id: Some(7),
+            remind_at: None,
+            letter: LetterFacts {
+                sender: "Dr. med. Anna Beispiel".into(),
+                date: NaiveDate::from_ymd_opt(2026, 10, 20),
+                au_until: NaiveDate::from_ymd_opt(2026, 10, 30),
+            },
+            draft: None,
+        }
+    }
+
+    fn erika_profile(k: &str) -> Option<String> {
+        match k {
+            "full_name" => Some("Erika Beispiel".into()),
+            "name" => Some("Erika".into()),
+            "insurer" => Some("Evergreen Health".into()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn tip_reminds_the_day_before_at_nine_and_a_weekend_moves_to_monday() {
+        let d = |m, day| NaiveDate::from_ymd_opt(2026, m, day).unwrap();
+        let before = local_at(d(10, 28), 10, 0);
+        // due Monday 2 November: the Sunday before becomes that Monday, 09:00 (the demo story)
+        let at = tip_remind_at(d(11, 2), before).unwrap();
+        assert_eq!((at.date_naive(), at.format("%H:%M").to_string()), (d(11, 2), "09:00".into()));
+        assert_eq!(tip_date(at.date_naive(), Lang::En), "Monday, 2 November");
+        // due Friday 27 November: Thursday 26, 09:00
+        assert_eq!(tip_remind_at(d(11, 27), before).unwrap().date_naive(), d(11, 26));
+        // due Sunday: Saturday and Sunday move to Monday
+        assert_eq!(tip_remind_at(d(11, 8), before).unwrap().date_naive(), d(11, 9));
+        // already past: no button
+        assert_eq!(tip_remind_at(d(11, 2), local_at(d(11, 2), 9, 30)), None);
+    }
+
+    #[test]
+    fn tip_bubble_has_remind_question_why_and_the_source_last() {
+        let mut tip = erika_tip();
+        tip.remind_at = Some(local_at(NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), 9, 0));
+        let b = tip_buttons(Lang::En, &tip, true);
+        let ids: Vec<&str> = b.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["app:tip_remind", "app:tip_question", "app:tip_why"]);
+        assert_eq!(b[0].label, "Remind me on Monday, 2 November");
+        assert!(b[0].primary && !b[1].primary && !b[2].primary);
+        let after_why: Vec<String> = tip_buttons(Lang::En, &tip, false).into_iter().map(|b| b.id).collect();
+        assert_eq!(after_why, ["app:tip_remind", "app:tip_question"]);
+        // no day to remind: the question is the main button
+        tip.remind_at = None;
+        let b = tip_buttons(Lang::En, &tip, true);
+        assert_eq!(b[0].id, "app:tip_question");
+        assert!(b[0].primary);
+        let text = tip_bubble_text(&tip.text, tip.source);
+        assert!(text.starts_with("Good to know:") && text.ends_with("\n§ 46 Satz 2 SGB V"), "{text}");
+    }
+
+    #[test]
+    fn tip_question_is_drafted_from_memory_and_becomes_the_agent_task() {
+        let tip = erika_tip();
+        let draft = tip_draft(&tip, &erika_profile, Lang::En);
+        assert_eq!(
+            draft,
+            "Dear Evergreen Health, my sick note ends on Friday, 30 October. If I am still ill, by which date does \
+             the next note have to be issued so there is no gap in my sick pay? Kind regards, Erika Beispiel"
+        );
+        assert_eq!(tip_insurer(&tip, erika_profile("insurer"), Lang::En), "Evergreen Health");
+        let task = tf(
+            "tip_question_task",
+            Lang::En,
+            &[("url", "file:///C:/demo-insurer/index.html"), ("insurer", "Evergreen Health"), ("draft", &draft)],
+        );
+        assert!(task.starts_with("Open file:///C:/demo-insurer/index.html and send this message to Evergreen Health."));
+        assert!(task.contains(&format!("exactly: \"{draft}\".")), "{task}");
+        // another letter: its sender and date
+        let mut other = erika_tip();
+        other.id = "widerspruch_month";
+        other.letter = LetterFacts {
+            sender: "Wohngeldstelle Beispielstadt".into(),
+            date: NaiveDate::from_ymd_opt(2026, 10, 14),
+            au_until: None,
+        };
+        let g = tip_draft(&other, &erika_profile, Lang::En);
+        assert!(
+            g.starts_with("Dear Wohngeldstelle Beispielstadt, I received your letter of Wednesday, 14 October."),
+            "{g}"
+        );
+        assert!(g.ends_with("Kind regards, Erika Beispiel"));
+        assert_eq!(tip_insurer(&other, None, Lang::En), "Wohngeldstelle Beispielstadt");
+        // the profile's insurer never stands on another sender's question
+        assert_eq!(tip_insurer(&other, erika_profile("insurer"), Lang::En), "Wohngeldstelle Beispielstadt");
+        let mut unsigned = other.clone();
+        unsigned.letter.sender = String::new();
+        assert!(tip_draft(&unsigned, &erika_profile, Lang::En).starts_with("Dear Sir or Madam, I received"));
+        assert_eq!(tip_insurer(&unsigned, erika_profile("insurer"), Lang::En), "the sender");
+        // never through the insurer's form: drafted only
+        assert!(tip_goes_to_insurer(&tip) && !tip_goes_to_insurer(&other));
+        // nothing known: polite fallbacks, never an empty "Dear ,"
+        let none = tip_draft(&tip, &|_| None, Lang::En);
+        assert!(none.starts_with("Dear Sir or Madam,"), "{none}");
+        assert_eq!(tip_insurer(&tip, None, Lang::En), "your insurer");
+    }
+
+    #[test]
+    fn letter_tip_finds_its_rule_deadline() {
+        let dl = |id: i64, rule: &str| Deadline {
+            id,
+            title: String::new(),
+            due: NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
+            rule_id: Some(rule.into()),
+            doc_id: None,
+            status: DeadlineStatus::Open,
+            remind_at: vec![],
+            why: String::new(),
+            source: String::new(),
+        };
+        let deadlines = [dl(1, "frist_aus_brief"), dl(2, "au_lueckenlos")];
+        let tip = crate::mock::tip(Lang::En);
+        assert_eq!(tip_deadline(&tip, &deadlines).map(|d| d.id), Some(2));
+        let by_id = Tip { deadline_id: Some(1), ..tip.clone() };
+        assert_eq!(tip_deadline(&by_id, &deadlines).map(|d| d.id), Some(1));
+        assert!(tip_deadline(&tip, &deadlines[..1]).is_none());
     }
 
     #[test]

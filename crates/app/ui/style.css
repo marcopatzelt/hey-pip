@@ -181,6 +181,21 @@ input[type=password] {
 .column.right .bubble::after { left: -7px; box-shadow: -3px 3px 6px rgba(17, 24, 39, .06); }
 .column.vert .bubble::after { display: none; }
 
+/* ---------- "Good to know": a rule with its source, and what Pip can do next ----------
+   Calm blue, not amber: a hint, not a warning. The label sits above the text, the source is a small chip. */
+.bubble.tip { border-top: 6px solid var(--blue); width: 440px; }
+.bubble.tip::before {
+  content: attr(data-label); display: inline-block; margin-bottom: 8px; padding: 2px 10px; border-radius: 999px;
+  background: #eef4ff; color: var(--blue-dark); font-size: 15px; font-weight: 700; letter-spacing: .02em;
+}
+.bubble.tip:not([data-label])::before { display: none; }
+.bubble.tip .source {
+  display: inline-block; margin-top: 10px; padding: 3px 10px; border-radius: 8px;
+  background: #f1f3f7; border: 1px solid var(--line); color: var(--ink-soft); font-size: 15px; font-weight: 600;
+}
+.bubble.tip .buttons { flex-direction: column; align-items: stretch; gap: 8px; }
+.bubble.tip .btn { justify-content: center; text-align: center; }
+
 /* ---------- guard: a page that only looks like the real one ----------
    Amber, not red: "careful, look here", not "error". Dark text on light amber (contrast > 12:1), big safe button,
    "continue anyway" small and quiet. The warning glyph is drawn in CSS (no emoji: same on every Windows). */

@@ -60,6 +60,16 @@ const ZOOM_KEEP: u32 = 24;
 const WIDE_RATIO: u32 = 4;
 /// ... and at least this wide (API pixels): a normal wide button ("Weiter", 200 x 40) stays whole.
 const WIDE_MIN_W: u32 = 240;
+/// A target described as small (an ×, an icon, "at the right end"): candidate boxes wider than this many times
+/// their height are dropped when a narrower one exists (the whole notice bar instead of its ×).
+const SMALL_MAX_RATIO: u32 = 5;
+/// Radio / checkbox snap: the control is roughly square (width / height in this range), at most TOGGLE_MAX_H
+/// API pixels high and at most TOGGLE_REACH API pixels left of the label (both at a 1000 px high picture).
+const TOGGLE_ASPECT: (f64, f64) = (0.7, 1.4);
+const TOGGLE_MAX_H: u32 = 40;
+const TOGGLE_REACH: u32 = 160;
+/// Entries kept in the SAM cache of a run (it is emptied when full).
+const SAM_CACHE_MAX: usize = 32;
 /// Characters typed per chunk (cancel is checked between chunks).
 const TYPE_CHUNK: usize = 16;
 /// A date input's first part (day in TT.mm.jjjj): this far (physical px) inside the field's left edge.
@@ -112,6 +122,8 @@ const WHEEL_PX: i32 = 100;
 const NOT_DONE_PAGE_CHANGED: &str = "not done: the page changed, look again";
 /// The same click / type_text / key / open_url this often in one run: the next one is not run (loop guard).
 const MAX_SAME_CALL: u32 = 2;
+/// Clicks, keys and page opens remembered for the "same call, page unchanged" refusal.
+const RECENT_ACTS: usize = 4;
 /// Keys that move on by themselves (Tab through a form, arrows through a list): never counted as a repeat.
 const MOVING_KEYS: &[&str] = &["tab", "shift+tab", "up", "down", "left", "right", "pageup", "pagedown", "home", "end"];
 /// Said after a field that already shows its value and after a scroll that moved nothing: the form is filled, send it.
@@ -324,6 +336,21 @@ pub struct RunState {
     offer_screen: Option<(ApiImage, u64)>,
     /// "already done" and "scrolled, but nothing moved" in this run; at NOTHING_CHANGED_MAX the run ends.
     nothing_changed: u8,
+    /// The last clicks, keys and page opens that ran, with the page they ran on (newest last, at most
+    /// RECENT_ACTS). The same call again on a page that still looks the same is refused at once.
+    recent_acts: Vec<RecentAct>,
+}
+
+/// A click, key or page open that ran, with the page in front when it ran.
+#[derive(Debug, Clone)]
+struct RecentAct {
+    /// Loop-guard key (`repeat_key`).
+    key: String,
+    /// Shape of the PAGE ELEMENTS (`outline_shape`) and the picture when it ran.
+    shape: u64,
+    api: Option<ApiImage>,
+    /// The step it ran in: a call of the same turn has not seen a new picture yet.
+    step: u32,
 }
 
 /// A yes that could not be used because the page changed under the button.
@@ -428,6 +455,7 @@ impl RunState {
             acted_since_offer: false,
             offer_screen: None,
             nothing_changed: 0,
+            recent_acts: Vec::new(),
         }
     }
 
@@ -465,6 +493,7 @@ impl RunState {
         self.outline.clear();
         // The user looked at it: repeats start again.
         self.repeats.clear();
+        self.recent_acts.clear();
         self.guard_hits = 0;
         self.nothing_changed = 0;
         // A resumed run looks at the screen afresh.
@@ -488,6 +517,39 @@ impl RunState {
         }
         *n += 1;
         *n
+    }
+
+    /// The page in front now: shape of its PAGE ELEMENTS and the last picture.
+    fn page_now(&self) -> (u64, Option<&ApiImage>) {
+        (outline_shape(&self.outline), self.last_api.as_ref())
+    }
+
+    /// The same click / key / page open ran in an earlier step and the page still looks as it did then (same
+    /// PAGE ELEMENTS, same picture): it did nothing, and the same call would do nothing again. Calls whose page
+    /// has changed since are forgotten first (a wizard's Next on the next page is a new call).
+    fn repeat_on_same_page(&mut self, key: &str) -> bool {
+        let (shape, now) = self.page_now();
+        let same = |a: &RecentAct| {
+            a.shape == shape
+                && match (&a.api, now) {
+                    (Some(then), Some(now)) => same_picture(then, now),
+                    (None, None) => true,
+                    _ => false,
+                }
+        };
+        let keep: Vec<bool> = self.recent_acts.iter().map(same).collect();
+        let mut it = keep.into_iter();
+        self.recent_acts.retain(|_| it.next().unwrap_or(false));
+        self.recent_acts.iter().any(|a| a.key == key && a.step < self.step)
+    }
+
+    /// Remember a click / key / page open that ran on the page in front (`page` = shape and picture before it).
+    fn note_act(&mut self, key: String, page: (u64, Option<ApiImage>)) {
+        self.recent_acts.retain(|a| a.key != key);
+        self.recent_acts.push(RecentAct { key, shape: page.0, api: page.1, step: self.step });
+        if self.recent_acts.len() > RECENT_ACTS {
+            self.recent_acts.remove(0);
+        }
     }
 
     /// Active time of the whole task without the time spent waiting for the user, including the parts before
@@ -570,6 +632,9 @@ pub struct Agent {
     stop_reason: Mutex<StopReason>,
     /// A run that was stopped or waited too long, for "Weiter" (never one that already sent something).
     paused_run: Mutex<Option<RunState>>,
+    /// SAM boxes per (screenshot hash, query) of this run: the same picture is never segmented twice for the
+    /// same query (a retried click, a relocation). Emptied at the start of a run, at most SAM_CACHE_MAX entries.
+    sam_cache: Mutex<HashMap<(u64, String), Vec<SamBox>>>,
 }
 
 impl Agent {
@@ -595,6 +660,7 @@ impl Agent {
             open_card: Mutex::new(None),
             stop_reason: Mutex::default(),
             paused_run: Mutex::new(None),
+            sam_cache: Mutex::default(),
         }
     }
 
@@ -710,6 +776,7 @@ impl Agent {
     async fn run_state(&self, mut state: RunState, cancel: CancellationToken) -> Result<AgentOutcome> {
         let lang = self.lang();
         *self.stop_reason.lock().expect("reason lock") = StopReason::User;
+        self.sam_cache.lock().expect("sam cache lock").clear();
         self.pip(PipState::Thinking);
         let looking = state.phase == Phase::Discover;
         self.progress(t(if looking { "discover_progress" } else { "thinking" }, lang));
@@ -1046,10 +1113,8 @@ impl Agent {
         state.talk_only_turn =
             !out.calls.is_empty() && out.calls.iter().all(|c| matches!(c.name.as_str(), "say" | "wait"));
         // `say` alone (no wait, no action): shown, then the model is asked again on the same screen. Once in a row.
-        let say_only = state.phase == Phase::Act
-            && !reask
-            && !out.calls.is_empty()
-            && out.calls.iter().all(|c| c.name == "say");
+        let say_only =
+            state.phase == Phase::Act && !reask && !out.calls.is_empty() && out.calls.iter().all(|c| c.name == "say");
         let tokens = out.usage.input_tokens + out.usage.output_tokens;
         state.tokens += tokens;
         state.step += 1;
@@ -1433,17 +1498,29 @@ impl Agent {
         if let Some(text) = say_of(call) {
             self.say_once(&text, state);
         }
-        // Loop guard: the third identical action is not run (the model would burn the step budget on it).
+        // Loop guard: a click, key or page open that changed nothing is not run a second time; any other
+        // identical action not a third time (the model would burn the step budget on it).
         let mut guarded = None;
-        if let Some((key, target)) = repeat_key(&tool, &state.outline)
-            && state.count_repeat(key, outline_shape(&state.outline)) > MAX_SAME_CALL
-        {
-            guarded = Some(self.loop_guard(&tool, &target, state, cancel, lang).await);
+        // Not while a file dialog is in front: the picture of the page behind it says nothing about the dialog.
+        // Not for a call that moves a value one step each time (Backspace, a calendar arrow): one step barely
+        // changes the picture, and the second one is wanted.
+        let once = matches!(tool, Tool::Click { .. } | Tool::Key { .. } | Tool::OpenUrl { .. })
+            && !state.dialog_open
+            && !steps_by_itself(&tool);
+        let repeat = repeat_key(&tool, &state.outline);
+        let page_before = once.then(|| (outline_shape(&state.outline), state.last_api.clone()));
+        if let Some((key, target)) = repeat.clone() {
+            if once && state.repeat_on_same_page(&key) {
+                guarded = Some(self.unchanged_repeat(&tool, &target, state, lang));
+            } else if state.count_repeat(key, outline_shape(&state.outline)) > MAX_SAME_CALL {
+                guarded = Some(self.loop_guard(&tool, &target, state, cancel, lang).await);
+            }
         }
         let acts = matches!(tool, Tool::Click { .. } | Tool::TypeText { .. } | Tool::OpenUrl { .. } | Tool::Key { .. });
         if acts && guarded.is_none() {
             state.acted_since_offer = true;
         }
+        let ran = guarded.is_none();
         let run = match guarded {
             Some(run) => run,
             None => match self.run_tool(&tool, state, cancel, lang).await {
@@ -1460,6 +1537,14 @@ impl Agent {
             Exec::Output(s) => s.clone(),
             Exec::Finish(o) => format!("{o:?}"),
         };
+        // Only what really ran counts ("already open": the page in front stayed as it was, so the next identical
+        // click is still a repeat on an unchanged page).
+        if ran
+            && let (Some((key, _)), Some(page)) = (repeat, page_before)
+            && ["clicked", "pressed", "opened"].iter().any(|w| result.starts_with(w))
+        {
+            state.note_act(key, page);
+        }
         if !matches!(tool, Tool::Say { .. } | Tool::Wait { .. } | Tool::Done { .. }) {
             state.history.push(format!("{}: {}", tool.name(), truncate(&result, 120)));
             if state.history.len() > HISTORY_MAX {
@@ -1548,6 +1633,41 @@ impl Agent {
         }
     }
 
+    /// The same click, key or page open again although the first one changed nothing on the page: not run.
+    /// Counts as a guard hit and as "nothing changed" (at NOTHING_CHANGED_MAX the run ends with the stuck question).
+    fn unchanged_repeat(&self, tool: &Tool, target: &str, state: &mut RunState, lang: Lang) -> ToolRun {
+        state.guard_hits += 1;
+        state.nothing_changed = state.nothing_changed.saturating_add(1);
+        tracing::info!(
+            tool = tool.name(),
+            target,
+            hits = state.guard_hits,
+            "loop guard: same call again on an unchanged page, not run"
+        );
+        if state.nothing_changed >= NOTHING_CHANGED_MAX {
+            return self.stuck(lang);
+        }
+        ToolRun::out(
+            Risk::Free,
+            format!(
+                "not done: you already did this and nothing changed ({target}). Do not repeat it: look at the \
+                 screen for what is in the way (a dialog, a missing value, a disabled button), or ask_user."
+            ),
+        )
+    }
+
+    /// The question that ends a run (spoken, shown with its options): the first option continues the paused run,
+    /// the others only close the bubble.
+    fn open_question_bubble(&self, question: &str, options: &[String]) {
+        let buttons = options
+            .iter()
+            .enumerate()
+            .map(|(i, o)| Button::new(if i == 0 { "cmd:resume" } else { "close" }, o.clone(), i == 0))
+            .collect();
+        self.emit(UiEvent::Speak { text: question.to_string() });
+        self.emit(UiEvent::Bubble { text: question.to_string(), buttons, question_id: None });
+    }
+
     /// The run goes round in circles: ask the user once ("I'm stuck") and end the run.
     fn stuck(&self, lang: Lang) -> ToolRun {
         let text = t("loop_stuck", lang);
@@ -1573,11 +1693,16 @@ impl Agent {
         cancel: &CancellationToken,
         lang: Lang,
     ) -> Result<ToolRun> {
-        // The free Enter after an approved attach only survives "type the path" (and harmless waits).
-        let keeps_attach = matches!(
-            tool,
-            Tool::TypeText { into_sam_query: None, .. } | Tool::Key { .. } | Tool::Wait { .. } | Tool::Say { .. }
-        );
+        // The free Enter after an approved attach only survives "type the path" (and harmless waits). A path
+        // typed "into the File name box" is still the path: it goes into the dialog, not into a field found
+        // in the picture.
+        let keeps_attach = match tool {
+            Tool::TypeText { into_sam_query: None, .. } | Tool::Key { .. } | Tool::Wait { .. } | Tool::Say { .. } => {
+                true
+            }
+            Tool::TypeText { text, .. } => text.contains(['/', '\\']),
+            _ => false,
+        };
         if !keeps_attach {
             state.enter_after_attach = false;
         }
@@ -1617,6 +1742,12 @@ say argument of your action.",
                 let q = into_sam_query.as_deref().or(field_label.as_ref().map(|_| "text input field"));
                 // In the file dialog of an approved attach only the approved letter is typed (no element there).
                 let element = element.filter(|_| !state.enter_after_attach);
+                // Nor a field found in the picture: the path goes into the dialog's focused name box, and only
+                // after the approved-letter check below.
+                let q = q.filter(|_| !state.enter_after_attach);
+                // An IBAN goes in without spaces: many bank forms refuse "DE02 1203 …" (memory keeps the print).
+                let compact = compact_iban(text);
+                let text = compact.as_ref().unwrap_or(text);
                 if let Some(id) = element {
                     match self.element_target(state, id, cancel).await? {
                         ElementPick::Found(target, item) => {
@@ -1729,12 +1860,19 @@ say argument of your action.",
                     && (!state.acted_since_offer || screen_unchanged(state)) =>
             {
                 // A second offer with nothing done since the first (or nothing came of it: the same screen): the
-                // user already chose. The question closes the run as a plain bubble (no buttons), so it never asks
-                // round and round.
-                tracing::info!("second offer without an action: run ends");
-                self.bubble(question.clone(), true);
+                // run never asks round and round. It ends as an open question (never as done: nothing was done),
+                // so nothing is learned or credited. The bubble keeps the question and its buttons: the first one
+                // continues the run, the others close the bubble.
+                tracing::info!("second offer without an action: run ends as an open question");
+                self.open_question_bubble(question, options);
+                state.history.push(format!(
+                    "ask_user: you asked twice in a row (\"{}\"); a continued run means the user chose \"{}\"",
+                    truncate(question, 100),
+                    truncate(&options[0], 40)
+                ));
+                state.offers = 0;
                 state.answered = true;
-                Ok(ToolRun::finish(Risk::Free, AgentOutcome::Done(question.clone())))
+                Ok(ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(question.clone())))
             }
             Tool::AskUser { question, options } => {
                 if !options.is_empty() {
@@ -2457,12 +2595,21 @@ say argument of your action.",
                     is_path = true;
                 }
                 None => {
-                    state.enter_after_attach = false;
+                    // The dialog stays open: the right letter's path can still go in (no second click on the
+                    // file button, which would change nothing on the screen).
+                    let open = self.foreground().await.is_some_and(|w| w.is_file_dialog());
+                    state.enter_after_attach = open;
                     self.bubble(t("attach_other_file", lang), true);
                     return Ok(ToolRun::out(
                         Risk::Act,
-                        "refused: you may only attach the letter the user approved (a stored letter's full file \
-                         path, see search_memory). Nothing was typed.",
+                        if open {
+                            "refused: you may only attach the letter the user approved (a stored letter's full file \
+                             path, exactly as search_memory shows it). Nothing was typed. The file dialog is still \
+                             open: type that path now (element null), then press enter."
+                        } else {
+                            "refused: you may only attach the letter the user approved (a stored letter's full file \
+                             path, see search_memory). Nothing was typed."
+                        },
                     ));
                 }
             }
@@ -2525,6 +2672,12 @@ say argument of your action.",
             // The viewer sees the form fill up: "Name ✓ · Insurance number ✓".
             self.progress(filled_line(&state.typed));
         }
+        if is_path {
+            // The path box of a file dialog is small and often unreadable in the picture: say what comes next.
+            note.push_str(
+                ". The file name box of the dialog holds the path now: press enter to pick it (do not type it again)",
+            );
+        }
         Ok(ToolRun::out(Risk::Act, format!("typed {what}{note}")))
     }
 
@@ -2571,9 +2724,9 @@ say argument of your action.",
             risk = Risk::Commit; // Space presses the focused button
         }
         let attach_enter = std::mem::take(&mut state.enter_after_attach);
+        let dialog = is_enter && attach_enter && self.foreground().await.is_some_and(|w| w.is_file_dialog());
         if risk == Risk::Commit && is_enter && attach_enter {
             // Confirms the file dialog of the attach the user just approved, but only if that dialog is open.
-            let dialog = self.foreground().await.is_some_and(|w| w.is_file_dialog());
             if dialog && !ui_name.as_deref().is_some_and(is_send_target) {
                 risk = Risk::Act;
             }
@@ -2614,6 +2767,12 @@ say argument of your action.",
         }
         if attach_card {
             out.push_str(ATTACH_APPROVED_NOTE);
+        }
+        if dialog && !self.foreground().await.is_some_and(|w| w.is_file_dialog()) {
+            // The dialog of the approved attach closed on Enter: the page now holds the file (its name may be
+            // too small to read in the picture).
+            let file = state.doc_file.clone().unwrap_or_else(|| "the file".into());
+            out.push_str(&format!(" (the file dialog closed: {file} is attached; do not upload it again)"));
         }
         if let Some(to) = &trusted {
             self.bubble(tf("sent_trusted", lang, &[("to", to)]), true);
@@ -3526,10 +3685,31 @@ say argument of your action.",
         Ok(t)
     }
 
+    /// SAM 3.1 for the query and its synonyms, once per (picture, query) in a run (see `sam_cache`).
+    async fn sam_boxes(&self, api: &ApiImage, sam_query: &str) -> Result<Vec<SamBox>> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        api.png.hash(&mut h);
+        let key = (h.finish(), sam_query.trim().to_lowercase());
+        if let Some(boxes) = self.sam_cache.lock().expect("sam cache lock").get(&key) {
+            tracing::info!(sam_query, n = boxes.len(), "sam: same picture and query, boxes from this run");
+            return Ok(boxes.clone());
+        }
+        let boxes = self.meta.sam_segment_all(&api.png, sam_query).await?;
+        let mut cache = self.sam_cache.lock().expect("sam cache lock");
+        if cache.len() >= SAM_CACHE_MAX {
+            cache.clear();
+        }
+        cache.insert(key, boxes.clone());
+        Ok(boxes)
+    }
+
     /// Stage 1: SAM 3.1 (the query and its synonyms) and a Spark point run in parallel. The SAM box that contains
-    /// Spark's point gives the exact element (click its center, highlight its outline). Otherwise Spark picks among
-    /// the numbered boxes (UI-tree candidates first, then SAM's); if none fits (or there are none), Spark's own
-    /// point is used. Stage 2 (`zoom`): Spark looks again at an enlarged cut-out around that first candidate.
+    /// Spark's point gives the exact element (click its center, highlight its outline) at once. Otherwise Spark
+    /// picks among the numbered boxes (UI-tree candidates first, then SAM's); if none fits (or there are none),
+    /// Spark's own point is used. Stage 2 (`zoom`, only when the two did not agree): Spark looks again at an
+    /// enlarged cut-out around that first candidate. A small target (an ×, an icon) never gets a wide box; a
+    /// radio or checkbox gets its square control left of the label, not the label text.
     async fn ground_target(
         &self,
         api: &ApiImage,
@@ -3537,14 +3717,16 @@ say argument of your action.",
         description: &str,
         extra: Vec<SamBox>,
     ) -> Result<Option<Target>> {
-        let (sam, xy) = tokio::join!(self.meta.sam_segment_all(&api.png, sam_query), self.spark_xy(api, description));
+        let (sam, xy) = tokio::join!(self.sam_boxes(api, sam_query), self.spark_xy(api, description));
+        let small = wants_small(description, sam_query);
+        let toggle = is_toggle_target(description, sam_query);
         // A wide box around a labelled button is often the whole row ("Datei auswählen  Keine ausgewählt"): its
         // halves are the candidates; the highlight, the card picture and the label stay the whole row.
         let mut halves: Vec<(SamBox, SamBox)> = Vec::new();
         let sam_boxes = match sam {
             Ok(raw) => {
                 let boxes = filter_boxes(raw, api.w, api.h);
-                if quoted_label(description).is_some() && !is_field_query(sam_query) {
+                if !small && quoted_label(description).is_some() && !is_field_query(sam_query) {
                     let (boxes, h) = split_wide(boxes);
                     halves = h;
                     boxes
@@ -3560,6 +3742,9 @@ say argument of your action.",
         };
         let mut boxes = extra;
         boxes.extend(sam_boxes);
+        if small {
+            boxes = drop_wide(boxes);
+        }
         boxes.truncate(MAX_CANDIDATES);
         let xy = match xy {
             Ok(p) => p,
@@ -3620,7 +3805,44 @@ say argument of your action.",
             }
             None => target_of(api, b),
         };
-        let keep = || first_box.map(box_target).unwrap_or_else(|| point_target(api, p.0, p.1));
+        // A radio or checkbox: its square control left of the chosen label (a bare point counts as a label).
+        let snap = |target: Target, at: Option<(u32, u32)>| {
+            if !toggle {
+                return target;
+            }
+            let label = match at {
+                Some((x, y)) => {
+                    let half = (api.h * TOGGLE_MAX_H / 1000 / 2).max(4);
+                    SamBox {
+                        x1: x,
+                        y1: y.saturating_sub(half),
+                        x2: x + 1,
+                        y2: (y + half).min(api.h),
+                        img_w: api.w,
+                        img_h: api.h,
+                    }
+                }
+                None => target.api_box,
+            };
+            match snap_toggle(&boxes, label, at.is_some()) {
+                Some(b) => {
+                    tracing::info!(from = ?label.center(), to = ?b.center(), "ground: radio/checkbox control left of the label");
+                    target_of(api, b)
+                }
+                None => target,
+            }
+        };
+        let keep = || match first_box {
+            Some(b) => snap(box_target(b), None),
+            None => snap(point_target(api, p.0, p.1), Some(p)),
+        };
+        if path == "agree" {
+            // Box and point agree: no enlarged look (it would only cost a round trip).
+            let target = keep();
+            let (fx, fy) = (target.point.x - api.origin.x, target.point.y - api.origin.y);
+            tracing::info!(path, first = ?p, point = ?(fx, fy), "ground: result (physical pixels)");
+            return Ok(Some(target));
+        }
         // Stage 2: the enlarged look around the first candidate.
         let second = match early_look {
             Some(look) => look,
@@ -3638,11 +3860,11 @@ say argument of your action.",
             ZoomPick::Box(b) if Some(b) == first_box => keep(),
             ZoomPick::Box(b) => {
                 self.log("ground", "zoom".into(), Risk::Free, None, "enlarged look: box", 0);
-                box_target(b)
+                snap(box_target(b), None)
             }
             ZoomPick::Point(x, y) => {
                 self.log("ground", "zoom".into(), Risk::Free, None, "enlarged look: point", 0);
-                point_target(api, x, y)
+                snap(point_target(api, x, y), Some((x, y)))
             }
         };
         let (fx, fy) = (target.point.x - api.origin.x, target.point.y - api.origin.y);
@@ -3964,6 +4186,30 @@ fn repeat_key(tool: &Tool, outline: &[OutlineItem]) -> Option<(String, String)> 
     Some((key, target))
 }
 
+/// A call that moves a value one step each time, so the same call again is wanted and changes little on the
+/// picture: Backspace / Delete, a stepper's "+" / "-", a calendar's month arrow. Never refused as a repeat on an
+/// unchanged page (the third identical one still is, by `MAX_SAME_CALL`).
+fn steps_by_itself(tool: &Tool) -> bool {
+    match tool {
+        Tool::Key { combo, .. } => {
+            let combo = normalize_combo(combo).unwrap_or_else(|_| combo.to_lowercase());
+            matches!(combo.rsplit('+').next().unwrap_or(""), "backspace" | "delete" | "del")
+        }
+        Tool::Click { description, sam_query, .. } => {
+            let label = quoted_label(description).unwrap_or_default();
+            if matches!(label.trim(), "+" | "-" | "–" | "<" | ">" | "‹" | "›" | "«" | "»" | "↑" | "↓" | "▲" | "▼")
+            {
+                return true;
+            }
+            let text = format!("{description} {sam_query}").to_lowercase();
+            ["next month", "previous month", "nächsten monat", "vorigen monat", "increase", "decrease", "plus", "minus"]
+                .iter()
+                .any(|w| text.contains(w))
+        }
+        _ => false,
+    }
+}
+
 /// The address bar shows this URL already: scheme, file://localhost, slashes, case, %XX, #fragment and a
 /// trailing slash do not count ("C:/Users/x/a.html" in Edge = file:///C:/Users/x/a.html).
 fn same_page(address: &str, url: &str) -> bool {
@@ -4210,6 +4456,23 @@ pub const TEXT_ANSWER: &str = "__text__";
 /// "sent after my yes" on the card does not count it.
 pub const ATTACH_APPROVED_NOTE: &str = " (attach approved, nothing sent yet)";
 
+/// The IBAN without its spaces, when `text` is exactly one IBAN written in groups ("DE02 1203 0000 0000 2020 51").
+/// None for anything else (a name, a path, an IBAN already without spaces).
+fn compact_iban(text: &str) -> Option<String> {
+    let t = text.trim();
+    if !t.contains(' ') {
+        return None;
+    }
+    let c: String = t.chars().filter(|c| *c != ' ').collect::<String>().to_uppercase();
+    let b = c.as_bytes();
+    let ok = (15..=34).contains(&b.len())
+        && b[..2].iter().all(u8::is_ascii_alphabetic)
+        && b[2..4].iter().all(u8::is_ascii_digit)
+        && b[4..].iter().all(u8::is_ascii_alphanumeric)
+        && t.split(' ').filter(|g| !g.is_empty()).all(|g| g.len() <= 4);
+    ok.then_some(c)
+}
+
 fn risk_str(r: Risk) -> &'static str {
     match r {
         Risk::Free => "free",
@@ -4309,6 +4572,70 @@ fn split_wide(boxes: Vec<SamBox>) -> (Vec<SamBox>, Vec<(SamBox, SamBox)>) {
         }
     }
     (out, halves)
+}
+
+/// The description (outside its quoted label) or the SAM query says the target is small: an ×, a close button,
+/// an icon, something at the right end of a bar.
+fn wants_small(description: &str, sam_query: &str) -> bool {
+    let label = quoted_label(description).unwrap_or_default();
+    if matches!(label.trim(), "×" | "✕" | "x" | "X") {
+        return true;
+    }
+    let free = if label.is_empty() { description.to_string() } else { description.replacen(&label, " ", 1) };
+    let text = format!("{free} {sam_query}").to_lowercase();
+    let phrases =
+        ["small", "klein", "×", "✕", "close", "schließ", "icon", "symbol", "right end", "rechten rand", "rechten ende"];
+    phrases.iter().any(|w| text.contains(w)) || text.split(|c: char| !c.is_alphanumeric()).any(|t| t == "x")
+}
+
+/// Boxes wider than SMALL_MAX_RATIO times their height are dropped, when a narrower box is left.
+fn drop_wide(boxes: Vec<SamBox>) -> Vec<SamBox> {
+    let narrow = |b: &SamBox| b.x2 - b.x1 <= SMALL_MAX_RATIO * (b.y2 - b.y1);
+    if boxes.iter().any(narrow) { boxes.into_iter().filter(narrow).collect() } else { boxes }
+}
+
+/// The target is a radio button or a checkbox (also a quoted „Yes“ / „No“), not an entry of a list or menu.
+fn is_toggle_target(description: &str, sam_query: &str) -> bool {
+    let label = quoted_label(description).unwrap_or_default();
+    // The words around the label: "select the radio button „Yes“" is still a radio, "the list of terms" in a
+    // checkbox label is still a checkbox.
+    let free = if label.is_empty() { description.to_string() } else { description.replacen(&label, " ", 1) };
+    let text = format!("{free} {sam_query}").to_lowercase();
+    let picker = ["dropdown", "drop-down", "menu", "menü", "list item", "list entry", "listbox", "list box", "combo"];
+    if picker.iter().any(|w| text.contains(w)) {
+        return false;
+    }
+    let control = ["radio", "checkbox", "check box", "kästchen", "häkchen"].iter().any(|w| text.contains(w));
+    // A plain „Yes“ / „No“ is a radio unless the text says it is a button (a dialog's Yes).
+    let yes_no = matches!(label.trim().to_lowercase().as_str(), "yes" | "no" | "ja" | "nein")
+        && !(text.contains("button") || text.contains("knopf"));
+    control || yes_no || text.contains("option")
+}
+
+/// Radio / checkbox: the roughly square box (the circle or the square) left of the label `label` in its row, the
+/// nearest one, and smaller than the label (a short label like "Yes" is almost square itself; the circle of the
+/// option before it is no smaller than this one's). `point`: `label` is only a stand-in around a bare point, so
+/// any size counts. None when no such box is there (the chosen box is the control already).
+fn snap_toggle(boxes: &[SamBox], label: SamBox, point: bool) -> Option<SamBox> {
+    let img_h = label.img_h.max(1);
+    let scale = |v: u32| (u64::from(v) * u64::from(img_h) / 1000) as u32;
+    let (max_h, reach) = (scale(TOGGLE_MAX_H).max(8), scale(TOGGLE_REACH));
+    let square = |b: &SamBox| {
+        let (w, h) = (b.x2 - b.x1, b.y2 - b.y1);
+        let ratio = f64::from(w) / f64::from(h.max(1));
+        h <= max_h && (TOGGLE_ASPECT.0..=TOGGLE_ASPECT.1).contains(&ratio)
+    };
+    let (cx, cy) = label.center();
+    let (top, bottom) = (label.y1.min(cy.saturating_sub(max_h / 2)), label.y2.max(cy + max_h / 2));
+    boxes
+        .iter()
+        .filter(|b| square(b) && **b != label && (point || b.area() * 5 <= label.area() * 4))
+        .filter(|b| {
+            let (bx, by) = b.center();
+            (top..=bottom).contains(&by) && b.x2 <= cx && bx + reach >= label.x1
+        })
+        .max_by_key(|b| (b.x2, std::cmp::Reverse(b.area())))
+        .copied()
 }
 
 /// A sam_query for a text field: a wide box is the field itself, never split.
@@ -4833,6 +5160,18 @@ fn merge_outline(old: &mut [OutlineItem], fresh: Vec<OutlineItem>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_iban_in_groups_is_typed_without_spaces() {
+        use super::compact_iban;
+        assert_eq!(compact_iban("DE02 1203 0000 0000 2020 51").as_deref(), Some("DE02120300000000202051"));
+        assert_eq!(compact_iban(" de02 1203 0000 0000 2020 51 ").as_deref(), Some("DE02120300000000202051"));
+        assert_eq!(compact_iban("DE02120300000000202051"), None, "already without spaces");
+        assert_eq!(compact_iban("Erika Beispiel"), None);
+        assert_eq!(compact_iban("BX 2041"), None);
+        assert_eq!(compact_iban("Musterstraße 12 40670 Meerbusch"), None);
+        assert_eq!(compact_iban("DE02 12030000 0000 2020 51"), None, "not in groups of four");
+    }
+
     /// The guard on the real demo pages (fixtures/demo-*/index.html), read like `guard_page` reads a local page:
     /// the two fake pages warn (the alarm page even cold), the insurer, its sister site and the university stay
     /// silent, with memory (the insurer's real site and a university playbook) and cold.
@@ -4967,6 +5306,87 @@ mod tests {
         assert_eq!(boxes.len(), 2);
         assert!(halves.is_empty());
         assert!(is_field_query("text input field") && is_field_query("search box") && !is_field_query("button"));
+    }
+
+    fn sb16(x1: u32, y1: u32, x2: u32, y2: u32) -> SamBox {
+        SamBox { x1, y1, x2, y2, img_w: 1600, img_h: 1000 }
+    }
+
+    #[test]
+    fn a_small_target_never_gets_the_wide_bar() {
+        // demo-busy close_x (run 2): the whole yellow notice bar (centre (843, 130)) and the × at its right end.
+        let bar = sb16(300, 110, 1386, 150);
+        let x = sb16(1356, 118, 1380, 142);
+        let link = sb16(500, 400, 600, 424);
+        for (desc, query) in [
+            ("the small × at the right end of the yellow notice", "close button"),
+            ("the close button „×“ of the notice", "button"),
+            ("das X am rechten Rand des gelben Hinweises", "icon"),
+            ("the „Close“ icon of the banner", "button"),
+        ] {
+            assert!(wants_small(desc, query), "{desc}");
+        }
+        assert!(!wants_small("the link „contact page“", "link"));
+        assert!(!wants_small("the button „Close account“", "button"), "the quoted label alone does not count");
+        assert_eq!(drop_wide(vec![bar, x, link]), vec![x, link]);
+        // Only wide boxes: nothing narrower to take, they stay.
+        assert_eq!(drop_wide(vec![bar]), vec![bar]);
+        // A box exactly 5 times as wide as high stays.
+        assert_eq!(drop_wide(vec![sb16(0, 0, 100, 20), x]), vec![sb16(0, 0, 100, 20), x]);
+    }
+
+    #[test]
+    fn calls_that_step_a_value_are_never_an_unchanged_repeat() {
+        let key = |combo: &str| Tool::Key { combo: combo.into(), is_commit: false, commit_what: None, commit_to: None };
+        let click = |desc: &str, q: &str| Tool::Click {
+            sam_query: q.into(),
+            description: desc.into(),
+            is_commit: false,
+            commit_what: None,
+            commit_to: None,
+            element: None,
+        };
+        assert!(steps_by_itself(&key("backspace")) && steps_by_itself(&key("Delete")));
+        assert!(!steps_by_itself(&key("enter")) && !steps_by_itself(&key("ctrl+s")));
+        assert!(steps_by_itself(&click("the „›“ arrow of the calendar", "next month arrow")));
+        assert!(steps_by_itself(&click("the „+“ of the quantity field", "plus button")));
+        assert!(steps_by_itself(&click("the arrow to the next month", "arrow")));
+        assert!(!steps_by_itself(&click("the button „Next“", "button")));
+        assert!(!steps_by_itself(&click("the link „contact page“", "link")));
+    }
+
+    #[test]
+    fn a_radio_snaps_to_its_circle_left_of_the_label() {
+        // fee_yes_radio (run 2): the miss at (609, 422) was the label "Yes"; the circle sits at 582.
+        let circle_yes = sb16(572, 412, 592, 432);
+        let label_yes = sb16(598, 410, 630, 434);
+        let circle_no = sb16(662, 412, 682, 432);
+        let label_no = sb16(688, 410, 716, 434);
+        let row = sb16(560, 404, 730, 440);
+        let other_row_circle = sb16(572, 482, 592, 502);
+        let wide_button = sb16(560, 600, 760, 640);
+        let boxes = [label_yes, circle_yes, label_no, circle_no, row, other_row_circle, wide_button];
+        assert!(is_toggle_target("the radio button „Yes“ next to Do you pay the fee?", "radio button"));
+        assert!(is_toggle_target("„No“ under the question", "circle"));
+        assert!(is_toggle_target("the checkbox for the terms", "checkbox"));
+        assert!(is_toggle_target("select the radio button „Yes“", "radio"), "select is a verb here");
+        assert!(is_toggle_target("the checkbox „I accept the list of terms“", "checkbox"), "list in the label");
+        assert!(!is_toggle_target("the option „Germany“ in the country dropdown", "list item"));
+        assert!(!is_toggle_target("the button „Send“", "button"));
+        assert!(!is_toggle_target("the button „Yes“ in the dialog", "button"), "a dialog's Yes is a button");
+        assert!(!is_toggle_target("the entry „Yes“ in the drop-down list", "list item"));
+        // The label text: the circle left of it, never the label centre.
+        assert_eq!(snap_toggle(&boxes, label_yes, false), Some(circle_yes));
+        assert_eq!(snap_toggle(&boxes, label_no, false), Some(circle_no), "the nearest circle, not the Yes one");
+        // A bare point on the label (a 1 px wide stand-in) snaps the same way.
+        let point = SamBox { x1: 609, y1: 402, x2: 610, y2: 442, img_w: 1600, img_h: 1000 };
+        assert_eq!(snap_toggle(&boxes, point, true), Some(circle_yes));
+        // The whole row: its left circle.
+        assert_eq!(snap_toggle(&[circle_yes, row], row, false), Some(circle_yes));
+        // Already the circle (also the No circle with the Yes label left of it), or nothing square in the row.
+        assert_eq!(snap_toggle(&boxes, circle_yes, false), None);
+        assert_eq!(snap_toggle(&boxes, circle_no, false), None);
+        assert_eq!(snap_toggle(&[label_yes, wide_button, other_row_circle], label_yes, false), None);
     }
 
     #[test]

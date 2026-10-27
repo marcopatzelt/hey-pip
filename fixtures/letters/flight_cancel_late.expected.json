@@ -1,0 +1,27 @@
+{
+  "doc_type": "brief",
+  "date": "2026-10-10",
+  "reference": "BX5L7W",
+  "sender_contains": "Beispiel Air",
+  "recipient_contains": "Erika Beispiel",
+  "au": null,
+  "flight": {
+    "airline": "Beispiel Air",
+    "flight_no": "BX 2305",
+    "date": "2026-10-14",
+    "from": "CGN",
+    "to": "LIS",
+    "cancelled": true,
+    "notice_days": 4,
+    "booking_ref": "BX5L7W"
+  },
+  "deadlines_due": [],
+  "rule_deadlines": [
+    {
+      "rule_id": "eu261_claim",
+      "due": "2029-12-31"
+    }
+  ],
+  "tip": "eu261_delay",
+  "note": "Cancelled 4 days before departure, no other flight offered: EU 261 compensation may be owed; claim limit 31.12.2029."
+}

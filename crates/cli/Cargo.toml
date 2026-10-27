@@ -27,3 +27,4 @@ chrono.workspace = true
 dotenvy.workspace = true
 hound.workspace = true
 futures-util.workspace = true
+regex.workspace = true
