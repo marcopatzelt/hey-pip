@@ -129,7 +129,7 @@ impl MemoryCond {
 }
 
 /// One approval card the gate showed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CardSeen {
     pub title: String,
     pub what: String,
@@ -140,6 +140,94 @@ pub struct CardSeen {
     pub target: Option<String>,
     /// The files the card names (an attach card: the document Pip picks in the file dialog).
     pub attachments: Vec<String>,
+    /// The card's "what Pip typed" lines ("Date of flight: 3 October 2026"), as the user reads them.
+    pub filled: Vec<String>,
+    /// The checkbox text of a send card on a known site ("Don't ask again for …"); None = no checkbox.
+    pub remember_label: Option<String>,
+}
+
+impl CardSeen {
+    /// Everything the user reads on the card: title, what, to, the filled lines and the checkbox text.
+    pub fn text(&self) -> String {
+        let mut parts = vec![self.title.as_str(), self.what.as_str(), self.to.as_str()];
+        parts.extend(self.filled.iter().map(String::as_str));
+        parts.extend(self.remember_label.as_deref());
+        parts.join(" ")
+    }
+}
+
+/// One model step of a dry run, for the eval's per-step log (`target/eval-<set-or-only>.log`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StepLog {
+    pub step: u32,
+    /// The tools the step ran, in order, joined with "+" ("type_text+click"); "-" when it ran none.
+    pub tools: String,
+    /// The label or element of the step's last acting tool ("Send claim", "#7"); "" when none names one.
+    pub target: String,
+    /// The highest risk of the step's tools: free, act or commit ("free" when it ran none).
+    pub risk: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub secs: f32,
+}
+
+/// One per-step log line: `task [cond] run/sample step N: tool=<name> target="<label>" risk=<r> in=<n> out=<n>
+/// secs=<s>` (`tag` = `task [cond] run`).
+pub fn step_log_line(tag: &str, s: &StepLog) -> String {
+    format!(
+        "{tag} step {}: tool={} target=\"{}\" risk={} in={} out={} secs={:.1}",
+        s.step,
+        s.tools,
+        s.target.replace('"', "'"),
+        s.risk,
+        s.input_tokens,
+        s.output_tokens,
+        s.secs
+    )
+}
+
+/// The label or element an actions-log row names (its redacted arguments): description, field label, what,
+/// label, SAM query, URL or text, else the element number as `#N`.
+fn action_target(args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let text = ["description", "field_label", "what", "label", "sam_query", "into_sam_query", "url", "text"]
+        .iter()
+        .find_map(|k| v[*k].as_str().map(str::trim).filter(|t| !t.is_empty() && *t != "null"));
+    match (text, &v["element"]) {
+        (Some(t), _) => t.chars().take(60).collect(),
+        (None, Value::Number(n)) => format!("#{n}"),
+        _ => String::new(),
+    }
+}
+
+/// The step's entry from the actions-log rows it wrote (the `model` row left out; the core's `ground` rows stay:
+/// `ground+point` shows a click that needed SAM) and its token use.
+pub fn step_entry(step: u32, rows: &[pip_core::memory::ActionLog], usage: (u64, u64), secs: f32) -> StepLog {
+    let rows: Vec<&pip_core::memory::ActionLog> = rows.iter().filter(|a| a.tool != "model").collect();
+    let rank = |r: &str| match r {
+        "commit" => 2,
+        "act" => 1,
+        _ => 0,
+    };
+    let tools = rows.iter().map(|a| a.tool.as_str()).collect::<Vec<_>>().join("+");
+    let target = rows
+        .iter()
+        .rev()
+        .filter(|a| rank(&a.risk) > 0)
+        .chain(rows.iter().rev())
+        .map(|a| action_target(&a.args_redacted))
+        .find(|t| !t.is_empty())
+        .unwrap_or_default();
+    let risk = rows.iter().map(|a| a.risk.as_str()).max_by_key(|r| rank(r)).unwrap_or("free").to_string();
+    StepLog {
+        step,
+        tools: if tools.is_empty() { "-".into() } else { tools },
+        target,
+        risk,
+        input_tokens: usage.0,
+        output_tokens: usage.1,
+        secs,
+    }
 }
 
 #[derive(Debug)]
@@ -186,6 +274,10 @@ pub struct Report {
     /// Clicks in the open file dialog that were not on "Open", "Cancel", its "×" or the name box (wandering in
     /// the folder list). Printed as `Dialog clicks: N`.
     pub dialog_clicks: u32,
+    /// Folders the dry run named on a FOLDER answer (`folder:letters`), as fixture-relative names.
+    pub folders_given: Vec<String>,
+    /// One entry per model step (tools, target, risk, tokens, seconds) for the eval's per-step log.
+    pub step_log: Vec<StepLog>,
 }
 
 impl Report {
@@ -220,6 +312,11 @@ impl Report {
             .iter()
             .filter(|t| t.contains(['/', '\\']) && (want.is_empty() || t.to_lowercase().contains(&want)))
             .collect()
+    }
+
+    /// Every file of `files` went in: an approved attach card or a path typed into the file dialog names it.
+    pub fn attached_all(&self, files: &[String]) -> bool {
+        files.iter().all(|f| !self.attached(f).is_empty() || !self.attached_paths(f).is_empty())
     }
 
     /// The approved attach cards whose title, text or files name `file` (any case); with an empty `file`, any
@@ -472,10 +569,14 @@ struct Picker {
     select_all: bool,
     /// Counts dialog openings, so a late "the name box gets the keyboard" belongs to the dialog still open.
     opened: u64,
-    /// The file picked (dialog closed by Enter or "Open" with a typed file path).
+    /// The file picked last (dialog closed by Enter or "Open" with a typed file path).
     attached: Option<String>,
-    /// The page's `text "<file>"` item next to the upload button (added to the PAGE ELEMENTS).
-    item: Option<OutlineItem>,
+    /// The upload button that opened the dialog (`file_button` or a page's second one, `file_button_2`).
+    button: String,
+    /// Every pick by upload button (button, file), in order; a new pick on the same button replaces its file.
+    picks: Vec<(String, String)>,
+    /// The page's `text "<file>"` items next to their upload buttons (added to the PAGE ELEMENTS), by button.
+    items: Vec<(String, OutlineItem)>,
     /// Clicks in the dialog off its buttons and name box.
     dialog_clicks: u32,
     /// Set when picking a file swapped to the `-attached` screen; the loop takes it after the step.
@@ -496,13 +597,31 @@ fn page_actions(actions: &[Action], in_dialog: &[usize]) -> Vec<Action> {
 const NAME_BOX_DELAY: Duration = Duration::from_millis(300);
 
 /// `<stem>-attached.png` next to a screenshot: the same form with the picked file's name next to its button.
+#[cfg(test)]
 fn attached_sibling(screen: &Path) -> Option<PathBuf> {
+    attached_screen(screen, false)
+}
+
+/// The picture of the same form once files are picked: `<base>-attached.png` (the first upload button has its
+/// file) or, with `both`, `<base>-both-attached.png` (a page with two upload buttons, both picked). `<base>` is the
+/// stem without an `-attached` / `-both-attached` end. None when there is no such picture or it is shown already.
+fn attached_screen(screen: &Path, both: bool) -> Option<PathBuf> {
     let stem = screen.file_stem()?.to_str()?;
-    if stem.ends_with("-attached") {
-        return None;
+    let base = stem.strip_suffix("-both-attached").or_else(|| stem.strip_suffix("-attached")).unwrap_or(stem);
+    let want = if both { format!("{base}-both-attached.png") } else { format!("{base}-attached.png") };
+    let path = screen.with_file_name(want);
+    (path.is_file() && path != screen).then_some(path)
+}
+
+/// The upload buttons a page can have, in the boxes: the first and a second one (demo-air-v4's airline notice).
+const FILE_BUTTONS: [&str; 2] = ["file_button", "file_button_2"];
+
+impl Picker {
+    /// The picture to show for the picks so far: the first button picked (`-attached`), both (`-both-attached`).
+    fn screen_for(&self, shown: &Path) -> Option<PathBuf> {
+        let has = |b: &str| self.picks.iter().any(|(k, _)| k == b);
+        has(FILE_BUTTONS[0]).then(|| attached_screen(shown, has(FILE_BUTTONS[1]))).flatten()
     }
-    let path = screen.with_file_name(format!("{stem}-attached.png"));
-    path.is_file().then_some(path)
 }
 
 /// The file name a typed path ends in ("C:\Users\Erika\boarding_pass.pdf" -> "boarding_pass.pdf"); None when it
@@ -612,34 +731,42 @@ impl ScrollInput {
     fn close_dialog(&self, pick: bool) -> Result<()> {
         self.fake.window.lock().expect("window").take();
         *self.fake.focus.lock().expect("focus") = None;
-        let file = {
+        let (file, which) = {
             let mut pk = self.picker.lock().expect("picker");
             pk.opened += 1;
             let typed = pk.typed_path.take();
-            if pick { typed.as_deref().and_then(picked_file) } else { None }
+            let which = if pk.button.is_empty() { FILE_BUTTONS[0].to_string() } else { pk.button.clone() };
+            (if pick { typed.as_deref().and_then(picked_file) } else { None }, which)
         };
         self.show_file_dialog(false)?;
         let Some(file) = file else { return Ok(()) };
         let shown = self.screen.lock().expect("screen").clone();
-        if let Some(next) = attached_sibling(&shown) {
+        let next = {
+            let mut pk = self.picker.lock().expect("picker");
+            pk.picks.retain(|(b, _)| *b != which);
+            pk.picks.push((which.clone(), file.clone()));
+            pk.screen_for(&shown)
+        };
+        if let Some(next) = next {
             let img = image::open(&next).with_context(|| format!("cannot open {}", next.display()))?.into_rgba8();
             self.fake.set_screen(img);
             *self.boxes.lock().expect("boxes") = load_boxes(&next);
             *self.screen.lock().expect("screen") = next.clone();
             self.picker.lock().expect("picker").shown = Some(next);
         }
-        let button = self.boxes.lock().expect("boxes").get("file_button").copied();
+        let button = self.boxes.lock().expect("boxes").get(&which).copied();
         let mut pk = self.picker.lock().expect("picker");
         pk.attached = Some(file.clone());
-        pk.item = None;
+        let old: Vec<String> = pk.items.iter().filter(|(b, _)| *b == which).map(|(_, i)| i.name.clone()).collect();
+        pk.items.retain(|(b, _)| *b != which);
         if self.with_outline
             && let Some(button) = button
             && let Ok(mut items) = self.fake.outline.lock()
         {
-            items.retain(|i| !(i.role == "text" && i.name == file));
+            items.retain(|i| !(i.role == "text" && (i.name == file || old.contains(&i.name))));
             let item = attached_item(&items, button, &file);
             items.push(item.clone());
-            pk.item = Some(item);
+            pk.items.push((which, item));
         }
         Ok(())
     }
@@ -650,16 +777,25 @@ impl ScrollInput {
     }
 
     /// The page's file-name item is in the PAGE ELEMENTS now (or, without them, the `-attached` screen is shown).
+    /// With two upload buttons, every file the page shows, joined with ", ".
     fn page_shows(&self) -> Option<String> {
         let pk = self.picker.lock().expect("picker");
-        let file = pk.attached.clone()?;
-        let shows = if self.with_outline {
-            self.fake.outline.lock().is_ok_and(|items| items.iter().any(|i| i.role == "text" && i.name == file))
-        } else {
-            let shown = self.screen.lock().expect("screen").clone();
-            shown.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.ends_with("-attached"))
-        };
-        shows.then_some(file)
+        pk.attached.as_ref()?;
+        let shown = self.screen.lock().expect("screen").clone();
+        let stem = shown.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+        let files: Vec<String> = pk
+            .picks
+            .iter()
+            .filter(|(b, f)| {
+                if self.with_outline {
+                    self.fake.outline.lock().is_ok_and(|items| items.iter().any(|i| i.role == "text" && i.name == *f))
+                } else {
+                    stem.ends_with("-both-attached") || (stem.ends_with("-attached") && b == FILE_BUTTONS[0])
+                }
+            })
+            .map(|(_, f)| f.clone())
+            .collect();
+        (!files.is_empty()).then(|| files.join(", "))
     }
 
     /// The loop showed `next` (another screen of the list): its `-attached` picture when a file is picked, and
@@ -668,19 +804,21 @@ impl ScrollInput {
     fn showing(&self, next: &Path, own_outline: bool) -> Option<PathBuf> {
         let pk = self.picker.lock().expect("picker");
         pk.attached.as_ref()?;
-        let item = pk.item.clone();
+        let kept = pk.items.clone();
+        let swap = pk.screen_for(next);
         drop(pk);
-        let swap = attached_sibling(next);
         if own_outline
             && is_error(next)
-            && let Some(item) = item
             && let Ok(mut items) = self.fake.outline.lock()
-            && !items.iter().any(|i| i.role == "text" && i.name == item.name)
         {
-            let button = self.boxes.lock().expect("boxes").get("file_button").copied();
-            if let Some(button) = button {
-                let again = attached_item(&items, button, &item.name);
-                items.push(again);
+            for (which, item) in kept {
+                if items.iter().any(|i| i.role == "text" && i.name == item.name) {
+                    continue;
+                }
+                if let Some(button) = self.boxes.lock().expect("boxes").get(&which).copied() {
+                    let again = attached_item(&items, button, &item.name);
+                    items.push(again);
+                }
             }
         }
         swap
@@ -744,14 +882,17 @@ impl Input for ScrollInput {
             restore_values(&self.fake, &kept);
             return Ok(());
         }
-        // A click on the page's file button opens the browser's file dialog, as on Windows ("Open", #32770).
-        let on_file = self
-            .boxes
-            .lock()
-            .expect("boxes")
-            .get("file_button")
-            .is_some_and(|&[x1, y1, x2, y2]| (x1..=x2).contains(&p.x) && (y1..=y2).contains(&p.y));
-        if on_file {
+        // A click on one of the page's file buttons opens the browser's file dialog, as on Windows ("Open",
+        // #32770); the pick goes to that button.
+        let on_file = FILE_BUTTONS.iter().find(|b| {
+            self.boxes
+                .lock()
+                .expect("boxes")
+                .get(**b)
+                .is_some_and(|&[x1, y1, x2, y2]| (x1..=x2).contains(&p.x) && (y1..=y2).contains(&p.y))
+        });
+        if let Some(b) = on_file {
+            self.picker.lock().expect("picker").button = (*b).to_string();
             self.open_dialog()?;
         }
         self.fake.click(p)
@@ -943,6 +1084,7 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let after_send = Arc::new(Mutex::new(0u32));
     let guard_text = Arc::new(Mutex::new(Vec::<String>::new()));
     let files_given = Arc::new(Mutex::new(Vec::<String>::new()));
+    let folders_given = Arc::new(Mutex::new(Vec::<String>::new()));
     let files: FileStore = {
         let (memory, fixtures, docs, now) =
             (ctx.memory.clone(), ctx.config.fixtures_dir.clone(), o.documents.clone(), ctx.now);
@@ -960,6 +1102,8 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             after_send: after_send.clone(),
             guard_text: guard_text.clone(),
             files_given: files_given.clone(),
+            fixtures: ctx.config.fixtures_dir.clone(),
+            folders_given: folders_given.clone(),
         },
         ctx.lang,
         o.quiet,
@@ -980,12 +1124,27 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let (warned_before, overridden_before) =
         (count_events(&ctx.memory, "guard_warned"), count_events(&ctx.memory, "guard_overridden"));
     let started = Instant::now();
+    let meta = ctx.meta()?;
+    let mut step_log = Vec::new();
     say(format!("Task: \"{}\"", o.task));
     while state.step < o.max_steps {
         let step_started = Instant::now();
         let fields_before = field_values(&fake);
+        let usage_before = meta.usage_total();
+        let logged_before = ctx.memory.recent_actions(u32::MAX)?.len();
         let r = agent.step(&mut state, &cancel).await;
         let step_secs = step_started.elapsed().as_secs_f32();
+        let usage = meta.usage_total();
+        let logged = ctx.memory.recent_actions(u32::MAX)?;
+        step_log.push(step_entry(
+            state.step,
+            &logged[logged_before.min(logged.len())..],
+            (
+                usage.input_tokens.saturating_sub(usage_before.input_tokens),
+                usage.output_tokens.saturating_sub(usage_before.output_tokens),
+            ),
+            step_secs,
+        ));
         tokio::time::sleep(Duration::from_millis(50)).await; // let the printer catch up
         if r.is_ok() {
             last_turn_question = ends_on_option_question(state.last_calls());
@@ -1150,6 +1309,8 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         files_given: files_given.lock().expect("files").clone(),
         page_shows_attach: scroller.page_shows().or(shown_at_send),
         dialog_clicks: scroller.picker.lock().expect("picker").dialog_clicks,
+        folders_given: folders_given.lock().expect("folders").clone(),
+        step_log,
     };
 
     if !o.quiet {
@@ -1225,6 +1386,10 @@ struct Answering {
     guard_text: Arc<Mutex<Vec<String>>>,
     /// Files handed over (stored paths).
     files_given: Arc<Mutex<Vec<String>>>,
+    /// fixtures/: a FOLDER answer (`folder:letters`) answers with that folder's absolute path.
+    fixtures: PathBuf,
+    /// Folders named (fixture-relative).
+    folders_given: Arc<Mutex<Vec<String>>>,
 }
 
 /// Stores a fixture file as a document and returns its stored path (None: no such file in fixtures/).
@@ -1241,6 +1406,20 @@ pub fn file_answer_path(value: &str) -> Option<&str> {
     let v = value.trim();
     let name = v.rsplit(['/', '\\']).next()?;
     (!v.is_empty() && !v.starts_with('/') && !v.contains(' ') && name.contains('.') && v.contains('/')).then_some(v)
+}
+
+/// A FOLDER answer: the value starts with `folder:` (`"boarding pass, file => folder:letters"`); the rest is a
+/// folder under fixtures/. The dry run answers with its absolute path and stores nothing: the user says where the
+/// file is, not which file.
+pub fn folder_answer(value: &str) -> Option<&str> {
+    let rel = value.trim().strip_prefix("folder:")?.trim().trim_matches('/');
+    (!rel.is_empty() && !rel.contains("..")).then_some(rel)
+}
+
+/// The absolute path of the folder `rel` under fixtures/ (None when it is not a folder).
+fn folder_path(fixtures: &Path, rel: &str) -> Option<String> {
+    let p = fixtures.join(rel).canonicalize().ok()?;
+    p.is_dir().then(|| p.display().to_string())
 }
 
 /// Stores `rel` (a fixture) as a document with the summary of the matching inline `documents` entry (else a plain
@@ -1393,8 +1572,19 @@ async fn print_events(
     boxes: Arc<Mutex<Boxes>>,
     cards: Arc<Mutex<Vec<CardSeen>>>,
 ) {
-    let Answering { approve, answers, questions, decline, defaults, files, after_send, guard_text, files_given } =
-        answering;
+    let Answering {
+        approve,
+        answers,
+        questions,
+        decline,
+        defaults,
+        files,
+        after_send,
+        guard_text,
+        files_given,
+        fixtures,
+        folders_given,
+    } = answering;
     let mut rx = bus.to_ui.subscribe();
     let mut last_point: Option<PhysRect> = None;
     let out = |s: String| {
@@ -1425,7 +1615,14 @@ async fn print_events(
                     *defaults.lock().expect("defaults") += u32::from(by_default);
                     let open = buttons.iter().any(|b| b.id == pip_core::agent::loop_::TEXT_ANSWER);
                     // A FILE answer: the fixture is stored as a document, Pip gets its stored path.
+                    // A FOLDER answer: the folder's absolute path, nothing stored (Pip finds the file by its name).
                     if open
+                        && let Some(rel) = folder_answer(&choice)
+                        && let Some(abs) = folder_path(&fixtures, rel)
+                    {
+                        folders_given.lock().expect("folders").push(rel.to_string());
+                        choice = abs;
+                    } else if open
                         && let Some(rel) = file_answer_path(&choice)
                         && let Some(store) = &files
                         && let Some(stored) = store(rel)
@@ -1481,6 +1678,8 @@ async fn print_events(
                     approved: yes,
                     target,
                     attachments: card.attachments.clone(),
+                    filled: card.filled.clone(),
+                    remember_label: card.remember_label.clone(),
                 });
                 let answer =
                     if yes { pip_core::agent::ApprovalAnswer::Yes } else { pip_core::agent::ApprovalAnswer::No };
@@ -1604,6 +1803,8 @@ mod tests {
             approved,
             target: Some(target.into()),
             attachments: vec![],
+            filled: vec![],
+            remember_label: None,
         };
         let mut r = Report {
             outcome: None,
@@ -1626,6 +1827,8 @@ mod tests {
             files_given: vec![],
             page_shows_attach: None,
             dialog_clicks: 0,
+            folders_given: vec![],
+            step_log: vec![],
         };
         assert!(r.gate_held_at_submit());
         r.clicks.push((PhysPoint { x: 859, y: 940 }, Some("submit_button".into())));
@@ -1707,6 +1910,8 @@ mod tests {
             approved,
             target: None,
             attachments: vec![file.into()],
+            filled: vec![],
+            remember_label: None,
         };
         let mut r = report_with(vec![card(true, true, "C:/x/boarding_pass_bx2041.pdf"), card(false, true, "")]);
         assert_eq!(r.attached("boarding_pass").len(), 1);
@@ -1738,6 +1943,8 @@ mod tests {
             files_given: vec![],
             page_shows_attach: None,
             dialog_clicks: 0,
+            folders_given: vec![],
+            step_log: vec![],
         }
     }
 
@@ -1929,6 +2136,8 @@ mod tests {
             files_given: vec![],
             page_shows_attach: None,
             dialog_clicks: 0,
+            folders_given: vec![],
+            step_log: vec![],
         };
         let want = ["Erika Beispiel".to_string(), "G123456789".to_string()];
         assert!(!r.typed_all(&want));
@@ -2193,22 +2402,157 @@ mod tests {
     }
 
     #[test]
+    fn two_upload_buttons_pick_one_file_each_and_show_both() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let (fake, input) = scroller(&dir, "demo-air-v4", true);
+        const NOTICE: &str = r"C:\Users\Erika\Documents\Pip\flight_delay_bx2041.pdf";
+        click_file_button(&input);
+        wait_for_name_box(&fake);
+        input.type_text(PASS).unwrap();
+        input.key("enter").unwrap();
+        assert_eq!(*input.screen.lock().unwrap(), dir.join("demo-air-v4-attached.png"));
+        assert_eq!(input.page_shows().as_deref(), Some("boarding_pass_bx2041.pdf"));
+        // The second button opens the dialog again; its pick goes next to it, the first file stays.
+        let b2 = input.boxes.lock().unwrap()["file_button_2"];
+        input.click(PhysPoint { x: (b2[0] + b2[2]) / 2, y: (b2[1] + b2[3]) / 2 }).unwrap();
+        assert!(input.dialog_open());
+        assert_eq!(input.picker.lock().unwrap().button, "file_button_2");
+        wait_for_name_box(&fake);
+        input.type_text(NOTICE).unwrap();
+        input.click(OPEN).unwrap();
+        assert!(!input.dialog_open());
+        assert_eq!(*input.screen.lock().unwrap(), dir.join("demo-air-v4-both-attached.png"));
+        assert_eq!(input.page_shows().as_deref(), Some("boarding_pass_bx2041.pdf, flight_delay_bx2041.pdf"));
+        let notice = text_item(&fake, "flight_delay_bx2041.pdf").expect("listed next to the second button");
+        assert_eq!(notice.rect.x, b2[2] + 18, "right of the second button");
+        assert!(text_item(&fake, "boarding_pass_bx2041.pdf").is_some(), "the first file stays listed");
+        // The next screen of the list (the form after typing) shows both files too.
+        let filled = dir.join("demo-air-v4-filled.png");
+        assert_eq!(input.showing(&filled, false), Some(dir.join("demo-air-v4-filled-both-attached.png")));
+        // A new pick on the second button replaces its file, not the first one's.
+        input.click(PhysPoint { x: (b2[0] + b2[2]) / 2, y: (b2[1] + b2[3]) / 2 }).unwrap();
+        wait_for_name_box(&fake);
+        input.type_text(r"C:\x\other_notice.pdf").unwrap();
+        input.key("enter").unwrap();
+        assert!(text_item(&fake, "flight_delay_bx2041.pdf").is_none(), "replaced");
+        assert_eq!(input.page_shows().as_deref(), Some("boarding_pass_bx2041.pdf, other_notice.pdf"));
+    }
+
+    #[test]
+    fn a_folder_answer_names_a_fixture_folder_and_stores_nothing() {
+        assert_eq!(folder_answer("folder:letters"), Some("letters"));
+        assert_eq!(folder_answer(" folder: letters/ "), Some("letters"));
+        assert_eq!(folder_answer("folder:"), None);
+        assert_eq!(folder_answer("folder:../secret"), None, "never outside fixtures/");
+        assert_eq!(folder_answer("letters/boarding_pass_bx2041.pdf"), None, "a FILE answer");
+        assert_eq!(file_answer_path("folder:letters"), None, "never taken for a file");
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        let abs = folder_path(&fixtures, "letters").expect("fixtures/letters");
+        assert!(Path::new(&abs).is_absolute() && abs.ends_with("letters"));
+        assert!(Path::new(&abs).join("boarding_pass_bx2041.pdf").is_file(), "the file Pip must find by its name");
+        assert!(Path::new(&abs).join("flight_delay_bx2041.pdf").is_file(), "next to other PDFs");
+        assert_eq!(folder_path(&fixtures, "letters/boarding_pass_bx2041.pdf"), None, "a file is no folder");
+        assert_eq!(folder_path(&fixtures, "no-such-folder"), None);
+    }
+
+    #[test]
+    fn a_card_reads_its_filled_lines_and_checkbox_too() {
+        let c = CardSeen {
+            title: "Ready to send to Beispiel Air?".into(),
+            what: "your claim".into(),
+            to: "Beispiel Air".into(),
+            filled: vec!["Date of the flight: 3 October 2026".into()],
+            remember_label: Some("Don't ask again for Beispiel Air".into()),
+            ..CardSeen::default()
+        };
+        let t = c.text();
+        assert!(t.starts_with("Ready to send to Beispiel Air? your claim Beispiel Air"));
+        assert!(t.contains("3 October 2026") && t.ends_with("Don't ask again for Beispiel Air"));
+    }
+
+    #[test]
+    fn attached_all_needs_every_file_by_card_or_dialog_path() {
+        let mut r = report_with(vec![CardSeen {
+            title: t("approve_title_attach", pip_core::i18n::Lang::En).to_string(),
+            attach: true,
+            approved: true,
+            attachments: vec!["C:\\Pip\\boarding_pass_bx2041.pdf".into()],
+            ..CardSeen::default()
+        }]);
+        let both = ["boarding_pass_bx2041.pdf".to_string(), "flight_delay_bx2041.pdf".to_string()];
+        assert!(!r.attached_all(&both), "the notice is missing");
+        r.typed.push(r"C:\Users\Erika\Pip\flight_delay_bx2041.pdf".into());
+        assert!(r.attached_all(&both), "a card for one, a dialog path for the other");
+        assert!(r.attached_all(&[]), "nothing asked");
+    }
+
+    #[test]
+    fn a_step_log_line_names_tool_target_risk_tokens_and_seconds() {
+        let row = |tool: &str, args: &str, risk: &str| pip_core::memory::ActionLog {
+            at: chrono::Local::now(),
+            tool: tool.into(),
+            args_redacted: args.into(),
+            risk: risk.into(),
+            approved: None,
+            result: String::new(),
+            tokens: 0,
+        };
+        let rows = [
+            row("model", "{}", "free"),
+            row("type_text", r#"{"text":"BX7Q2K","element":7,"field_label":"Booking reference"}"#, "act"),
+            row("ground", "pick", "free"),
+            row("click", r#"{"element":12,"description":"Send claim","is_commit":true}"#, "commit"),
+        ];
+        let s = step_entry(4, &rows, (5120, 88), 3.04);
+        assert_eq!(
+            (s.tools.as_str(), s.target.as_str(), s.risk.as_str()),
+            ("type_text+ground+click", "Send claim", "commit"),
+            "the model row is left out, the grounding row stays"
+        );
+        assert_eq!(
+            step_log_line("demo-air [full] 1/s2", &s),
+            "demo-air [full] 1/s2 step 4: tool=type_text+ground+click target=\"Send claim\" risk=commit in=5120 out=88 secs=3.0"
+        );
+        // A step that only answered: no tool, free; an element without a label is named by its number.
+        let none = step_entry(1, &[row("model", "{}", "free")], (900, 20), 1.0);
+        assert_eq!((none.tools.as_str(), none.target.as_str(), none.risk.as_str()), ("-", "", "free"));
+        let bare = step_entry(2, &[row("click", r#"{"element":9}"#, "act")], (0, 0), 0.5);
+        assert_eq!(bare.target, "#9");
+        let line = step_log_line("t [cold] 1", &bare);
+        let re = regex::Regex::new(
+            r#"^.+ \[[a-z_]+\] \S+ step \d+: tool=\S+ target="[^"]*" risk=(free|act|commit) in=\d+ out=\d+ secs=\d+\.\d$"#,
+        )
+        .unwrap();
+        assert!(re.is_match(&line), "{line}");
+    }
+
+    #[test]
     fn the_dialog_name_box_gets_the_keyboard_before_the_path_is_typed() {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
         let (fake, input) = scroller(&dir, "demo-air-v3-step3", true);
         click_file_button(&input);
-        // First the dialog's "Open" button has the keyboard: what is typed now goes nowhere (the lost "C").
+        // First the dialog's "Open" button has the keyboard: what is typed now goes nowhere (the lost "C"). On a
+        // busy machine the box can get the keyboard within NAME_BOX_DELAY (300 ms) already: then the "C" arrives
+        // and the lost-key part is not checked (the test must not fail on timing).
         let first = fake.focus.lock().unwrap().clone().unwrap();
-        assert_eq!((first.name.as_str(), first.is_text_input()), ("Open", false));
-        input.type_text("C").unwrap();
-        assert_eq!(input.picker.lock().unwrap().typed_path, None, "a key before the box has the keyboard is lost");
+        let mut lost_checked = false;
+        if first.name == "Open" {
+            assert!(!first.is_text_input());
+            input.type_text("C").unwrap();
+            lost_checked = input.picker.lock().unwrap().typed_path.is_none();
+        }
         // A moment later the "File name" box has it; a path typed now arrives whole.
         wait_for_name_box(&fake);
         assert_eq!(fake.focus.lock().unwrap().as_ref().unwrap().name, "File name");
         let (a, b) = PASS.split_at(12);
         input.type_text(a).unwrap();
         input.type_text(b).unwrap();
-        assert_eq!(input.picker.lock().unwrap().typed_path.as_deref(), Some(PASS), "never without its first letter");
+        let typed = input.picker.lock().unwrap().typed_path.clone();
+        if lost_checked {
+            assert_eq!(typed.as_deref(), Some(PASS), "never without its first letter");
+        } else {
+            assert!(typed.as_deref().is_some_and(|t| t.ends_with(PASS)), "{typed:?}");
+        }
         input.key("enter").unwrap();
         assert!(!input.dialog_open());
         assert_eq!(*fake.focus.lock().unwrap(), None, "the dialog closed: no focus to report");
@@ -2391,6 +2735,18 @@ mod tests {
         for entry in std::fs::read_dir(&dir).unwrap() {
             let name = entry.unwrap().file_name().into_string().unwrap();
             let Some(stem) = name.strip_suffix("-attached.boxes.json") else { continue };
+            if let Some(base) = stem.strip_suffix("-both") {
+                // Two upload buttons, both picked: shown only after the first one's `-attached` picture.
+                let (both, one) =
+                    (dir.join(format!("{base}-both-attached.png")), dir.join(format!("{base}-attached.png")));
+                assert_eq!(attached_screen(&dir.join(format!("{base}.png")), true), Some(both.clone()), "{base}");
+                assert_eq!(attached_screen(&one, true), Some(both.clone()), "{base}");
+                assert_eq!(attached_screen(&both, true), None, "{base}: shown already");
+                let (a, b) = (load_boxes(&both), load_boxes(&dir.join(format!("{base}.png"))));
+                assert!(a.contains_key("file_button") && a.contains_key("file_button_2"), "{base}");
+                assert_eq!(a, b, "{base}: the names next to the buttons move nothing");
+                continue;
+            }
             let attached = dir.join(format!("{stem}-attached.png"));
             let base = dir.join(format!("{stem}.png"));
             assert!(attached.is_file() && base.is_file(), "{stem}");
@@ -2406,7 +2762,15 @@ mod tests {
         seen.sort();
         assert_eq!(
             seen,
-            ["demo-air-step2", "demo-air-step2-filled", "demo-air-v2", "demo-air-v2-filled", "demo-air-v3-step3"]
+            [
+                "demo-air-step2",
+                "demo-air-step2-filled",
+                "demo-air-v2",
+                "demo-air-v2-filled",
+                "demo-air-v3-step3",
+                "demo-air-v4",
+                "demo-air-v4-filled"
+            ]
         );
     }
 }

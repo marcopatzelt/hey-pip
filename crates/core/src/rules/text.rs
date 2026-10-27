@@ -96,6 +96,15 @@ pub fn fmt_date(d: NaiveDate, lang: Lang) -> String {
     }
 }
 
+/// "3. Oktober 2026" / "3 October 2026": a date as people write it, with the year (the approval card).
+pub fn fmt_date_long(d: NaiveDate, lang: Lang) -> String {
+    let m = month_name(d.month(), lang);
+    match lang {
+        Lang::De => format!("{}. {m} {}", d.day(), d.year()),
+        Lang::En => format!("{} {m} {}", d.day(), d.year()),
+    }
+}
+
 /// Like `fmt_date`, for the middle of a German sentence: the apposition gets its closing comma
 /// ("bis Montag, 2. November, eine neue").
 pub fn fmt_date_mid(d: NaiveDate, lang: Lang) -> String {
@@ -139,6 +148,13 @@ mod tests {
         assert_eq!(fmt_date(d(2026, 11, 2), Lang::De), "Montag, 2. November");
         assert_eq!(fmt_date(d(2026, 11, 2), Lang::En), "Monday, November 2");
         assert_eq!(fmt_date(d(2026, 3, 1), Lang::De), "Sonntag, 1. März");
+    }
+
+    #[test]
+    fn long_dates_have_the_year() {
+        assert_eq!(fmt_date_long(d(2026, 10, 3), Lang::En), "3 October 2026");
+        assert_eq!(fmt_date_long(d(2026, 10, 3), Lang::De), "3. Oktober 2026");
+        assert_eq!(fmt_date_long(d(2027, 1, 12), Lang::De), "12. Januar 2027");
     }
 
     #[test]

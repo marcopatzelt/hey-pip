@@ -12,13 +12,16 @@ questionnaire-v3 with its scrolled states, the lookalike and the fake warning) w
 -step2-filled, -error = an IBAN with spaces refused, -thanks), demo-air-v2 (-popup, the page, -filled, -error, -thanks)
 the lookalike demo-air-refund-check, demo-air-v3 (three steps: -step1-filled, -step2-popup = a cookie dialog first,
 -step2, -step2-filled, -step3, -step3-error = Send with the confirm box empty, -thanks) and the guard pages
-demo-parcel-fee (fake) and demo-shop-safe (safe checkout); plus the `<stem>-error.when.json` rule files (show the error screen only when
-the IBAN Pip typed has a space or is empty).
+demo-parcel-fee (fake) and demo-shop-safe (safe checkout), demo-air-v4 (one page, TWO upload buttons: -filled,
+-attached = the boarding pass picked, -both-attached = the airline's notice too, the same after typing as
+-filled-attached / -filled-both-attached, -error, -thanks); plus the `<stem>-error.when.json` rule files (show the
+error screen only when the IBAN Pip typed has a space or is empty).
 `busy` writes demo-busy (the click-target page: icon button, small "x", three similar buttons, a link in text) and
 demo-busy-2 (its light twin: "x" on a white bar, a 24 px icon on a light header, a grey link in text).
 `help` writes only the boxes of the insurer's help page (contact_link) and copies the contact form's screen, PAGE
 ELEMENTS and boxes as demo-insurer-help-contact (the page the link leads to).
-`safe` writes the pages where Pip should do nothing: demo-unrelated (index, instructions) and the insurer's help page.
+`safe` writes the pages where Pip should do nothing: demo-unrelated (index, instructions), the insurer's help page and
+demo-ticket-safe (a ticket basket with a seat-hold countdown and card fields, with its boxes).
 `labels` rewrites sam_query + description in the existing boxes of the variants and demo-busy from LABELS (no capture).
 Boxes come from `?mark`, which paints each target in a solid colour; we take the bounding box of
 that colour. Coordinates are pixels of the PNG (1600x1000), xyxy.
@@ -247,34 +250,24 @@ LABELS["demo-shop-safe/index.html"] = {
     "cvv_field": ("text input field", 'Text field "Security code"'),
     "submit_button": ("button", 'Green button "Pay EUR 23.80"'),
 }
-LABELS["demo-air-v3/index.html"] = {
-    "flight_field": ("text input field", 'Text field "Flight number", top left of the form'),
-    "date_field": ("text input field", 'Date field "Date of the flight", top right of the form'),
-    "booking_field": ("text input field", 'Text field "Booking reference" below "Flight number"'),
-    "next_button": ("button", 'Red button "Continue" bottom right of the form'),
-    "cookie_necessary": ("button", 'Button "Necessary only" in the cookie dialog, left of the dark "Accept all"'),
-    "cookie_all": ("button", 'Dark button "Accept all" in the cookie dialog, right of "Necessary only"'),
-    "name_field": ("text input field", 'Text field "Name of the passenger", top left'),
-    "email_field": ("text input field", 'Text field "E-mail address", top right'),
-    "voucher_yes_radio": ("radio button", 'Radio button "Yes" under "Did the airline offer you a voucher?", left of "No"'),
-    "voucher_no_radio": ("radio button", 'Radio button "No" under "Did the airline offer you a voucher?", right of "Yes"'),
-    "iban_field": ("text input field", 'Text field "IBAN for the payment" below the voucher question'),
-    "file_button": ("button", 'Teal button "Upload boarding pass" in the dashed upload box'),
-    "confirm_checkbox": ("checkbox", 'Checkbox "The details are correct" below the upload box'),
-    "submit_button": ("button", 'Red button "Send" bottom right of the form'),
+LABELS["demo-air-v4/index.html"] = {
+    "booking_field": ("text input field", 'Text field "Booking reference", top left of the form'),
+    "flight_field": ("text input field", 'Text field "Flight number", the middle field in the top row'),
+    "date_field": ("text input field", 'Text field "Date of the flight" (dd.mm.yyyy), top right'),
+    "name_field": ("text input field", 'Text field "Full name", left in the second row'),
+    "email_field": ("text input field", 'Text field "E-mail", the middle field in the second row'),
+    "iban_field": ("text input field", 'Text field "IBAN", right in the second row'),
+    "file_button": ("button", 'Button "Upload boarding pass" with a paper clip, in the first dashed upload box'),
+    "file_button_2": ("button", 'Button "Upload the airline\'s notice" with a paper clip, in the second dashed upload '
+                                'box'),
+    "confirm_checkbox": ("checkbox", 'Checkbox "I confirm the information is correct", bottom left'),
+    "submit_button": ("button", 'Red button "Send claim" bottom right of the form'),
 }
-LABELS["demo-parcel-fee/index.html"] = {
-    "card_field": ("text input field", 'Text field "Card number"'),
-    "expiry_field": ("text input field", 'Text field "Expiry date (MM/YY)"'),
-    "cvv_field": ("text input field", 'Text field "CVV"'),
-    "sms_field": ("text input field", 'Text field "SMS code"'),
-    "submit_button": ("button", 'Yellow button "Pay EUR 1.99 and release my parcel"'),
-}
-LABELS["demo-shop-safe/index.html"] = {
+LABELS["demo-ticket-safe/index.html"] = {
     "card_field": ("text input field", 'Text field "Card number"'),
     "expiry_field": ("text input field", 'Text field "Expiry date (MM/YY)"'),
     "cvv_field": ("text input field", 'Text field "Security code"'),
-    "submit_button": ("button", 'Green button "Pay EUR 23.80"'),
+    "submit_button": ("button", 'Violet button "Pay EUR 64.00"'),
 }
 LABELS["demo-air-refund-check/index.html"] = {
     "card_field": ("text input field", 'Text field "Card number"'),
@@ -352,30 +345,20 @@ GUARD_PAGES = [
      {"card_field": "#s-card", "expiry_field": "#s-exp", "cvv_field": "#s-cvv", "submit_button": "#submit"}),
 ]
 FLIGHT += GUARD_PAGES
-# demo-air-v3: three steps (flight, you with a cookie dialog first, documents with a required upload and a confirm
-# box). The error screen: Send with the box empty.
-AIR_V3_STEP1 = {"flight_field": "#f-flight", "date_field": "#f-date", "booking_field": "#f-ref", "next_button": "#next1"}
-AIR_V3_STEP2 = {"name_field": "#f-name", "email_field": "#f-email", "voucher_yes_radio": "#f-voucher-yes",
-                "voucher_no_radio": "#f-voucher-no", "iban_field": "#f-iban", "next_button": "#next2"}
-AIR_V3_STEP3 = {"file_button": "#f-pass", "confirm_checkbox": "#f-confirm", "submit_button": "#submit"}
+# demo-air-v4: one page with TWO upload buttons (boarding pass required, the airline's notice optional). The
+# `-attached` states: the boarding pass picked; `-both-attached`: both files picked (also after typing: `-filled-…`).
+AIR_V4 = {"booking_field": "#f-ref", "flight_field": "#f-flight", "date_field": "#f-date", "name_field": "#f-name",
+          "email_field": "#f-email", "iban_field": "#f-iban", "file_button": "#f-pass", "file_button_2": "#f-notice",
+          "confirm_checkbox": "#f-confirm", "submit_button": "#submit"}
 FLIGHT += [
-    ("demo-air-v3/index.html", "demo-air-v3", "", [], True, AIR_V3_STEP1),
-    ("demo-air-v3/index.html", "demo-air-v3-step1-filled", "?fill", [], False, AIR_V3_STEP1),
-    ("demo-air-v3/index.html", "demo-air-v3-step2-popup", "?step2&popup", [], True,
-     {"cookie_necessary": "#cookie-necessary", "cookie_all": "#cookie-all"}),
-    ("demo-air-v3/index.html", "demo-air-v3-step2", "?step2", [], True, AIR_V3_STEP2),
-    ("demo-air-v3/index.html", "demo-air-v3-step2-filled", "?step2&fill", [], False, AIR_V3_STEP2),
-    ("demo-air-v3/index.html", "demo-air-v3-step3", "?step3", [], True, AIR_V3_STEP3),
-    ("demo-air-v3/index.html", "demo-air-v3-step3-error", "?error", [], True, AIR_V3_STEP3),
-    ("demo-air-v3/index.html", "demo-air-v3-thanks", "?thanks", [], True, {}),
-]
-# Guard pages: a fake parcel fee (must warn) and a safe shop checkout with card fields (must not warn).
-FLIGHT += [
-    ("demo-parcel-fee/index.html", "demo-parcel-fee", "", [], True,
-     {"card_field": "#p-card", "expiry_field": "#p-exp", "cvv_field": "#p-cvv", "sms_field": "#p-sms",
-      "submit_button": "#submit"}),
-    ("demo-shop-safe/index.html", "demo-shop-safe", "", [], True,
-     {"card_field": "#s-card", "expiry_field": "#s-exp", "cvv_field": "#s-cvv", "submit_button": "#submit"}),
+    ("demo-air-v4/index.html", "demo-air-v4", "", [], True, AIR_V4),
+    ("demo-air-v4/index.html", "demo-air-v4-filled", "?fill", [], False, AIR_V4),
+    ("demo-air-v4/index.html", "demo-air-v4-attached", "?attached1", [], False, AIR_V4),
+    ("demo-air-v4/index.html", "demo-air-v4-both-attached", "?attached1&attached2", [], False, AIR_V4),
+    ("demo-air-v4/index.html", "demo-air-v4-filled-attached", "?fill&attached1", [], False, AIR_V4),
+    ("demo-air-v4/index.html", "demo-air-v4-filled-both-attached", "?fill&attached1&attached2", [], False, AIR_V4),
+    ("demo-air-v4/index.html", "demo-air-v4-error", "?error", [], True, AIR_V4),
+    ("demo-air-v4/index.html", "demo-air-v4-thanks", "?thanks", [], True, {}),
 ]
 # `<stem>.when.json` next to an error screen: the dry run shows it on Submit only when the named field's current value
 # matches the pattern (eval/README.md). Here: the page refuses an IBAN with a space.
@@ -383,8 +366,14 @@ FLIGHT += [
 WHEN = {"demo-air-error": {"field": "IBAN", "pattern": "^$|\\s"}, "demo-air-v2-error": {"field": "IBAN", "pattern": "^$|\\s"}}
 # demo-air-v3: the error screen shows only when the confirm box is still empty (a checkbox reads checked/unchecked).
 WHEN["demo-air-v3-step3-error"] = {"field": "The details are correct", "pattern": "^(unchecked)?$"}
-# demo-air-v3: the error screen shows only when the confirm box is still empty (a checkbox reads checked/unchecked).
-WHEN["demo-air-v3-step3-error"] = {"field": "The details are correct", "pattern": "^(unchecked)?$"}
+# demo-air-v4: the IBAN rule of demo-air (a space or an empty IBAN is refused).
+WHEN["demo-air-v4-error"] = {"field": "IBAN", "pattern": "^$|\\s"}
+# Pages where Pip should do nothing (expect no_action) and that have targets: the ticket shop's basket (a seat-hold
+# countdown and card fields, no SMS code: a normal shop, no guard alarm). `?still` freezes the countdown at 10:00.
+SAFE_TARGETS = [
+    ("demo-ticket-safe/index.html", "demo-ticket-safe", "?still",
+     {"card_field": "#t-card", "expiry_field": "#t-exp", "cvv_field": "#t-cvv", "submit_button": "#submit"}),
+]
 # Pages where Pip should do nothing (expect no_action): no targets.
 SAFE = [
     ("demo-unrelated/index.html", "demo-unrelated"),
@@ -484,11 +473,13 @@ def main_safe() -> None:
 
     for page, stem in SAFE:
         capture(str(ROOT / "fixtures" / page), stem, "", None, OUT, True)
+    for page, stem, query, targets in SAFE_TARGETS:
+        capture(str(ROOT / "fixtures" / page), stem, query, targets, OUT, True, labels=LABELS.get(page))
 
 
 def main_labels() -> None:
     """Rewrite sam_query + description of the existing boxes from LABELS (the boxes themselves stay)."""
-    rows = [(page, stem) for page, stem, *_ in VARIANTS + FLIGHT] + [("demo-busy/index.html", "demo-busy"),
+    rows = [(page, stem) for page, stem, *_ in VARIANTS + FLIGHT + SAFE_TARGETS] + [("demo-busy/index.html", "demo-busy"),
                                                                       ("demo-busy/light.html", "demo-busy-2")]
     for page, stem in rows:
         path = OUT / f"{stem}.boxes.json"

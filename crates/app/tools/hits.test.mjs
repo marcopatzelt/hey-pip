@@ -205,3 +205,31 @@ test("a highlighted field at the home corner lifts Stop above it: Pip's own clic
   assert.deepEqual(Hits.stopPlace(home, P, size, { w: W, h: H }, undefined, { x: 100, y: 100, w: 200, h: 40 }), place);
   assert.deepEqual(Hits.stopPlace(home, P, size, { w: W, h: H }, undefined, null), place);
 });
+
+// Demo: "Not yet" on the send card and Stop side by side are two ways to say no. While a card is open Stop is
+// hidden (Hits.stopShown) and its rect is not reported; when the card closes and the run still acts, it is back
+// at stopPlace. main.js: syncStop in showCard / hideCard, hitScene boxes[5] = Stop (null when hidden).
+test("an open card hides Stop: no Stop rect, the card still takes its clicks; after hideCard Stop is back at stopPlace", () => {
+  const size = { w: 110, h: 52 };
+  const g = Peek.geometry("up", P, H, 48, W);
+  const place = Hits.stopPlace({ x: g.x, y: g.y }, P, size, { w: W, h: H });
+  const scene = (cardOpen) => ({
+    pip: { box: pipAway, home: false, peek: "up", head: head("up") },
+    boxes: [null, cardOpen ? card : null, null, null, null, Hits.stopShown(true, cardOpen) ? place : null, null],
+    acting: true,
+  });
+  assert.equal(Hits.stopShown(true, true), false);
+  assert.equal(Hits.stopShown(true, false), true);
+  assert.equal(Hits.stopShown(false, false), false, "no run: no Stop");
+  for (const { k, origin } of SCALES) {
+    const open = Hits.toPhys(Hits.cssRects(scene(true)), origin, k);
+    assert.ok(covered(open, card, origin, k), "the card is covered");
+    assert.ok(covered(open, notYet, origin, k), "Not yet is covered");
+    assert.ok(!Hits.inside(open, origin.x + (place.x + place.w / 2) * k, origin.y + (place.y + place.h / 2) * k),
+      "no Stop rect while the card is open");
+    assert.equal(open.length, 1, `only the card: ${JSON.stringify(open)}`);
+    const closed = Hits.toPhys(Hits.cssRects(scene(false)), origin, k);
+    assert.ok(covered(closed, place, origin, k), "Stop is back at its fixed place");
+    assert.deepEqual(Hits.stopPlace({ x: g.x, y: g.y }, P, size, { w: W, h: H }), place, "the same place as before");
+  }
+});

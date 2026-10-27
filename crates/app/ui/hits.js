@@ -92,12 +92,21 @@
     return { x, y, w, h };
   }
 
+  /**
+   * The Stop pill is on screen: a run acts and no approval card is open. The card has its own "Not yet": with Stop
+   * beside it a first-time viewer sees two ways to say no. While the card is open the pill (and its rect) is gone;
+   * when the card closes (any answer, timeout, Esc) and the run still acts, it comes back at stopPlace.
+   */
+  function stopShown(acting, cardOpen) {
+    return !!acting && !cardOpen;
+  }
+
   /** True if the point (same units as the rects) is inside one of them. */
   function inside(rects, x, y) {
     return rects.some((r) => x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h);
   }
 
-  const Hits = { MARGIN, FLIGHT_EVERY, anyOpen, cssRects, toPhys, inside, flightDue, stopPlace };
+  const Hits = { MARGIN, FLIGHT_EVERY, anyOpen, cssRects, toPhys, inside, flightDue, stopPlace, stopShown };
   root.Hits = Hits;
   if (typeof module !== "undefined" && module.exports) module.exports = Hits;
 })(typeof window !== "undefined" ? window : globalThis);

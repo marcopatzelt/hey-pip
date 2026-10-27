@@ -3,6 +3,7 @@
 //!
 //! OWNER: agent "agent" (crates/core/src/agent/**).
 
+pub mod find_file;
 pub mod gate;
 pub mod loop_;
 pub mod prompt;

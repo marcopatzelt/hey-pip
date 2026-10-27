@@ -1,0 +1,108 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-air-v4.png",
+  "targets": {
+    "booking_field": {
+      "box": [
+        351,
+        299,
+        636,
+        347
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Booking reference\", top left of the form"
+    },
+    "flight_field": {
+      "box": [
+        657,
+        299,
+        942,
+        347
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Flight number\", the middle field in the top row"
+    },
+    "date_field": {
+      "box": [
+        963,
+        299,
+        1248,
+        347
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Date of the flight\" (dd.mm.yyyy), top right"
+    },
+    "name_field": {
+      "box": [
+        351,
+        425,
+        636,
+        473
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Full name\", left in the second row"
+    },
+    "email_field": {
+      "box": [
+        657,
+        425,
+        942,
+        473
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"E-mail\", the middle field in the second row"
+    },
+    "iban_field": {
+      "box": [
+        963,
+        425,
+        1248,
+        473
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"IBAN\", right in the second row"
+    },
+    "file_button": {
+      "box": [
+        369,
+        531,
+        640,
+        577
+      ],
+      "sam_query": "button",
+      "description": "Button \"Upload boarding pass\" with a paper clip, in the first dashed upload box"
+    },
+    "file_button_2": {
+      "box": [
+        369,
+        612,
+        680,
+        658
+      ],
+      "sam_query": "button",
+      "description": "Button \"Upload the airline's notice\" with a paper clip, in the second dashed upload box"
+    },
+    "confirm_checkbox": {
+      "box": [
+        355,
+        692,
+        376,
+        713
+      ],
+      "sam_query": "checkbox",
+      "description": "Checkbox \"I confirm the information is correct\", bottom left"
+    },
+    "submit_button": {
+      "box": [
+        1053,
+        682,
+        1248,
+        735
+      ],
+      "sam_query": "button",
+      "description": "Red button \"Send claim\" bottom right of the form"
+    }
+  }
+}

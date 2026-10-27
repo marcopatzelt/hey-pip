@@ -727,6 +727,8 @@ static TABLE: &[(&str, &str, &str)] = &[
         "I need your {doc}. Where is it on this computer?",
     ),
     ("card_what_form", "das Formular auf dieser Seite", "the form on this page"),
+    // --- run 6: several files in the folder the user named fit equally well ---
+    ("attach_pick_which", "Welche Datei ist deine {doc}?", "Which file is your {doc}?"),
 ];
 
 /// Lookup. Unknown key -> the key itself (visible in tests, never panics).

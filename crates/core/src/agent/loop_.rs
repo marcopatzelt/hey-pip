@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use super::find_file::{self, FileAnswer};
 use super::gate::{
     ApprovalAnswer, ApprovalCard, Gate, Risk, is_attach_target, is_cancel_target, is_delete_target, is_dialog_button,
     is_dialog_plain_button, is_money_target, is_next_target, is_send_target, is_taskbar_target, label_hit,
@@ -41,7 +42,7 @@ use crate::meta::{
 };
 use crate::platform::{ApiImage, OutlineItem, PhysPoint, PhysRect, Platform, UiElement, WindowInfo};
 use crate::rules::guard::{self, GuardInput, Known, KnownOrg, Signal, Verdict};
-use crate::rules::text::fmt_date;
+use crate::rules::text::{fmt_date, fmt_date_long};
 
 /// Long side of the screenshot sent to the model.
 pub const API_MAX_SIDE: u32 = 1600;
@@ -368,6 +369,11 @@ pub struct RunState {
     /// A file went in through the file dialog in this run and the dialog closed: another click on the upload
     /// button is answered without a click (the page shows the file next to it).
     attached_done: bool,
+    /// A path went into the file dialog and Enter was pressed in this run: once the dialog is no longer in front,
+    /// the file is attached (`attached_done`), however long the dialog took to close.
+    attach_typed: bool,
+    /// (button label, file name) of every file that went in in this run, oldest first.
+    attached: Vec<(String, String)>,
     /// The file dialog opened with no stored letter for its button, and the user was asked where the file is
     /// (asked once per run).
     dialog_asked: bool,
@@ -507,6 +513,8 @@ impl RunState {
             prepicked_step: None,
             already_done_step: None,
             attached_done: false,
+            attach_typed: false,
+            attached: Vec::new(),
             dialog_asked: false,
         }
     }
@@ -519,14 +527,33 @@ impl RunState {
     /// The upload button clicked again after a file went in through its dialog: the same button (its label
     /// names the same letter as the one Pip picked for, or neither names one). A second upload field of the
     /// page ("Upload receipt" after the boarding pass) is a new attach, never "already attached".
-    fn attached_already(&self, target_text: &str, label: &str) -> bool {
-        if !self.attached_done || self.doc_file.is_none() || !is_attach_target(target_text) {
-            return false;
+    /// Some(file) = the file that went in through this button.
+    fn attached_already(&self, target_text: &str, label: &str) -> Option<String> {
+        if !is_attach_target(target_text) {
+            return None;
         }
-        self.attach_label.as_deref().is_none_or(|prev| {
+        let same = |prev: &str| {
             let (a, b) = (doc_query_words(prev), doc_query_words(label));
             a.is_empty() || b.is_empty() || a.iter().any(|w| b.contains(w))
-        })
+        };
+        // An earlier upload field of this run (the boarding pass after the notice went into the second field).
+        if let Some((_, file)) = self.attached.iter().find(|(l, _)| !l.is_empty() && same(l)) {
+            return Some(file.clone());
+        }
+        if !self.attached_done {
+            return None;
+        }
+        self.doc_file.clone().filter(|_| self.attach_label.as_deref().is_none_or(same))
+    }
+
+    /// The file of the current attach went in: remembered with its button, for the card and for "already attached".
+    fn mark_attached(&mut self) {
+        self.attached_done = true;
+        if let Some(file) = self.doc_file.clone()
+            && !self.attached.iter().any(|(_, f)| *f == file)
+        {
+            self.attached.push((self.attach_label.clone().unwrap_or_default(), file));
+        }
     }
 
     /// Step and time budget of the current phase.
@@ -1158,6 +1185,7 @@ impl Agent {
             }
         }
 
+        self.note_attach_seen(state).await;
         let req = ResponseRequest {
             model: MODEL_SPARK.to_string(),
             instructions: prompt::instructions(lang, self.gate.demo_mode),
@@ -1605,7 +1633,7 @@ impl Agent {
                     .and_then(|id| state.outline.iter().find(|i| i.id == id))
                     .map(|i| i.name.as_str())
                     .unwrap_or_default();
-                state.attached_already(&format!("{description} {name}"), &button_label(name, description))
+                state.attached_already(&format!("{description} {name}"), &button_label(name, description)).is_some()
             }
             _ => false,
         };
@@ -1850,12 +1878,35 @@ impl Agent {
         if words.is_empty() {
             return Ok(None);
         }
-        let mut rows = match &state.doc_path {
+        let mut words = words;
+        // "the airline's notice" is a letter (a Bescheid is a notice too; the task's codes below decide).
+        if words.iter().any(|w| matches!(w.as_str(), "notice" | "mitteilung" | "schreiben")) {
+            words.push("letter".into());
+        }
+        let mut rows: Vec<crate::memory::DocumentRow> = match &state.doc_path {
             Some(p) => self.memory.document_by_path(&p.display().to_string())?.into_iter().collect(),
             None => self.memory.search_documents("", 50)?,
         };
-        rank_documents(&mut rows, &words);
-        Ok(rows.into_iter().next().filter(|d| doc_hits(&words, d) > 0))
+        // The label names another letter than the task's ("Upload the airline's notice" after the boarding
+        // pass): every stored letter that did not go in yet.
+        if state.doc_path.is_some() && rows.iter().all(|d| doc_hits(&words, d) == 0) {
+            let done: Vec<&str> = state.attached.iter().map(|(_, f)| f.as_str()).collect();
+            rows = self.memory.search_documents("", 50)?;
+            rows.retain(|d| !d.path.file_name().is_some_and(|f| done.contains(&f.to_string_lossy().as_ref())));
+        }
+        // The task's codes (flight number, booking reference) and words rank among the letters the label fits: a
+        // tie between an insurer's notice and the airline's letter goes to the one that talks about the flight.
+        let mut ranked = words.clone();
+        if let Task::Text(t) | Task::Voice(t) = &state.task {
+            for w in find_file::code_words(t).into_iter().chain(doc_query_words(t)) {
+                if !ranked.contains(&w) {
+                    ranked.push(w);
+                }
+            }
+        }
+        rows.retain(|d| doc_hits(&words, d) > 0);
+        rank_documents(&mut rows, &ranked);
+        Ok(rows.into_iter().next())
     }
 
     /// The file dialog just opened from a button whose label names a stored letter ("Upload boarding pass"):
@@ -1896,6 +1947,7 @@ impl Agent {
         state.doc_path = Some(doc.path.clone());
         state.enter_after_attach = false;
         state.prepicked_step = Some(state.step);
+        state.attach_typed = true;
         let label = truncate(label, 60);
         tracing::info!("attach: {file} picked from memory for \"{label}\"");
         self.log(
@@ -1907,15 +1959,10 @@ impl Agent {
             0,
         );
         let _ = self.pause(self.batch_pace(), cancel).await;
-        // A slow PC (VM) closes the dialog a moment after the enter: wait for it, or the attach counts as failed
-        // and the next planned click opens the dialog again (its cancel clears the picked file).
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut still_open = self.foreground().await.is_some_and(|w| w.is_file_dialog());
-        while still_open && Instant::now() < deadline && !cancel.is_cancelled() {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            still_open = self.foreground().await.is_some_and(|w| w.is_file_dialog());
+        let still_open = self.wait_dialog_closed(cancel).await;
+        if !still_open {
+            state.mark_attached();
         }
-        state.attached_done = !still_open;
         Ok(Some(if still_open {
             format!(
                 ". The file dialog opened; I typed the path of {file} (from memory, it fits \"{label}\") and pressed \
@@ -2403,9 +2450,7 @@ say argument of your action.",
         let button_label = button_label(&ui_name, description);
         // The upload button again after a file went in: the page shows the file next to it (the picture may be
         // too small to read). Not clicked, no repeat counted, so the run goes on to the send button.
-        if state.attached_already(&target_text, &button_label)
-            && let Some(file) = state.doc_file.clone()
-        {
+        if let Some(file) = state.attached_already(&target_text, &button_label) {
             tracing::info!(file, "upload button again after the attach: not clicked");
             return Ok(ToolRun::out(
                 Risk::Act,
@@ -2436,6 +2481,13 @@ say argument of your action.",
                 "not clicked: inside the file dialog Pip only types a path. The file is not in memory: ask the user \
                  where it is.",
             ));
+        }
+        // Cancel (or ×) in the file dialog drops the path Pip typed: the dialog closing after it is no attach, and
+        // the upload button may be clicked again.
+        if front.as_ref().is_some_and(|w| w.is_file_dialog())
+            && (is_cancel_target(&name) || matches!(name.trim(), "x" | "×" | "✕"))
+        {
+            state.attach_typed = false;
         }
         // "OK" / "Close" / "Retry" on an error or info box (a dialog or any window that is not the browser) sends
         // nothing: no card. What the box said goes to the model (e.g. "file name not valid": type the path again).
@@ -2564,6 +2616,9 @@ say argument of your action.",
             // shows it and the model does not click the button again.
             match self.wait_for_file_dialog(cancel).await {
                 Some(true) => {
+                    // A new attach: the earlier one stays in `attached`.
+                    state.attached_done = false;
+                    state.attach_typed = false;
                     // The button names a stored letter ("Upload boarding pass"): Pip picks it himself.
                     let label = state.attach_label.clone().unwrap_or(button_label);
                     match self.prepick_attach(state, &label, cancel).await? {
@@ -2762,7 +2817,9 @@ say argument of your action.",
         state.typed_fields.retain(|(l, _)| *l != label);
         state.typed_fields.push((label, a.text.to_string()));
         state.typed.retain(|(w, _)| w != a.what);
-        state.typed.push((a.what.to_string(), truncate(a.text, 60)));
+        // A date field: the day it got (the card says it in words, whatever form the model typed it in).
+        let typed = date.map(|(_, day)| day.format("%Y-%m-%d").to_string()).unwrap_or_else(|| truncate(a.text, 60));
+        state.typed.push((a.what.to_string(), typed));
         self.progress(filled_line(&state.typed));
         state.after_element_type = true;
         let out = match shows {
@@ -3209,6 +3266,79 @@ say argument of your action.",
         Ok(Some(path.display().to_string()))
     }
 
+    /// The user's answer names a folder ("in my Downloads"): the file whose name fits the button's label and the
+    /// task's codes (flight number, booking reference). One clear best -> that file; several equally good -> one
+    /// question with up to three names; none -> Ok(None). Err = the run ends (stopped, no answer).
+    async fn file_in_folder(
+        &self,
+        state: &mut RunState,
+        label: &str,
+        answer: &str,
+        cancel: &CancellationToken,
+        lang: Lang,
+    ) -> Result<std::result::Result<Option<String>, AgentOutcome>> {
+        let ui = self.platform.ui.clone();
+        let home = tokio::task::spawn_blocking(move || ui.home_dir()).await.unwrap_or_default();
+        let FileAnswer::Folder(folder) = find_file::parse_answer(answer, &home) else { return Ok(Ok(None)) };
+        let mut words = doc_query_words(label);
+        let task = match &state.task {
+            Task::Text(t) | Task::Voice(t) => t.clone(),
+            Task::Discover { after } => state.accepted.clone().unwrap_or_else(|| after.clone()),
+            Task::SendLatestDocument { .. } => String::new(),
+        };
+        let mut codes_from = vec![task];
+        codes_from.extend(state.doc_label.clone());
+        if let Ok(facts) = self.memory.profile_all() {
+            codes_from.extend(
+                facts
+                    .into_iter()
+                    .filter(|(k, _)| ["flight", "booking", "reference"].iter().any(|w| k.contains(w)))
+                    .map(|(_, v)| v),
+            );
+        }
+        for w in codes_from.iter().flat_map(|t| find_file::code_words(t)) {
+            if !words.contains(&w) {
+                words.push(w);
+            }
+        }
+        let f = folder.clone();
+        let w = words.clone();
+        let found = tokio::task::spawn_blocking(move || find_file::find_in(&f, &w)).await.unwrap_or_default();
+        let hits: Vec<usize> = found.iter().map(|p| find_file::name_hits(p, &words)).collect();
+        let name = |p: &PathBuf| p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        tracing::info!(found = found.len(), "attach: looked for the file in the folder the user named");
+        let pick = match found.len() {
+            0 => return Ok(Ok(None)),
+            1 => found[0].clone(),
+            _ if hits[0] > hits[1] => found[0].clone(),
+            _ => {
+                // Several files fit equally well: the user picks (one question, up to three names).
+                let best: Vec<&PathBuf> =
+                    found.iter().zip(&hits).filter(|(_, h)| **h == hits[0]).map(|(p, _)| p).take(3).collect();
+                let options: Vec<String> = best.iter().map(|p| name(p)).collect();
+                let doc = doc_query_words(label).join(" ");
+                let question = tf("attach_pick_which", lang, &[("doc", &doc)]);
+                match self.ask(state, &question, &options, cancel, lang).await {
+                    Asked::Answer(a) => {
+                        state.answers.push(a.clone());
+                        match best.iter().find(|p| name(p).eq_ignore_ascii_case(a.trim())) {
+                            Some(p) => (*p).clone(),
+                            None => return Ok(Ok(None)),
+                        }
+                    }
+                    Asked::Timeout => {
+                        self.away_bubble("question_timeout", "btn_ask_again", None, lang);
+                        return Ok(Err(AgentOutcome::NeedsUser(question)));
+                    }
+                    Asked::Cancelled => return Ok(Err(AgentOutcome::Stopped)),
+                }
+            }
+        };
+        state.doc_file = Some(name(&pick));
+        state.doc_path = Some(pick.clone());
+        Ok(Ok(Some(pick.display().to_string())))
+    }
+
     /// The file dialog is open and no stored letter fits its button ("Upload boarding pass", cold memory): ask
     /// the user ONE open question naming the file. A file path for an answer goes in; no answer ends the run as
     /// NeedsUser. Asked already in this run: the run ends at once, never a second question.
@@ -3230,7 +3360,15 @@ say argument of your action.",
         match self.ask(state, &question, &[], cancel, lang).await {
             Asked::Answer(a) => {
                 state.answers.push(a.clone());
-                let Some(path) = self.user_given_file(state, &a)? else {
+                let path = match self.user_given_file(state, &a)? {
+                    Some(p) => Some(p),
+                    // "in my Downloads": the file is found there by its name.
+                    None => match self.file_in_folder(state, label, &a, cancel, lang).await? {
+                        Ok(p) => p,
+                        Err(stopped) => return Ok(ToolRun::finish(Risk::Act, stopped)),
+                    },
+                };
+                let Some(path) = path else {
                     return Ok(ToolRun::out(
                         Risk::Act,
                         format!(
@@ -3247,10 +3385,13 @@ say argument of your action.",
                 }
                 self.blocking(|pl| pl.input.key("enter")).await?;
                 state.prepicked_step = Some(state.step);
+                state.attach_typed = true;
                 tracing::info!("attach: {file} given by the user for \"{}\"", truncate(label, 60));
                 let _ = self.pause(self.batch_pace(), cancel).await;
-                let still_open = self.foreground().await.is_some_and(|w| w.is_file_dialog());
-                state.attached_done = !still_open;
+                let still_open = self.wait_dialog_closed(cancel).await;
+                if !still_open {
+                    state.mark_attached();
+                }
                 Ok(ToolRun::out(
                     Risk::Act,
                     if still_open {
@@ -3330,6 +3471,9 @@ say argument of your action.",
         }
         let attach_enter = std::mem::take(&mut state.enter_after_attach);
         let dialog = is_enter && attach_enter && self.foreground().await.is_some_and(|w| w.is_file_dialog());
+        if dialog {
+            state.attach_typed = true;
+        }
         if risk == Risk::Commit && is_enter && attach_enter {
             // Confirms the file dialog of the attach the user just approved, but only if that dialog is open.
             if dialog && !ui_name.as_deref().is_some_and(is_send_target) {
@@ -3380,7 +3524,7 @@ say argument of your action.",
             // too small to read in the picture).
             let file = state.doc_file.clone().unwrap_or_else(|| "the file".into());
             out.push_str(&format!(" (the file dialog closed: {file} is attached; do not upload it again)"));
-            state.attached_done = true;
+            state.mark_attached();
         }
         if let Some(to) = &trusted {
             self.bubble(tf("sent_trusted", lang, &[("to", to)]), true);
@@ -3672,7 +3816,16 @@ say argument of your action.",
             }
             _ => to_name.clone(),
         };
-        let site_label = host.clone().unwrap_or_else(|| to_name.clone());
+        // "Don't ask again for …": a real host by its name; a page on this computer by the organisation memory
+        // keeps for it or its heading (VM: "Don't ask again for page on this computer").
+        let site_label = match &real_host {
+            Some(h) => h.clone(),
+            None if local => remembered_org
+                .clone()
+                .or_else(|| page_heading(&state.outline))
+                .unwrap_or_else(|| t("page_local", lang).to_string()),
+            None => to_name.clone(),
+        };
 
         // Yes already given to this button; the page moved under it before the click.
         if let Some(pre) = state.preapproved.take() {
@@ -3709,8 +3862,8 @@ say argument of your action.",
             title,
             what: tf("approve_what", lang, &[("what", &what)]),
             to: tf("approve_to", lang, &[("to", &to_line)]),
-            attachments: state.doc_file.iter().cloned().collect(),
-            filled: state.typed.iter().map(|(w, v)| format!("{}: {v}", field_label(w))).collect(),
+            attachments: card_attachments(state),
+            filled: state.typed.iter().map(|(w, v)| format!("{}: {}", field_label(w), card_value(v, lang))).collect(),
             crop_png_b64: crop,
             yes_label: t(yes, lang).to_string(),
             no_label: t("btn_not_yet", lang).to_string(),
@@ -4187,6 +4340,33 @@ say argument of your action.",
                 Some(_) if Instant::now() >= deadline || cancel.is_cancelled() => return Some(false),
                 Some(_) => tokio::time::sleep(Duration::from_millis(200)).await,
             }
+        }
+    }
+
+    /// After the Enter of an attach: wait up to 6 s for the file dialog to close (a slow PC, the VM, closes it
+    /// seconds later; counted as failed, the next planned click opened the dialog again). True = still open.
+    async fn wait_dialog_closed(&self, cancel: &CancellationToken) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        let mut still_open = self.foreground().await.is_some_and(|w| w.is_file_dialog());
+        while still_open && Instant::now() < deadline && !cancel.is_cancelled() {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            still_open = self.foreground().await.is_some_and(|w| w.is_file_dialog());
+        }
+        still_open
+    }
+
+    /// At the start of a step: the file of the last attach went in once its dialog is no longer in front, or once
+    /// the page shows its name next to the upload button. Then another click on that button is not made.
+    async fn note_attach_seen(&self, state: &mut RunState) {
+        if state.attached_done {
+            return;
+        }
+        let Some(file) = state.doc_file.clone() else { return };
+        let shown = page_shows_file(&state.outline, &file);
+        let closed = !shown && state.attach_typed && self.foreground().await.is_some_and(|w| !w.is_file_dialog());
+        if shown || closed {
+            state.mark_attached();
+            tracing::info!("attach: page shows {file}");
         }
     }
 
@@ -5701,6 +5881,45 @@ fn button_label(ui_name: &str, description: &str) -> String {
 }
 
 /// "deinen Namen" -> "Namen" for the card's "Ausgefüllt" list (drop the possessive).
+/// The files on the card: every file that went in in this run, then the task's letter if it is not among them.
+fn card_attachments(state: &RunState) -> Vec<String> {
+    let mut out: Vec<String> = state.attached.iter().map(|(_, f)| f.clone()).collect();
+    if let Some(f) = &state.doc_file
+        && !out.contains(f)
+    {
+        out.push(f.clone());
+    }
+    out
+}
+
+/// A text or field on the page shows the file's name ("boarding_pass_bx2041.pdf" next to the upload button).
+fn page_shows_file(items: &[OutlineItem], file: &str) -> bool {
+    let file = file.trim().to_lowercase();
+    !file.is_empty()
+        && items.iter().filter(|i| matches!(i.role.as_str(), "text" | "edit")).any(|i| {
+            i.name.to_lowercase().contains(&file)
+                || i.value.as_deref().is_some_and(|v| v.to_lowercase().contains(&file))
+        })
+}
+
+/// A typed value as the card shows it: a date typed as "2026-10-03" or "03.10.2026" in words ("3 October 2026"),
+/// everything else as typed.
+fn card_value(v: &str, lang: Lang) -> String {
+    let d = v.trim();
+    let digits = |r: std::ops::Range<usize>| d.get(r).is_some_and(|p| p.bytes().all(|b| b.is_ascii_digit()));
+    let b = d.as_bytes();
+    // "3.10.2026" too: a German date with a one-digit day or month.
+    let dotted = d.split('.').map(str::len).collect::<Vec<_>>();
+    let format = if d.len() == 10 && b[4] == b'-' && b[7] == b'-' && digits(0..4) && digits(5..7) && digits(8..10) {
+        "%Y-%m-%d"
+    } else if matches!(dotted.as_slice(), [1 | 2, 1 | 2, 4]) && d.bytes().all(|c| c.is_ascii_digit() || c == b'.') {
+        "%d.%m.%Y"
+    } else {
+        return v.to_string();
+    };
+    chrono::NaiveDate::parse_from_str(d, format).map(|date| fmt_date_long(date, lang)).unwrap_or_else(|_| v.to_string())
+}
+
 fn field_label(what: &str) -> String {
     let w = what.trim();
     for p in ["deinen ", "deine ", "dein ", "your ", "ihre ", "ihren ", "ihr "] {
@@ -6630,6 +6849,17 @@ mod tests {
         assert_eq!(key_label("enter", Lang::En), "Enter");
         assert_eq!(url_host("http://localhost:8000/x?y"), Some("localhost".into()));
         assert_eq!(first_json_object("ok {\"choice\": 2} done"), Some(json!({"choice": 2})));
+    }
+
+    #[test]
+    fn card_values_say_dates_in_words() {
+        assert_eq!(card_value("2026-10-03", Lang::En), "3 October 2026");
+        assert_eq!(card_value("03.10.2026", Lang::De), "3. Oktober 2026");
+        assert_eq!(card_value("3.10.2026", Lang::En), "3 October 2026");
+        assert_eq!(card_value("BX7Q2K", Lang::En), "BX7Q2K");
+        assert_eq!(card_value("DE02120300000000202051", Lang::En), "DE02120300000000202051");
+        assert_eq!(card_value("2026-13-03", Lang::En), "2026-13-03");
+        assert_eq!(card_value("1.2.3.4", Lang::En), "1.2.3.4");
     }
 
     #[test]

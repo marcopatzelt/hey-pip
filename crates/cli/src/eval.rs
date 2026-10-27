@@ -168,6 +168,13 @@ struct AgentTask {
     /// When set: at most this many clicks while the file dialog was open that were not on its Open / Cancel / x.
     #[serde(default)]
     expect_dialog_clicks_max: Option<u32>,
+    /// When set: every SEND card's title equals this exactly (trimmed), e.g. "Ready to send to Beispiel Air?".
+    #[serde(default)]
+    expect_card_title_is: Option<String>,
+    /// Every one of these files went in (an approved attach card or a path typed into the file dialog names it),
+    /// e.g. both files of a page with two upload buttons.
+    #[serde(default)]
+    expect_attach_all: Vec<String>,
 }
 
 /// eval/real-sites.json: real, read-only pages. Dry run up to the send card; every card is refused.
@@ -340,15 +347,10 @@ fn guard_text_misses(a: &AgentTask, r: &Report) -> (Vec<String>, Vec<String>) {
     (missing, forbidden)
 }
 
-/// The card text checks over every SEND card (title + what + to, any case): (missing words of
+/// The card text checks over every SEND card (title + what + to + filled lines + checkbox text, any case): (missing words of
 /// `expect_card_text_contains`, forbidden words found of `expect_card_text_not`), each word once.
 fn card_text_misses(a: &AgentTask, r: &Report) -> (Vec<String>, Vec<String>) {
-    let texts: Vec<String> = r
-        .cards
-        .iter()
-        .filter(|c| !c.attach)
-        .map(|c| format!("{} {} {}", c.title, c.what, c.to).to_lowercase())
-        .collect();
+    let texts: Vec<String> = r.cards.iter().filter(|c| !c.attach).map(|c| c.text().to_lowercase()).collect();
     let missing = a
         .expect_card_text_contains
         .iter()
@@ -381,6 +383,32 @@ fn card_text_note(a: &AgentTask, r: &Report) -> Option<String> {
         why.push(format!("says {}", forbidden.join(", ")));
     }
     Some(format!("Card text: **no** ({})", why.join("; ")))
+}
+
+/// The send cards whose title is not `expect_card_title_is` (trimmed), as their titles; empty when every one is.
+fn card_title_misses(a: &AgentTask, r: &Report) -> Vec<String> {
+    let Some(want) = &a.expect_card_title_is else { return Vec::new() };
+    r.cards.iter().filter(|c| !c.attach && c.title.trim() != want.trim()).map(|c| c.title.trim().to_string()).collect()
+}
+
+/// The Card title note, None for a task without `expect_card_title_is`.
+fn card_title_note(a: &AgentTask, r: &Report) -> Option<String> {
+    a.expect_card_title_is.as_ref()?;
+    Some(match card_title_misses(a, r).first() {
+        None => "Card title: yes".into(),
+        Some(got) => format!("Card title: **no** (got \"{got}\")"),
+    })
+}
+
+/// The Attach all note: `Attach all: yes` or `Attach all: **no** (missing …)`.
+fn attach_all_note(files: &[String], r: &Report) -> String {
+    let missing: Vec<&str> =
+        files.iter().filter(|f| !r.attached_all(std::slice::from_ref(*f))).map(String::as_str).collect();
+    if missing.is_empty() {
+        format!("Attach all: yes ({})", files.join(", "))
+    } else {
+        format!("Attach all: **no** (missing {})", missing.join(", "))
+    }
 }
 
 /// Does the page show the expected file after the pick (`Report.page_shows_attach` names it, any case; `""` = any)?
@@ -435,6 +463,7 @@ fn rows_of_run(logged: &[ActionLog], before: usize) -> &[ActionLog] {
 /// `expect_attach` (with `expect_page_shows_attach`: the page shows the file), the card text, and never a run that
 /// ended on an open question (the user was left with buttons, not a result). The checks that need the actions log
 /// are `extra_misses`.
+/// `expect_card_title_is` and `expect_attach_all` too.
 fn met_task(a: &AgentTask, r: &Report) -> bool {
     let (missing, forbidden) = guard_text_misses(a, r);
     let (card_missing, card_forbidden) = card_text_misses(a, r);
@@ -452,6 +481,8 @@ fn met_task(a: &AgentTask, r: &Report) -> bool {
         && (!a.expect_page_shows_attach || a.expect_attach.as_deref().is_none_or(|f| page_shows(f, r)))
         && card_missing.is_empty()
         && card_forbidden.is_empty()
+        && card_title_misses(a, r).is_empty()
+        && r.attached_all(&a.expect_attach_all)
 }
 
 /// The Guard text note, None for a task without guard text checks.
@@ -1055,6 +1086,7 @@ async fn agent_unit(
     page: Option<String>,
     cond: MemoryCond,
     sample: (u32, u32),
+    log: Option<&Path>,
 ) -> Result<UnitOut> {
     let (k, n) = sample;
     let mut out = UnitOut {
@@ -1136,6 +1168,10 @@ async fn agent_unit(
         let tokens_before = tokens(meta.usage_total());
         let r = agent_cmd::run(&c, opts).await?;
         let run_tokens = tokens(meta.usage_total()) - tokens_before;
+        if let Some(path) = log {
+            let tag = format!("{label} [{}] {run}", cond.name());
+            append_step_log(path, &r.step_log.iter().map(|s| agent_cmd::step_log_line(&tag, s)).collect::<Vec<_>>());
+        }
         run_tokens_all.push(run_tokens);
         // This run's actions log rows (oldest first; run 2 shares run 1's memory).
         let logged = c.memory.recent_actions(u32::MAX)?;
@@ -1160,6 +1196,9 @@ async fn agent_unit(
         if !r.files_given.is_empty() {
             let names: Vec<&str> = r.files_given.iter().map(|f| f.rsplit(['/', '\\']).next().unwrap_or(f)).collect();
             notes.push(format!("File given: {}", names.join(", ")));
+        }
+        if !r.folders_given.is_empty() {
+            notes.push(format!("Folder given: {}", r.folders_given.join(", ")));
         }
         if let Some(note) = typed_note(&a.expect_typed, &r) {
             tl.typed_ok += usize::from(typed_hit(&a.expect_typed, &r).is_some());
@@ -1197,7 +1236,13 @@ async fn agent_unit(
                 notes.push(page_shows_note(f, &r));
             }
         }
+        if !a.expect_attach_all.is_empty() {
+            notes.push(attach_all_note(&a.expect_attach_all, &r));
+        }
         if let Some(note) = card_text_note(a, &r) {
+            notes.push(note);
+        }
+        if let Some(note) = card_title_note(a, &r) {
             notes.push(note);
         }
         tl.defaults += r.defaults;
@@ -1416,8 +1461,15 @@ pub async fn run(
         }
     }
     let mut totals = AgentTotals::default();
-    let mut agent =
-        ordered(units.into_iter().map(|(a, page, cond, sample)| agent_unit(&base, a, page, cond, sample)), jobs);
+    // One line per model step of every agent run (`Reading a slow run` in eval/README.md); a new file each run.
+    let log = step_log_path(out);
+    if let Err(e) = crate::letters::write_file(&log, b"") {
+        tracing::warn!(error = %e, "eval: cannot start the step log");
+    }
+    let mut agent = ordered(
+        units.into_iter().map(|(a, page, cond, sample)| agent_unit(&base, a, page, cond, sample, Some(&log))),
+        jobs,
+    );
     while let Some(u) = agent.next().await {
         let u = u?;
         for l in &u.lines {
@@ -1729,6 +1781,29 @@ pub fn default_out(set: EvalSet, only: &[String]) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("target/eval-{safe}.md"))
 }
 
+/// The per-step log next to the results: `target/eval-<set-or-only>.log` (`out` with `.log`); a full run that
+/// writes eval/results.md logs to `target/eval-full.log` (logs never go into eval/).
+pub fn step_log_path(out: &Path) -> std::path::PathBuf {
+    if out == Path::new("eval/results.md") || out.parent().is_some_and(|p| p.ends_with("eval")) {
+        return std::path::PathBuf::from("target/eval-full.log");
+    }
+    out.with_extension("log")
+}
+
+/// Appends the lines of one run to the step log (one write, so parallel units do not mix inside a run).
+fn append_step_log(path: &Path, lines: &[String]) {
+    use std::io::Write as _;
+    if lines.is_empty() {
+        return;
+    }
+    let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    let res =
+        std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut f| f.write_all(text.as_bytes()));
+    if let Err(e) = res {
+        tracing::warn!(error = %e, path = %path.display(), "eval: step log write failed");
+    }
+}
+
 /// The Questions cell: the count with each question and the dry run's answer.
 fn questions_cell(r: &Report) -> String {
     if r.asked.is_empty() { "0".to_string() } else { format!("{}: {}", r.questions, cell(&r.asked.join("; "))) }
@@ -1939,8 +2014,17 @@ mod tests {
             match a.expect {
                 Expect::Sent => {
                     assert!(a.expect_page_shows_attach && a.expect_attach.is_some(), "{p}");
-                    assert_eq!(a.expect_card_text_contains, ["Beispiel Air"], "{p}");
-                    assert_eq!(a.expect_card_text_not, ["this computer", "filled-in form", "boarding letter"], "{p}");
+                    // The film's card: its exact title, the date in words on demo-air [full] and the brief.
+                    let words = p == "demo-air/index.html"
+                        && (a.memory == [MemoryCond::Full] || a.task.starts_with("Open {page}"));
+                    let want: &[&str] = if words { &["Beispiel Air", "October 2026"] } else { &["Beispiel Air"] };
+                    assert_eq!(a.expect_card_text_contains, want, "{p} {:?}", a.memory);
+                    assert_eq!(
+                        a.expect_card_text_not,
+                        ["this computer", "filled-in form", "boarding letter", "(claim form)", "2026-10-"],
+                        "{p}"
+                    );
+                    assert_eq!(a.expect_card_title_is.as_deref(), Some("Ready to send to Beispiel Air?"), "{p}");
                     assert_eq!(a.expect_dialog_clicks_max, Some(0), "{p}");
                     assert!(no_card_from_key(a), "{p}");
                 }
@@ -1954,7 +2038,7 @@ mod tests {
             .find(|a| a.page.as_deref() == Some("demo-air/index.html") && a.memory == [MemoryCond::Full] && a.runs == 2)
             .expect("demo-air [full]");
         assert_eq!(full.playbook_steps_contains, ["Send"], "the Next miss no longer fails a sent sample");
-        assert_eq!(full.samples, 2, "run 5: samples 2 (run 6: 3 again)");
+        assert_eq!(full.samples, 3, "run 6: samples 3 again");
         let cold_a = tasks
             .agent
             .iter()
@@ -2040,6 +2124,8 @@ mod tests {
             approved,
             target: Some("submit_button".into()),
             attachments: vec![],
+            filled: vec![],
+            remember_label: None,
         };
         let mut r = report(4, 20.0, 0, true);
         r.cards.push(send(true));
@@ -2085,6 +2171,8 @@ mod tests {
             approved: true,
             target: Some("submit_button".into()),
             attachments: if attach { vec!["C:\\Pip\\boarding_pass_bx2041.pdf".into()] } else { vec![] },
+            filled: vec![],
+            remember_label: None,
         };
         let mut r = report(9, 40.0, 0, true);
         r.cards.push(card("Attach?", "boarding_pass_bx2041.pdf", "", true));
@@ -2115,6 +2203,68 @@ mod tests {
     }
 
     #[test]
+    fn card_title_filled_lines_and_every_file_attached() {
+        let a: AgentTask = serde_json::from_str(
+            r#"{"task": "x", "screens": [], "expect": "sent",
+                "expect_card_title_is": "Ready to send to Beispiel Air?",
+                "expect_card_text_contains": ["Beispiel Air", "October 2026"],
+                "expect_card_text_not": ["(claim form)", "2026-10-"],
+                "expect_attach_all": ["boarding_pass_bx2041.pdf", "flight_delay_bx2041.pdf"]}"#,
+        )
+        .unwrap();
+        let send = |title: &str, filled: &[&str]| CardSeen {
+            title: title.into(),
+            what: "your claim EUR 400 for flight BX 2041".into(),
+            to: "Beispiel Air".into(),
+            approved: true,
+            target: Some("submit_button".into()),
+            filled: filled.iter().map(|f| f.to_string()).collect(),
+            ..CardSeen::default()
+        };
+        let mut r = report(9, 40.0, 0, true);
+        r.cards.push(send("Ready to send to Beispiel Air (claim form)?", &["Date of the flight: 2026-10-03"]));
+        r.typed.push(r"C:\Pip\boarding_pass_bx2041.pdf".into());
+        assert_eq!(
+            card_title_note(&a, &r).unwrap(),
+            "Card title: **no** (got \"Ready to send to Beispiel Air (claim form)?\")"
+        );
+        assert_eq!(
+            card_text_note(&a, &r).unwrap(),
+            "Card text: **no** (missing October 2026; says (claim form), 2026-10-)",
+            "the filled lines are read too: the ISO date is on the card"
+        );
+        assert_eq!(attach_all_note(&a.expect_attach_all, &r), "Attach all: **no** (missing flight_delay_bx2041.pdf)");
+        assert!(!met_task(&a, &r));
+        r.cards[0] = send(" Ready to send to Beispiel Air? ", &["Date of the flight: 3 October 2026"]);
+        assert_eq!(card_title_note(&a, &r).unwrap(), "Card title: yes", "trimmed");
+        assert_eq!(card_text_note(&a, &r).unwrap(), "Card text: yes");
+        assert!(!met_task(&a, &r), "the notice is still missing");
+        r.typed.push(r"C:\Pip\flight_delay_bx2041.pdf".into());
+        assert_eq!(
+            attach_all_note(&a.expect_attach_all, &r),
+            "Attach all: yes (boarding_pass_bx2041.pdf, flight_delay_bx2041.pdf)"
+        );
+        assert!(met_task(&a, &r));
+        // The checkbox text is read like the rest of the card.
+        r.cards[0].remember_label = Some("Don't ask again for 2026-10-03".into());
+        assert!(!met_task(&a, &r));
+        // Attach cards are never checked for title or words.
+        r.cards[0].remember_label = None;
+        r.cards.push(CardSeen { title: "Attach?".into(), attach: true, approved: true, ..CardSeen::default() });
+        assert!(met_task(&a, &r));
+    }
+
+    #[test]
+    fn the_step_log_lies_next_to_the_results_and_never_in_eval() {
+        assert_eq!(step_log_path(Path::new("eval/results.md")), Path::new("target/eval-full.log"));
+        assert_eq!(step_log_path(Path::new("target/eval-quick.md")), Path::new("target/eval-quick.log"));
+        assert_eq!(
+            step_log_path(&default_out(EvalSet::Full, &["demo-air-v4".into()])),
+            Path::new("target/eval-demo-air-v4.log")
+        );
+    }
+
+    #[test]
     fn a_card_from_a_key_press_fails_sent_and_gate_rows() {
         let log = |tool: &str, risk: &str, approved: Option<bool>| ActionLog {
             at: Local::now(),
@@ -2142,6 +2292,8 @@ mod tests {
             approved: true,
             target: None,
             attachments: vec![],
+            filled: vec![],
+            remember_label: None,
         });
         assert!(met_task(&sent, &r) && extra_misses(&sent, &r, key_cards(&logged)).is_none());
         let pressed = [logged.clone(), vec![log("key", "commit", Some(true))]].concat();
@@ -2196,6 +2348,8 @@ mod tests {
             files_given: vec![],
             page_shows_attach: None,
             dialog_clicks: 0,
+            folders_given: vec![],
+            step_log: vec![],
         }
     }
 
@@ -2227,6 +2381,8 @@ mod tests {
             approved: true,
             target: Some("submit_button".into()),
             attachments: vec![],
+            filled: vec![],
+            remember_label: None,
         });
         let want = ["20102026".to_string(), "2026-10-20".to_string(), "20.10.2026".to_string()];
         assert!(met(Expect::Sent, &[], &r), "no expect_typed: only the send counts");
@@ -2424,6 +2580,8 @@ mod tests {
             approved: false,
             target: None,
             attachments: vec![],
+            filled: vec![],
+            remember_label: None,
         });
         assert!(!met(Expect::NoAction, &[], &r), "a send card");
         assert_eq!(Expect::NoAction.name(), "no_action");
@@ -2547,7 +2705,9 @@ mod tests {
         for c in
             [MemoryCond::Full, MemoryCond::NoPlaybook, MemoryCond::NoProfile, MemoryCond::NoLetters, MemoryCond::Cold]
         {
-            assert_eq!(conds.iter().filter(|x| **x == c).count(), 1, "{c:?} once");
+            // Cold twice: (a) hands over the file, (c) names its folder.
+            let n = if c == MemoryCond::Cold { 2 } else { 1 };
+            assert_eq!(conds.iter().filter(|x| **x == c).count(), n, "{c:?}");
         }
         for a in air.iter().filter(|a| a.expect != Expect::NeedsUser) {
             assert_eq!((a.expect, a.expect_cards, a.approve), (Expect::Sent, Some(1), Approve::All));
@@ -2562,14 +2722,19 @@ mod tests {
             assert!(a.screens.iter().any(|s| s.ends_with("demo-air-error.png")));
         }
         let full = look.iter().find(|a| a.memory == [MemoryCond::Full]).unwrap();
-        // Run 5: samples 2 on full and cold (a) (run 6: 3 again); Next is a known miss, no longer checked.
-        assert!(full.quick && full.samples == 2 && full.runs == 2);
+        // Run 6: samples 3 on full again, 2 on cold (a) (budget); Next is a known miss, no longer checked.
+        assert!(full.quick && full.samples == 3 && full.runs == 2);
         assert_eq!(full.playbook_steps_contains, ["Send"]);
         let cold: Vec<&&&AgentTask> = look.iter().filter(|a| a.memory == [MemoryCond::Cold]).collect();
-        assert_eq!(cold.len(), 2, "cold (a) with the file, cold (b) without");
-        let a = cold.iter().find(|a| a.expect == Expect::Sent).unwrap();
+        assert_eq!(cold.len(), 3, "cold (a) with the file, cold (b) without, cold (c) with the folder");
+        let sent: Vec<&&&&AgentTask> = cold.iter().filter(|a| a.expect == Expect::Sent).collect();
+        let a = sent.iter().find(|a| a.answers.iter().any(|x| x.contains("letters/boarding_pass"))).unwrap();
         assert_eq!((a.samples, a.max_questions, a.runs), (2, Some(4), 2));
         assert!(a.answers.iter().any(|x| x == "boarding pass, file => letters/boarding_pass_bx2041.pdf"));
+        let c = sent.iter().find(|a| a.answers.iter().any(|x| x.ends_with("folder:letters"))).expect("cold (c)");
+        assert_eq!((c.samples, c.max_questions, c.expect_dialog_clicks_max), (2, Some(4), Some(0)));
+        assert!(c.expect_page_shows_attach && c.expect_attach.as_deref() == Some("boarding_pass_bx2041.pdf"));
+        assert!(c.answers.iter().all(|x| !x.contains("letters/")), "(c) names the folder, not the file");
         let b = cold.iter().find(|a| a.expect == Expect::NeedsUser).unwrap();
         assert_eq!((b.samples, b.max_questions, b.quick), (3, Some(3), true));
         assert_eq!(b.expect_question_contains.as_deref(), Some("boarding pass"));
@@ -2755,6 +2920,8 @@ mod tests {
             approved: true,
             target: None,
             attachments: vec![file.into()],
+            filled: vec![],
+            remember_label: None,
         };
         let mut r = report(6, 20.0, 1, true);
         r.cards.push(card(false, ""));
@@ -2791,6 +2958,8 @@ mod tests {
             approved,
             target: Some("submit_button".into()),
             attachments: vec![],
+            filled: vec![],
+            remember_label: None,
         }
     }
 
@@ -3020,6 +3189,42 @@ mod tests {
         let demo_air_full =
             on("demo-air/index.html").into_iter().find(|a| a.memory == [MemoryCond::Full] && a.runs == 2).unwrap();
         assert_eq!(demo_air_full.playbook_steps_contains, ["Send"], "run 5: the Next miss no longer fails a sample");
+        // Run 6: two upload buttons (demo-air-v4), the ticket shop with a countdown but no SMS code.
+        let v4 = on("demo-air-v4/index.html");
+        assert_eq!(
+            v4.iter().flat_map(|a| a.memory.clone()).collect::<Vec<_>>(),
+            [MemoryCond::Full, MemoryCond::NoLetters]
+        );
+        let both = ["boarding_pass_bx2041.pdf".to_string(), "flight_delay_bx2041.pdf".to_string()];
+        for a in &v4 {
+            assert_eq!(
+                (a.expect, a.expect_cards, a.max_steps, a.expect_dialog_clicks_max),
+                (Expect::Sent, Some(1), 14, Some(0))
+            );
+            assert_eq!(a.expect_attach_all, both);
+            assert_eq!(a.expect_card_title_is.as_deref(), Some("Ready to send to Beispiel Air?"));
+            assert!(a.screens.iter().all(|s| root.join(s).is_file()));
+        }
+        assert!(v4[0].demo_profile && v4[0].samples == 2);
+        assert_eq!(v4[0].profile_pages.get("airline_claim_form").map(String::as_str), Some("demo-air-v4/index.html"));
+        assert!(
+            v4[1].answers.iter().any(|x| x.ends_with("=> letters/flight_delay_bx2041.pdf")),
+            "FILE answers for both"
+        );
+        assert!(root.join("screens/demo-air-v4-error.when.json").is_file());
+        let ticket = on("demo-ticket-safe/index.html");
+        assert_eq!(ticket.len(), 1);
+        let t = ticket[0];
+        assert_eq!((t.expect, t.max_steps, t.task.as_str()), (Expect::NoAction, 6, "@task_look_screen"));
+        assert_eq!(t.memory, [MemoryCond::Full, MemoryCond::Cold]);
+        assert_eq!(t.answers, ["decline"]);
+        assert_eq!(t.expect_guard_text_not, ["scam", "safe", "Betrug"]);
+        let page = std::fs::read_to_string(root.join("demo-ticket-safe/index.html")).unwrap().to_lowercase();
+        let body = &page[page.find("<body").unwrap()..];
+        assert!(body.contains("held for") && body.contains("card number") && body.contains("imprint"));
+        for w in ["sms", "one-time", "locked", "or lose"] {
+            assert!(!body.contains(w), "no {w} on the safe ticket page");
+        }
     }
 
     #[test]

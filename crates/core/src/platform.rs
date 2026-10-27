@@ -511,6 +511,10 @@ pub trait UiTree: Send + Sync {
     fn find_restore_popup(&self) -> Option<OutlineItem> {
         None
     }
+    /// The user's home folder, where "in my Downloads" is looked up (Windows: %USERPROFILE%).
+    fn home_dir(&self) -> std::path::PathBuf {
+        std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(Into::into).unwrap_or_default()
+    }
 }
 
 #[derive(Clone)]

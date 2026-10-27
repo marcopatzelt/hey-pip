@@ -342,3 +342,29 @@ test("a press the webview dropped is pressed once, a press that fired is not pre
   const plain = { disabled: false, closest: () => plain };
   assert.equal(Bubble.missedPress(5, 5, 1100, () => plain), null); // not a guarded button
 });
+
+// Demo: the Stop pill hides while a card is open (main.js syncStop with Hits.stopShown). Opening the same card
+// twice toggles (and logs) the pill once; closing the card shows it again once.
+test("the same card shown twice keeps its buttons and toggles the Stop pill only once", () => {
+  const Hits = require("../ui/hits.js");
+  const c = fakeClock();
+  const k = fakeCard(c.now);
+  let shown = true; // a run acts: Stop is on screen
+  let cardOpen = false;
+  const changes = [];
+  const sync = () => {
+    const ch = Bubble.pillChange(shown, Hits.stopShown(true, cardOpen));
+    if (ch) { changes.push(ch); shown = ch === "show"; }
+  };
+  k.show(sendCard("card-1")); cardOpen = true; sync();
+  k.show(sendCard("card-1")); sync();
+  assert.deepEqual(k.relabels, ["card-1"], "buttons not rebuilt");
+  assert.deepEqual(changes, ["hide"]);
+  assert.equal(shown, false);
+  k.no.dispatch("pointerdown"); k.no.dispatch("pointerup");
+  cardOpen = false; sync(); sync();
+  assert.deepEqual(changes, ["hide", "show"]);
+  assert.deepEqual(k.sent.map((s) => s.answer), ["no"]);
+  assert.equal(Bubble.pillChange(false, false), null);
+  assert.equal(Bubble.pillChange(true, true), null);
+});

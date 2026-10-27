@@ -99,33 +99,67 @@ pub fn recall(mem: &Memory, q: &RecallQuery) -> Result<String> {
         None => {}
     }
 
-    // Letters: the newest of each kind, then the best matches for the task's words.
-    let mut letters: Vec<DocumentRow> = Vec::new();
-    for t in [DocType::AuBescheinigung, DocType::Bescheid, DocType::Brief, DocType::Mahnung, DocType::Rechnung] {
-        if let Some(d) = mem.latest_document(t)? {
-            letters.push(d);
+    // An agent run on a known site re-sends this block on every step: there it keeps only what the task needs.
+    let agent_run = !q.task_kind.is_empty() && q.site.is_some();
+
+    // Letters: the newest of each kind, then the best matches for the task's words. In an agent run the letters
+    // the task or the site names come first with their summaries; the other newest ones are one line each.
+    let mut named: Vec<DocumentRow> = Vec::new();
+    if !q.task_text.trim().is_empty() {
+        named.extend(mem.search_documents(&q.task_text, 2)?);
+    }
+    if agent_run && let Some(words) = q.site.as_deref().map(site_words).filter(|w| !w.is_empty()) {
+        for d in mem.search_documents(&words, 3)? {
+            if !named.iter().any(|l| l.id == d.id) {
+                named.push(d);
+            }
         }
     }
-    if !q.task_text.trim().is_empty() {
-        for d in mem.search_documents(&q.task_text, 2)? {
+    let mut newest: Vec<DocumentRow> = Vec::new();
+    for t in [DocType::AuBescheinigung, DocType::Bescheid, DocType::Brief, DocType::Mahnung, DocType::Rechnung] {
+        if let Some(d) = mem.latest_document(t)? {
+            newest.push(d);
+        }
+    }
+    // The letter a sick-note run sends keeps its file, insurer and summary whatever the word search ranks.
+    if agent_run && q.task_kind == "send_au" {
+        for d in newest.iter().filter(|d| d.doc_type == DocType::AuBescheinigung) {
+            if !named.iter().any(|n| n.id == d.id) {
+                named.push(d.clone());
+            }
+        }
+    }
+    let lines: Vec<String> = if agent_run {
+        let mut lines: Vec<String> = named.iter().map(letter_line).collect();
+        lines.extend(newest.iter().filter(|d| !named.iter().any(|n| n.id == d.id)).map(letter_short));
+        lines
+    } else {
+        let mut letters = newest;
+        for d in named {
             if !letters.iter().any(|l| l.id == d.id) {
                 letters.push(d);
             }
         }
-    }
-    let lines: Vec<String> = letters.iter().map(letter_line).collect();
+        letters.iter().map(letter_line).collect()
+    };
     b.section("Latest letters:", "", &lines);
 
-    if let Some(p) = sick_note_pattern(mem)? {
+    if (!agent_run || q.task_kind == "send_au")
+        && let Some(p) = sick_note_pattern(mem)?
+    {
         b.line(&p);
     }
 
-    let events = mem.recent_events(5)?;
-    let lines: Vec<String> = events
-        .iter()
-        .map(|e| format!("- {} {}: {}", e.at.format("%Y-%m-%d %H:%M"), e.kind, cut(&e.text, 160)))
-        .collect();
-    b.section("Recent events (newest first):", "", &lines);
+    // Steps done here before: the playbook says how; old events would only repeat it.
+    let site_playbook = agent_run && exact.is_some_and(|p| Some(p.site.as_str()) == q.site.as_deref());
+    if !site_playbook {
+        let events = mem.recent_events(5)?;
+        let lines: Vec<String> = events
+            .iter()
+            .map(|e| format!("- {} {}: {}", e.at.format("%Y-%m-%d %H:%M"), e.kind, cut(&e.text, 160)))
+            .collect();
+        b.section("Recent events (newest first):", "", &lines);
+    }
     Ok(b.s)
 }
 
@@ -197,6 +231,29 @@ fn letter_line(d: &DocumentRow) -> String {
         d.path.display(),
         cut(&x.summary_simple, 240)
     )
+}
+
+/// One line for a letter the task does not name: "- #3 au_bescheinigung from Dr. Beispiel, sick from … until …".
+fn letter_short(d: &DocumentRow) -> String {
+    let x = &d.extract;
+    let dates = match &x.au {
+        Some(au) => format!(", sick from {} until {}", au.from, au.until),
+        None => x.date.map(|d| format!(", dated {d}")).unwrap_or_default(),
+    };
+    format!("- #{} {} from {}{}", d.id, d.doc_type.as_str(), cut(&x.sender, 60), dates)
+}
+
+/// Search words in a site key: "www.beispiel-air.example" -> "beispiel air", ".../fixtures/demo-air" -> "air".
+fn site_words(site: &str) -> String {
+    const SKIP: &[&str] =
+        &["www", "demo", "example", "com", "org", "net", "de", "eu", "localhost", "index", "html", "http", "https"];
+    let last = site.trim_end_matches('/').rsplit('/').next().unwrap_or(site);
+    last.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() >= 3 && !w.chars().all(|c| c.is_ascii_digit()))
+        .map(str::to_lowercase)
+        .filter(|w| !SKIP.contains(&w.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// "Pattern: 3 sick notes so far, about 14 days each, the last one ended 30 Oct 2026."
@@ -378,6 +435,89 @@ mod tests {
         let at = |k: &str| s.find(&format!("- {k}: ")).unwrap_or_else(|| panic!("{k} missing: {s}"));
         assert!(at("full_name") < at("email") && at("email") < at("iban") && at("iban") < at("phone"), "{s}");
         assert!(at("phone") < at("address") && at("address") < at("insurer_0"), "{s}");
+    }
+
+    fn letter(m: &Memory, file: &str, doc_type: DocType, sender: &str, summary: &str, text: &str) -> i64 {
+        let day = NaiveDate::from_ymd_opt(2026, 10, 20).unwrap();
+        let x = crate::docs::DocumentExtract {
+            doc_type,
+            sender: sender.into(),
+            recipient: "Erika Beispiel".into(),
+            date: Some(day),
+            reference: None,
+            person: Some("Erika Beispiel".into()),
+            summary_simple: summary.into(),
+            requests: vec![],
+            deadlines: vec![],
+            au: (doc_type == DocType::AuBescheinigung).then(|| crate::docs::AuInfo {
+                from: day,
+                until: NaiveDate::from_ymd_opt(2026, 10, 30).unwrap(),
+                first_or_follow: crate::docs::AuKind::Erst,
+                issued: Some(day),
+            }),
+            flight: None,
+            consequences_if_ignored: None,
+            confidence: 0.9,
+        };
+        m.insert_document(std::path::Path::new(file), file, &x, text).unwrap()
+    }
+
+    #[test]
+    fn a_flight_run_lists_its_letters_and_no_events_when_a_playbook_exists() {
+        let m = mem();
+        letter(
+            &m,
+            "au_erika.pdf",
+            DocType::AuBescheinigung,
+            "Dr. Max Beispiel",
+            "Sick note from Dr. Beispiel.",
+            "Arbeitsunfähigkeitsbescheinigung Erika Beispiel",
+        );
+        letter(
+            &m,
+            "flight_delay_bx2041.pdf",
+            DocType::Brief,
+            "Beispiel Air",
+            "Your flight BX 2041 arrived 4 hours late.",
+            "Beispiel Air Customer Care flight BX 2041 late",
+        );
+        letter(
+            &m,
+            "boarding_pass_bx2041.pdf",
+            DocType::Sonstiges,
+            "Beispiel Air",
+            "Boarding pass for flight BX 2041.",
+            "Boarding pass Beispiel Air flight BX 2041 seat 14C",
+        );
+        m.add_event("done", "Sent the sick note of 13 Oct to Evergreen Health.").unwrap();
+        let site = "file:///c/pip/fixtures/demo-air";
+        let flight = RecallQuery {
+            task_text: "Look at my screen and do it".into(),
+            site: Some(site.into()),
+            task_kind: "look_screen".into(),
+            budget_chars: DEFAULT_BUDGET,
+        };
+        // No playbook yet: the events stay.
+        let first = recall(&m, &flight).unwrap();
+        assert!(first.contains("Recent events") && first.contains("boarding_pass_bx2041.pdf"), "{first}");
+        learn(&m, site, "look_screen");
+        let s = recall(&m, &flight).unwrap();
+        assert!(s.contains("LAST TIME ON THIS SITE"), "{s}");
+        assert!(!s.contains("Recent events") && !s.contains("Evergreen"), "no events with a playbook: {s}");
+        assert!(s.contains("file: boarding_pass_bx2041.pdf; summary: Boarding pass for flight BX 2041."), "{s}");
+        assert!(s.contains("file: flight_delay_bx2041.pdf; summary: Your flight BX 2041 arrived"), "{s}");
+        // The sick note is one line without its file and summary; its pattern only helps a sick-note run.
+        assert!(s.contains("au_bescheinigung from Dr. Max Beispiel, sick from 2026-10-20 until 2026-10-30\n"), "{s}");
+        assert!(!s.contains("au_erika.pdf") && !s.contains("Pattern:"), "{s}");
+        let au = recall(&m, &RecallQuery { task_kind: "send_au".into(), ..flight.clone() }).unwrap();
+        assert!(au.contains("Pattern: 1 sick note so far"), "{au}");
+        // The sick-note run keeps the sick note's file and insurer, whatever the word search ranks.
+        assert!(au.contains("to: Erika Beispiel; file: au_erika.pdf; summary: Sick note from Dr. Beispiel."), "{au}");
+        // The brief's and the card's recall (no task) keep every part.
+        let all = recall(&m, &RecallQuery::default()).unwrap();
+        assert!(all.contains("Recent events") && all.contains("au_erika.pdf") && all.contains("Pattern:"), "{all}");
+        assert_eq!(site_words("www.beispiel-air.example"), "beispiel air");
+        assert_eq!(site_words(site), "air");
     }
 
     #[test]

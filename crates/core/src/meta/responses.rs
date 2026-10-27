@@ -74,6 +74,46 @@ impl ResponseRequest {
     }
 }
 
+/// Characters a request sends, by part (for the per-call log line; no content).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RequestSizes {
+    pub instructions_chars: usize,
+    pub tools_chars: usize,
+    /// Text of the input: messages, replayed calls and call outputs.
+    pub text_chars: usize,
+    pub images: usize,
+}
+
+impl ResponseRequest {
+    /// How big each part of this request is (characters; pictures counted).
+    pub fn sizes(&self) -> RequestSizes {
+        let mut z = RequestSizes {
+            instructions_chars: self.instructions.chars().count(),
+            tools_chars: self
+                .tools
+                .iter()
+                .map(|t| t.name.len() + t.description.chars().count() + t.parameters.to_string().len())
+                .sum(),
+            ..RequestSizes::default()
+        };
+        for item in &self.input {
+            match item {
+                InputItem::Message { content, .. } => {
+                    for c in content {
+                        match c {
+                            Content::Text { text } => z.text_chars += text.chars().count(),
+                            Content::Image { .. } | Content::File { .. } => z.images += 1,
+                        }
+                    }
+                }
+                InputItem::FunctionCall { name, arguments, .. } => z.text_chars += name.len() + arguments.len(),
+                InputItem::FunctionCallOutput { output, .. } => z.text_chars += output.chars().count(),
+            }
+        }
+        z
+    }
+}
+
 /// Reasoning effort. "none" is rejected by the API (400), so it does not exist here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

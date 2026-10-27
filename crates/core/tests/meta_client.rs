@@ -269,3 +269,22 @@ async fn error_body_never_echoes_the_key() {
     assert!(!text.contains("sk-test-secret-123"), "{text}");
     assert!(text.contains("<redacted>"));
 }
+
+#[test]
+fn request_sizes_count_each_part_without_content() {
+    let mut req = ResponseRequest::new(
+        "muse-spark-1.3",
+        "Be brief.",
+        vec![
+            InputItem::user(vec![Content::text("WHAT YOU KNOW"), Content::png(&tiny_png(4, 4))]),
+            InputItem::FunctionCall { call_id: "c1".into(), name: "click".into(), arguments: "{}".into() },
+            InputItem::call_output("c1", "ok"),
+        ],
+    );
+    req.tools = vec![ToolDef { name: "done".into(), description: "Finish.".into(), parameters: json!({}) }];
+    let z = req.sizes();
+    assert_eq!(z.instructions_chars, 9);
+    assert_eq!(z.text_chars, "WHAT YOU KNOW".len() + "click".len() + 2 + 2);
+    assert_eq!(z.images, 1);
+    assert_eq!(z.tools_chars, "done".len() + "Finish.".len() + 2);
+}

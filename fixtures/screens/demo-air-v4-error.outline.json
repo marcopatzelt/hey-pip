@@ -1,0 +1,306 @@
+{
+ "note": "UI Automation outline of demo-air-v4-error.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-air-v4/index.html?error, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-air-v4-error.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "BX Beispiel Air Fly from Beispielstadt",
+   "value": null,
+   "rect": {
+    "x": 284,
+    "y": 50,
+    "w": 191,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "Book",
+   "value": null,
+   "rect": {
+    "x": 1044,
+    "y": 61,
+    "w": 38,
+    "h": 31
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "My trips",
+   "value": null,
+   "rect": {
+    "x": 1106,
+    "y": 61,
+    "w": 61,
+    "h": 31
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "link",
+   "name": "Check-in",
+   "value": null,
+   "rect": {
+    "x": 1191,
+    "y": 61,
+    "w": 64,
+    "h": 31
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "link",
+   "name": "Help",
+   "value": null,
+   "rect": {
+    "x": 1279,
+    "y": 61,
+    "w": 37,
+    "h": 31
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "text",
+   "name": "Claim with documents",
+   "value": null,
+   "rect": {
+    "x": 324,
+    "y": 136,
+    "w": 952,
+    "h": 41
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "text",
+   "name": "Your flight",
+   "value": null,
+   "rect": {
+    "x": 351,
+    "y": 233,
+    "w": 898,
+    "h": 26
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "edit",
+   "name": "Booking reference",
+   "value": "BX7Q2K",
+   "rect": {
+    "x": 351,
+    "y": 299,
+    "w": 286,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "edit",
+   "name": "Flight number",
+   "value": "BX 2041",
+   "rect": {
+    "x": 657,
+    "y": 299,
+    "w": 286,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 10,
+   "role": "edit",
+   "name": "Date of the flight",
+   "value": "03.10.2026",
+   "rect": {
+    "x": 963,
+    "y": 299,
+    "w": 286,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 11,
+   "role": "text",
+   "name": "Passenger and payment",
+   "value": null,
+   "rect": {
+    "x": 351,
+    "y": 360,
+    "w": 898,
+    "h": 26
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 12,
+   "role": "edit",
+   "name": "Full name",
+   "value": "Erika Beispiel",
+   "rect": {
+    "x": 351,
+    "y": 425,
+    "w": 286,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 13,
+   "role": "edit",
+   "name": "E-mail",
+   "value": "erika.beispiel@example.com",
+   "rect": {
+    "x": 657,
+    "y": 425,
+    "w": 286,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 14,
+   "role": "edit",
+   "name": "IBAN",
+   "value": "DE02 1203 0000 0000 2020 51",
+   "rect": {
+    "x": 963,
+    "y": 425,
+    "w": 286,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 15,
+   "role": "text",
+   "name": "Please enter your IBAN without spaces",
+   "value": null,
+   "rect": {
+    "x": 963,
+    "y": 478,
+    "w": 286,
+    "h": 23
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 16,
+   "role": "text",
+   "name": "Documents",
+   "value": null,
+   "rect": {
+    "x": 351,
+    "y": 513,
+    "w": 898,
+    "h": 26
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 17,
+   "role": "button",
+   "name": "Upload boarding pass",
+   "value": null,
+   "rect": {
+    "x": 369,
+    "y": 557,
+    "w": 272,
+    "h": 47
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 18,
+   "role": "button",
+   "name": "Upload the airline's notice",
+   "value": null,
+   "rect": {
+    "x": 369,
+    "y": 638,
+    "w": 312,
+    "h": 47
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 19,
+   "role": "checkbox",
+   "name": "I confirm the information is correct",
+   "value": "checked",
+   "rect": {
+    "x": 355,
+    "y": 718,
+    "w": 22,
+    "h": 22
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 20,
+   "role": "button",
+   "name": "Send claim",
+   "value": null,
+   "rect": {
+    "x": 1053,
+    "y": 708,
+    "w": 196,
+    "h": 54
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

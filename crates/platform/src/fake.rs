@@ -36,6 +36,8 @@ pub struct FakePlatform {
     pub invoked: Arc<Mutex<Vec<String>>>,
     /// Pretend browser "Restore pages" popup: its close button (None = not shown). Invoking it closes it.
     pub restore_popup: Arc<Mutex<Option<OutlineItem>>>,
+    /// The pretend home folder ("in my Downloads" is looked up below it); the dry run sets the fixtures folder.
+    pub home: Arc<Mutex<std::path::PathBuf>>,
     /// Field that gets typed text (last click) and whether Ctrl+A selected its text.
     caret: Mutex<(Option<PhysPoint>, bool)>,
     /// Pretend Edge date inputs (`add_date_input`) and which part has the keys.
@@ -125,6 +127,7 @@ impl FakePlatform {
             screen_h: Arc::default(),
             invoked: Arc::default(),
             restore_popup: Arc::default(),
+            home: Arc::new(Mutex::new(std::path::PathBuf::from("fixtures"))),
             caret: Mutex::default(),
             dates: Mutex::default(),
         });
@@ -446,6 +449,9 @@ impl UiTree for FakePlatform {
 
     fn find_restore_popup(&self) -> Option<OutlineItem> {
         self.restore_popup.lock().ok()?.clone()
+    }
+    fn home_dir(&self) -> std::path::PathBuf {
+        self.home.lock().map(|h| h.clone()).unwrap_or_default()
     }
 }
 

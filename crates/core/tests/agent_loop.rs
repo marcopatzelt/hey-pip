@@ -58,6 +58,12 @@ struct MockPlatform {
     restore_popup: Mutex<Option<OutlineItem>>,
     /// Enter in an open file dialog closes it: this window is in front again.
     after_dialog: Mutex<Option<WindowInfo>>,
+    /// The dialog closes this long after the Enter (a slow PC); None = at once.
+    dialog_close_after: Mutex<Option<Duration>>,
+    /// When the dialog closes (set by the Enter while `dialog_close_after` is set).
+    dialog_closes_at: Mutex<Option<std::time::Instant>>,
+    /// The user's home folder ("in my Downloads" is looked up below it).
+    home: Mutex<std::path::PathBuf>,
 }
 
 /// A Chromium `<input type=date>` as Edge shows it in German: "TT.mm.jjjj". Its value through the UI tree is
@@ -235,7 +241,9 @@ impl Input for MockPlatform {
     fn key(&self, combo: &str) -> anyhow::Result<()> {
         self.actions.lock().unwrap().push(format!("key {combo}"));
         if combo == "enter" && self.foreground.lock().unwrap().as_ref().is_some_and(WindowInfo::is_file_dialog) {
-            if let Some(w) = self.after_dialog.lock().unwrap().take() {
+            if let Some(d) = *self.dialog_close_after.lock().unwrap() {
+                *self.dialog_closes_at.lock().unwrap() = Some(std::time::Instant::now() + d);
+            } else if let Some(w) = self.after_dialog.lock().unwrap().take() {
                 *self.foreground.lock().unwrap() = Some(w);
             }
         }
@@ -273,7 +281,17 @@ impl UiTree for MockPlatform {
         self.ui.lock().unwrap().iter().find(|(r, _)| r.contains(p)).map(|(_, e)| e.clone())
     }
     fn foreground(&self) -> Option<WindowInfo> {
+        let closes = *self.dialog_closes_at.lock().unwrap();
+        if closes.is_some_and(|at| std::time::Instant::now() >= at) {
+            *self.dialog_closes_at.lock().unwrap() = None;
+            if let Some(w) = self.after_dialog.lock().unwrap().take() {
+                *self.foreground.lock().unwrap() = Some(w);
+            }
+        }
         self.foreground.lock().unwrap().clone()
+    }
+    fn home_dir(&self) -> std::path::PathBuf {
+        self.home.lock().unwrap().clone()
     }
     fn focused(&self) -> Option<UiElement> {
         self.focus.lock().unwrap().clone()
@@ -4378,4 +4396,347 @@ async fn ok_on_an_error_box_is_never_a_send_card_and_its_text_reaches_the_model(
     assert_eq!(h.platform.clicks(), ["click 640,415"]);
     let outs = outputs(&h.requests()[1]);
     assert!(outs[0].contains("the box said: \"Öffnen Der Dateiname ist ungültig.\""), "{outs:?}");
+}
+
+// ---------- run 6: the card names the organisation, dates in words, one upload click, "in my Downloads" ----------
+
+fn send_as(commit_to: &str) -> (&'static str, Value) {
+    (
+        "click",
+        json!({"sam_query": "button", "description": "the button „Send claim“", "is_commit": true,
+               "commit_what": "your claim for flight BX 2041", "commit_to": commit_to, "element": 2}),
+    )
+}
+
+fn claim_form_with_fields() -> Vec<OutlineItem> {
+    let mut items = claim_page();
+    items.push(el(3, "edit", "Booking reference", (100, 300, 300, 30)));
+    items.push(el(4, "edit", "Flight number", (100, 350, 300, 30)));
+    items
+}
+
+async fn card_on(
+    address: &str,
+    known: bool,
+    outline: Vec<OutlineItem>,
+    turns: Vec<Value>,
+) -> pip_core::agent::ApprovalCard {
+    // A page on this computer is only allowed in demo mode (inside the fixtures folder).
+    let mut h = Harness::new(address.starts_with("C:")).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    if known {
+        h.memory.profile_set("airline", "Beispiel Air").unwrap();
+        h.memory.profile_set("airline_claim_form", "file:///C:/demo/fixtures/demo-air/index.html").unwrap();
+    }
+    *h.platform.foreground.lock().unwrap() = Some(browser(address));
+    h.platform.set_outline(outline);
+    h.agent_turns(turns);
+    h.auto_answer(ApprovalAnswer::No, "");
+    h.run("Send my claim for flight BX 2041").await;
+    let c = cards(&h.drain());
+    assert_eq!(c.len(), 1, "{c:?}");
+    c[0].clone()
+}
+
+#[tokio::test]
+async fn the_send_card_names_the_airline_in_title_to_line_and_checkbox() {
+    let local = "C:/demo/fixtures/demo-air/index.html";
+    let c = card_on(
+        local,
+        true,
+        claim_form_with_fields(),
+        vec![
+            calls("r1", &[type_el("BX7Q2K", "your booking reference", 3), type_el("BX 2041", "your flight number", 4)]),
+            calls("r2", &[send_as("Beispiel Air (claim form)")]),
+            calls("r3", &[done("x")]),
+        ],
+    )
+    .await;
+    assert_eq!(c.title, "Ready to send to Beispiel Air?");
+    assert_eq!(c.to, pip_core::i18n::tf("approve_to", pip_core::i18n::Lang::En, &[("to", "Beispiel Air")]));
+    assert_eq!(c.remember_label.as_deref(), Some("Don't ask again for Beispiel Air"));
+    assert!(c.filled.contains(&"Booking reference: BX7Q2K".to_string()), "{:?}", c.filled);
+    let mut texts = vec![c.title.clone(), c.what.clone(), c.to.clone(), c.remember_label.clone().unwrap_or_default()];
+    texts.extend(c.filled.iter().cloned());
+    for text in &texts {
+        assert!(!text.contains("this computer") && !text.contains("(claim form)"), "{text}");
+    }
+
+    // A real site keeps its host on the checkbox.
+    let c = card_on(
+        "https://www.insurer.example/claim",
+        false,
+        claim_page(),
+        vec![calls("r1", &[send_as("Beispiel Insurance")]), calls("r2", &[done("x")])],
+    )
+    .await;
+    assert_eq!(c.remember_label.as_deref(), Some("Don't ask again for www.insurer.example"));
+
+    // A page on this computer that memory does not know and that has no heading: as before.
+    let c = card_on(
+        "C:/demo/fixtures/demo-other/form.html",
+        false,
+        claim_page(),
+        vec![calls("r1", &[send_as("the page")]), calls("r2", &[done("x")])],
+    )
+    .await;
+    assert_eq!(c.remember_label.as_deref(), Some("Don't ask again for page on this computer"));
+
+    // Such a page with a heading: the heading.
+    let mut page = vec![el(9, "text", "Beispiel Air claims", (100, 50, 400, 40))];
+    page.extend(claim_page());
+    let c = card_on(
+        "C:/demo/fixtures/demo-other/form.html",
+        false,
+        page,
+        vec![calls("r1", &[send_as("the page")]), calls("r2", &[done("x")])],
+    )
+    .await;
+    assert_eq!(c.remember_label.as_deref(), Some("Don't ask again for Beispiel Air claims"));
+}
+
+#[tokio::test]
+async fn a_typed_date_is_shown_in_words_on_the_card() {
+    let mut outline = claim_page();
+    outline.push(el(3, "edit", "Booking reference", (100, 300, 300, 30)));
+    outline.push(el(4, "edit", "Date of flight", (100, 350, 300, 30)));
+    let c = card_on(
+        "C:/demo/fixtures/demo-air/index.html",
+        true,
+        outline,
+        vec![
+            calls(
+                "r1",
+                &[type_el("BX7Q2K", "your booking reference", 3), type_el("2026-10-03", "your date of flight", 4)],
+            ),
+            calls("r2", &[send_as("Beispiel Air")]),
+            calls("r3", &[done("x")]),
+        ],
+    )
+    .await;
+    assert!(c.filled.contains(&"Date of flight: 3 October 2026".to_string()), "{:?}", c.filled);
+    assert!(c.filled.contains(&"Booking reference: BX7Q2K".to_string()), "{:?}", c.filled);
+}
+
+/// A claim page whose file dialog closes `close_after` after the Enter (a slow PC).
+async fn slow_dialog(close_after: Duration, after_click: Option<Vec<OutlineItem>>) -> (Harness, AgentOutcome) {
+    let h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    store_doc(&h, "C:\\Briefe\\boarding_pass_bx2041.pdf", "sonstiges", "Boarding pass for flight BX 2041");
+    h.platform.set_outline(claim_page());
+    let page = browser("https://www.beispiel-air.example/claim");
+    *h.platform.foreground.lock().unwrap() = Some(page.clone());
+    *h.platform.on_click_window.lock().unwrap() = Some(file_dialog());
+    *h.platform.after_dialog.lock().unwrap() = Some(page);
+    *h.platform.dialog_close_after.lock().unwrap() = Some(close_after);
+    if let Some(items) = after_click {
+        h.platform.on_click_outline.lock().unwrap().push_back(items);
+    }
+    h.agent_turns(vec![
+        calls("r1", &[click_el("the button „Upload boarding pass“", 1, false)]),
+        calls("r2", &[click_el("the button „Upload boarding pass“", 1, false)]),
+        calls("r3", &[click_el("the button „Send claim“", 2, true)]),
+        calls("r4", &[done("Sent.")]),
+    ]);
+    h.auto_answer(ApprovalAnswer::Yes, "");
+    let out = h.run("Send my claim").await;
+    (h, out)
+}
+
+#[tokio::test]
+async fn a_dialog_that_closes_seconds_after_the_enter_still_counts_as_attached() {
+    let (h, out) = slow_dialog(Duration::from_secs(4), None).await;
+    assert_eq!(out, AgentOutcome::Done("Sent.".into()));
+    // The dialog opened once: the second upload click is not made.
+    assert_eq!(h.platform.clicks(), ["click 225,520", "click 800,625"]);
+    assert_eq!(h.platform.typed(), "C:\\Briefe\\boarding_pass_bx2041.pdf");
+    let reqs = h.requests();
+    assert!(outputs(&reqs[1])[0].contains("it is attached"), "{:?}", outputs(&reqs[1]));
+    assert!(outputs(&reqs[2])[0].starts_with("already attached: boarding_pass_bx2041.pdf"), "{:?}", outputs(&reqs[2]));
+}
+
+#[tokio::test]
+async fn the_page_showing_the_file_counts_as_attached_while_the_dialog_seems_open() {
+    let mut shows = claim_page();
+    shows.push(el(5, "text", "boarding_pass_bx2041.pdf", (360, 505, 220, 30)));
+    let (h, _) = slow_dialog(Duration::from_secs(600), Some(shows)).await;
+    let reqs = h.requests();
+    assert!(outputs(&reqs[1])[0].contains("the dialog is still open"), "{:?}", outputs(&reqs[1]));
+    assert!(outputs(&reqs[2])[0].starts_with("already attached: boarding_pass_bx2041.pdf"), "{:?}", outputs(&reqs[2]));
+    assert_eq!(h.platform.clicks().iter().filter(|c| *c == "click 225,520").count(), 1, "{:?}", h.platform.clicks());
+}
+
+#[tokio::test]
+async fn cancel_in_the_dialog_after_the_enter_is_no_attach_and_the_upload_is_clicked_again() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    store_doc(&h, "C:\\Briefe\\boarding_pass_bx2041.pdf", "sonstiges", "Boarding pass for flight BX 2041");
+    let mut items = claim_page();
+    items.push(el(7, "button", "Cancel", (500, 700, 100, 30)));
+    h.platform.set_outline(items.clone());
+    // After the Cancel the page says so (else the repeat check holds the upload click back).
+    let mut after_cancel = items.clone();
+    after_cancel.push(el(8, "text", "No file chosen", (360, 505, 200, 30)));
+    *h.platform.on_click_outline.lock().unwrap() = [items, after_cancel].into();
+    let page = browser("https://www.beispiel-air.example/claim");
+    *h.platform.foreground.lock().unwrap() = Some(page.clone());
+    *h.platform.on_click_window.lock().unwrap() = Some(file_dialog());
+    *h.platform.after_dialog.lock().unwrap() = Some(page.clone());
+    // The Enter does not close the dialog (an invalid-name box); the Cancel click does.
+    *h.platform.dialog_close_after.lock().unwrap() = Some(Duration::from_secs(600));
+    let (p2, h2) = (page, h.platform.clone());
+    tokio::spawn(async move {
+        loop {
+            let in_dialog = h2.foreground.lock().unwrap().as_ref().is_some_and(WindowInfo::is_file_dialog);
+            if in_dialog {
+                let mut w = h2.on_click_window.lock().unwrap();
+                if w.is_none() {
+                    *w = Some(p2.clone());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    h.agent_turns(vec![
+        calls("r1", &[click_el("the button „Upload boarding pass“", 1, false)]),
+        calls("r2", &[click_el("the button „Cancel“", 7, false)]),
+        calls("r3", &[click_el("the button „Upload boarding pass“", 1, false)]),
+        calls("r4", &[done("x")]),
+    ]);
+    h.auto_answer(ApprovalAnswer::Yes, "");
+    h.run("Send my claim").await;
+    let reqs = h.requests();
+    assert!(outputs(&reqs[1])[0].contains("the dialog is still open"), "{:?}", outputs(&reqs[1]));
+    // After the Cancel the file is not attached: the upload button is clicked again, not answered "already attached".
+    assert!(!outputs(&reqs[3])[0].starts_with("already attached"), "{:?} {:?}", outputs(&reqs[2]), outputs(&reqs[3]));
+    assert_eq!(
+        h.platform.clicks(),
+        ["click 225,520", "click 550,715", "click 225,520"],
+        "{:?} {:?}",
+        outputs(&reqs[2]),
+        outputs(&reqs[3])
+    );
+    let c = cards(&h.drain());
+    assert!(c.is_empty(), "{c:?}");
+}
+
+fn downloads(name: &str, files: &[&str]) -> std::path::PathBuf {
+    let home = std::env::temp_dir().join(format!("pip-home-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join("Downloads")).unwrap();
+    for f in files {
+        std::fs::write(home.join("Downloads").join(f), b"%PDF").unwrap();
+    }
+    home
+}
+
+async fn folder_answer(home: &std::path::Path, answers: Vec<&'static str>) -> Harness {
+    let h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    *h.platform.home.lock().unwrap() = home.to_path_buf();
+    h.platform.set_outline(claim_page());
+    let page = browser("https://www.beispiel-air.example/claim");
+    *h.platform.foreground.lock().unwrap() = Some(page.clone());
+    *h.platform.on_click_window.lock().unwrap() = Some(file_dialog());
+    *h.platform.after_dialog.lock().unwrap() = Some(page);
+    h.agent_turns(vec![
+        calls("r1", &[click_el("the button „Upload boarding pass“", 1, false)]),
+        calls("r2", &[click_el("the button „Send claim“", 2, true)]),
+        calls("r3", &[done("Sent.")]),
+    ]);
+    h.answer_in_order(ApprovalAnswer::Yes, answers);
+    h
+}
+
+#[tokio::test]
+async fn in_my_downloads_finds_the_boarding_pass_and_the_run_goes_on_to_the_send_card() {
+    let home = downloads("one", &["boarding_pass_bx2041.pdf", "au_erika_erst.pdf", "holiday.jpg"]);
+    let mut h = folder_answer(&home, vec!["in my Downloads"]).await;
+    let out = h.run("Send my claim for flight BX 2041").await;
+    assert_eq!(out, AgentOutcome::Done("Sent.".into()));
+    let pass = home.join("Downloads").join("boarding_pass_bx2041.pdf");
+    assert_eq!(h.platform.typed(), pass.display().to_string(), "the path goes into the dialog");
+    assert_eq!(h.platform.clicks(), ["click 225,520", "click 800,625"], "no click inside the dialog");
+    let outs = outputs(&h.requests()[1]);
+    assert!(outs[0].contains("The user gave boarding_pass_bx2041.pdf: it is attached."), "{outs:?}");
+    let ev = h.drain();
+    assert_eq!(questions(&ev).len(), 1);
+    let c = cards(&ev);
+    assert_eq!(c.len(), 1, "the run reaches the send card");
+    assert_eq!(c[0].attachments, ["boarding_pass_bx2041.pdf"]);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[tokio::test]
+async fn two_equally_good_files_are_asked_once_and_the_pick_goes_in() {
+    let home = downloads("two", &["boarding_pass_mum.pdf", "boarding_pass_me.pdf", "holiday.jpg"]);
+    let mut h = folder_answer(&home, vec!["Downloads", "boarding_pass_me.pdf"]).await;
+    assert_eq!(h.run("Send my claim").await, AgentOutcome::Done("Sent.".into()));
+    assert_eq!(h.platform.typed(), home.join("Downloads").join("boarding_pass_me.pdf").display().to_string());
+    let asked = questions(&h.drain());
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[1].0, "Which file is your boarding pass?");
+    assert_eq!(asked[1].1.len(), 2);
+    let _ = std::fs::remove_dir_all(&home);
+
+    // Nothing fits in the folder: nothing typed, the run is told the file is missing.
+    let home = downloads("none", &["holiday.jpg"]);
+    let h = folder_answer(&home, vec!["in my Downloads"]).await;
+    h.run("Send my claim").await;
+    assert_eq!(h.platform.typed(), "");
+    let outs = outputs(&h.requests()[1]);
+    assert!(outs[0].contains("nothing was attached"), "{outs:?}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[tokio::test]
+async fn the_airlines_notice_goes_into_the_second_field_and_both_are_on_the_card() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    store_doc(&h, "C:\\Briefe\\boarding_pass_bx2041.pdf", "sonstiges", "Boarding pass for flight BX 2041");
+    store_doc(&h, "C:\\Briefe\\insurer_notice.pdf", "bescheid", "Your insurer decided about your sick pay.");
+    store_doc(
+        &h,
+        "C:\\Briefe\\flight_delay_bx2041.pdf",
+        "brief",
+        "Beispiel Air says sorry: your flight BX 2041 arrived about 4 hours late.",
+    );
+    h.platform.set_outline(vec![
+        el(1, "button", "Upload boarding pass", (100, 500, 250, 40)),
+        el(2, "button", "Upload the airline's notice", (100, 560, 250, 40)),
+        el(3, "button", "Send claim", (700, 600, 200, 50)),
+    ]);
+    let page = browser("https://www.beispiel-air.example/claim");
+    *h.platform.foreground.lock().unwrap() = Some(page.clone());
+    h.agent_turns(vec![
+        calls("r1", &[click_el("the button „Upload boarding pass“", 1, false)]),
+        calls("r2", &[click_el("the button „Upload the airline's notice“", 2, false)]),
+        calls("r3", &[click_el("the button „Upload boarding pass“", 1, false)]),
+        calls("r4", &[click_el("the button „Send claim“", 3, true)]),
+        calls("r5", &[done("Sent.")]),
+    ]);
+    // Each upload click opens the dialog; Enter closes it again.
+    let (p2, h2) = (page.clone(), h.platform.clone());
+    tokio::spawn(async move {
+        loop {
+            {
+                let mut w = h2.on_click_window.lock().unwrap();
+                let mut a = h2.after_dialog.lock().unwrap();
+                if w.is_none() && a.is_none() {
+                    *w = Some(file_dialog());
+                    *a = Some(p2.clone());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    h.auto_answer(ApprovalAnswer::Yes, "");
+    assert_eq!(h.run("Send my claim for flight BX 2041").await, AgentOutcome::Done("Sent.".into()));
+    assert_eq!(h.platform.typed(), "C:\\Briefe\\boarding_pass_bx2041.pdfC:\\Briefe\\flight_delay_bx2041.pdf");
+    assert_eq!(h.platform.clicks(), ["click 225,520", "click 225,580", "click 800,625"]);
+    let outs = outputs(&h.requests()[3]);
+    assert!(outs[0].starts_with("already attached: boarding_pass_bx2041.pdf"), "{outs:?}");
+    let c = cards(&h.drain());
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].attachments, ["boarding_pass_bx2041.pdf", "flight_delay_bx2041.pdf"]);
 }

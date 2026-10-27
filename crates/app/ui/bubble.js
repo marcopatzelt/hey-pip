@@ -119,8 +119,17 @@
     return btn.pressClock.at >= since ? null : btn;
   }
 
+  /**
+   * The Stop pill's change when its wanted state (Hits.stopShown) is applied: "hide", "show" or null (no change).
+   * The same card shown twice gives null the second time: the pill is toggled (and logged) once per card.
+   */
+  function pillChange(shown, want) {
+    if (!!shown === !!want) return null;
+    return want ? "show" : "hide";
+  }
+
   const Bubble = {
-    PRESS_MS, signature, sameBubble, cardSignature, sameCard, pressClock, pressGuard, attach, afterRun, missedPress,
+    PRESS_MS, pillChange, signature, sameBubble, cardSignature, sameCard, pressClock, pressGuard, attach, afterRun, missedPress,
   };
   root.Bubble = Bubble;
   if (typeof module !== "undefined" && module.exports) module.exports = Bubble;

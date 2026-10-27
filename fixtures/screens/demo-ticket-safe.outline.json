@@ -1,0 +1,171 @@
+{
+ "note": "UI Automation outline of demo-ticket-safe.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-ticket-safe/index.html?still, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-ticket-safe.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "Events",
+   "value": null,
+   "rect": {
+    "x": 1095,
+    "y": 20,
+    "w": 49,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "Venues",
+   "value": null,
+   "rect": {
+    "x": 1166,
+    "y": 20,
+    "w": 55,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "Basket (2)",
+   "value": null,
+   "rect": {
+    "x": 1243,
+    "y": 20,
+    "w": 73,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "text",
+   "name": "Your basket",
+   "value": null,
+   "rect": {
+    "x": 309,
+    "y": 150,
+    "w": 576,
+    "h": 39
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "text",
+   "name": "Payment by card",
+   "value": null,
+   "rect": {
+    "x": 309,
+    "y": 201,
+    "w": 576,
+    "h": 30
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "edit",
+   "name": "Name on the card",
+   "value": "",
+   "rect": {
+    "x": 309,
+    "y": 270,
+    "w": 576,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "edit",
+   "name": "Card number",
+   "value": "",
+   "rect": {
+    "x": 309,
+    "y": 362,
+    "w": 225,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "edit",
+   "name": "Expiry date (MM/YY)",
+   "value": "",
+   "rect": {
+    "x": 548,
+    "y": 362,
+    "w": 183,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "edit",
+   "name": "Security code",
+   "value": "",
+   "rect": {
+    "x": 744,
+    "y": 362,
+    "w": 141,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 10,
+   "role": "button",
+   "name": "Pay EUR 64.00",
+   "value": null,
+   "rect": {
+    "x": 309,
+    "y": 425,
+    "w": 191,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 11,
+   "role": "text",
+   "name": "Your tickets",
+   "value": null,
+   "rect": {
+    "x": 961,
+    "y": 150,
+    "w": 330,
+    "h": 30
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

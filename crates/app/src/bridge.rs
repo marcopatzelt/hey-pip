@@ -14,7 +14,7 @@ use pip_core::docs::DocError;
 use pip_core::docs::DocType;
 use pip_core::events::{Bus, Button, ForgetKind, OnboardingStep, PipState, UiEvent, UserCommand};
 use pip_core::i18n::{Lang, t, tf};
-use pip_core::memory::{Deadline, DeadlineStatus, Knowledge, untrust_site};
+use pip_core::memory::{Deadline, DeadlineStatus, Knowledge, ProfileFact, untrust_site};
 use pip_core::meta::MetaError;
 use pip_core::platform::{PhysPoint, PhysRect};
 use pip_core::rules::daily::{EV_ACCEPTED, EV_DECLINED, EV_SUGGESTED};
@@ -2231,7 +2231,11 @@ fn knowledge_groups(k: &Knowledge, lang: Lang) -> Vec<KnowGroup> {
         })
         .collect();
     let site_name = |site: &str| {
-        if site.starts_with("file:") { t("page_local", lang).to_string() } else { site.to_string() }
+        if site.starts_with("file:") {
+            local_site_name(site, &k.facts).unwrap_or_else(|| t("page_local", lang).to_string())
+        } else {
+            site.to_string()
+        }
     };
     let places = k
         .playbooks
@@ -2273,6 +2277,73 @@ fn knowledge_groups(k: &Knowledge, lang: Lang) -> Vec<KnowGroup> {
         group("know_places", places),
         group("know_trusted", trusted),
     ]
+}
+
+/// A local demo site (key "file:///c:/pip/fixtures/demo-airline", the folder) in plain words: the organisation
+/// memory keeps for a `*_form` / `*_page` address in that folder ("airline_claim_form" -> "airline" ->
+/// "Beispiel Air", like the core's page_org), else the `<h1>` of a page there, else None ("page on this computer").
+fn local_site_name(site: &str, facts: &[ProfileFact]) -> Option<String> {
+    let norm = |u: &str| {
+        let low = u.trim().to_lowercase().replace('\\', "/");
+        let path = low.strip_prefix("file://").unwrap_or(&low);
+        let path = path.strip_prefix("localhost").unwrap_or(path);
+        format!("file://{}", path.split(['?', '#']).next().unwrap_or(""))
+    };
+    let folder = norm(site);
+    let folder = folder.trim_end_matches('/');
+    // A page directly in the folder. A page of the fixtures root has the root as its site (gate site_key): the
+    // demo folders below it must not lend it their organisation.
+    let inside = |address: &str| {
+        norm(address).strip_prefix(&format!("{folder}/")).is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
+    };
+    let value = |key: &str| facts.iter().find(|f| f.key == key && !f.value.trim().is_empty()).map(|f| f.value.trim());
+    let pages: Vec<&ProfileFact> =
+        facts.iter().filter(|f| (f.key.ends_with("_form") || f.key.ends_with("_page")) && inside(&f.value)).collect();
+    let org = pages.iter().find_map(|f| {
+        let mut prefix = f.key.strip_suffix("_form").or_else(|| f.key.strip_suffix("_page"))?;
+        loop {
+            if let Some(org) = value(prefix).filter(|v| !v.contains("://")) {
+                return Some(org.to_string());
+            }
+            prefix = prefix.rsplit_once('_')?.0;
+        }
+    });
+    if org.is_some() {
+        return org;
+    }
+    // The page's own heading: the remembered pages in the folder first, then its index page.
+    let path_of = |u: &str| {
+        let low = u.trim().replace('\\', "/");
+        let rest = low.get(7..).filter(|_| low.to_lowercase().starts_with("file://"))?;
+        let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+        let rest = rest.split(['?', '#']).next().unwrap_or("");
+        // "/C:/Pip/..." -> "C:/Pip/..." on Windows
+        let rest = if rest.as_bytes().get(2) == Some(&b':') { &rest[1..] } else { rest };
+        Some(std::path::PathBuf::from(rest))
+    };
+    let mut files: Vec<std::path::PathBuf> = pages.iter().filter_map(|f| path_of(&f.value)).collect();
+    files.extend(path_of(site).map(|d| d.join("index.html")));
+    files.iter().find_map(|f| std::fs::read_to_string(f).ok().and_then(|html| h1_text(&html)))
+}
+
+/// The text of the first `<h1>` of a page, tags dropped and spaces folded; None without one.
+fn h1_text(html: &str) -> Option<String> {
+    let low = html.to_ascii_lowercase();
+    let open = low.find("<h1")?;
+    let start = open + low[open..].find('>')? + 1;
+    let end = start + low[start..].find("</h1")?;
+    let mut text = String::new();
+    let mut in_tag = false;
+    for c in html[start..end].chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    let text = text.replace("&amp;", "&").split_whitespace().collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then(|| text.chars().take(60).collect())
 }
 
 /// "insurer" -> "Health insurer"; unknown keys: "favourite_shop" -> "Favourite shop".
@@ -2843,6 +2914,44 @@ mod tests {
         assert_eq!(g[2].items[0].task, "send_au");
         assert!(g[2].items[0].detail.starts_with("Sending a sick note · once, on "), "{}", g[2].items[0].detail);
         assert_eq!(g[3].items[0].kind, ForgetKind::Trusted);
+    }
+
+    #[test]
+    fn local_places_name_the_organisation() {
+        use pip_core::memory::{Memory, RunSummary, learn_from_run};
+        let m = Memory::open_in_memory().unwrap();
+        m.profile_set("airline", "Beispiel Air").unwrap();
+        m.profile_set("airline_claim_form", "file:///C:/Pip/fixtures/demo-airline/claim.html").unwrap();
+        for site in ["file:///c:/pip/fixtures/demo-airline", "file:///c:/pip/fixtures/demo-nowhere"] {
+            let run = RunSummary {
+                site: Some(site.into()),
+                task_kind: "fill_form".into(),
+                send_label: Some("Send".into()),
+                ok: true,
+                ..Default::default()
+            };
+            learn_from_run(&m, &run).unwrap();
+        }
+        let mut k = m.knowledge().unwrap();
+        k.trusted_sites = vec!["file:///c:/pip/fixtures/demo-airline".into()];
+        let g = knowledge_groups(&k, Lang::En);
+        let mut places: Vec<&str> = g[2].items.iter().map(|i| i.title.as_str()).collect();
+        places.sort();
+        assert_eq!(places, ["Beispiel Air", "page on this computer"]);
+        assert_eq!(g[3].items[0].title, "Beispiel Air");
+        // The fixtures root (a page directly in it) does not borrow the airline folder's organisation.
+        assert_eq!(local_site_name("file:///c:/pip/fixtures", &k.facts), None);
+        assert_eq!(local_site_name("file:///C:/Pip/fixtures/demo-airline/", &k.facts).as_deref(), Some("Beispiel Air"));
+
+        // A folder without a remembered organisation: the heading of its index page.
+        let dir = std::env::temp_dir().join(format!("pip-know-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<html><H1 class=t>Demo <b>Insurer</b>\n  &amp; Co</H1></html>")
+            .unwrap();
+        let site = format!("file:///{}", dir.to_string_lossy().trim_start_matches('/').replace('\\', "/"));
+        assert_eq!(local_site_name(&site, &[]).as_deref(), Some("Demo Insurer & Co"));
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(h1_text("<p>no heading</p>"), None);
     }
 
     #[test]

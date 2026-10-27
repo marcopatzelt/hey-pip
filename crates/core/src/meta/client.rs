@@ -232,6 +232,18 @@ impl MetaClient {
         tracing::debug!(ms = started.elapsed().as_millis() as u64, "responses call");
         let out = parse_response(&v)?;
         self.add_usage(out.usage);
+        let z = req.sizes();
+        tracing::info!(
+            "model call: input_tokens={} output_tokens={} model={} instructions_chars={} tools_chars={} \
+             text_chars={} images={}",
+            out.usage.input_tokens,
+            out.usage.output_tokens,
+            body["model"].as_str().unwrap_or(""),
+            z.instructions_chars,
+            z.tools_chars,
+            z.text_chars,
+            z.images
+        );
         Ok(out)
     }
 

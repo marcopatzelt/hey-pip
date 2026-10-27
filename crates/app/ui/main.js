@@ -473,7 +473,7 @@ function hitScene() {
   return {
     pip: el.pip.hidden ? null : { box: rectOf(el.pip), home: st.home, peek: st.peek, head: { x: g.x, y: g.y, w: P, h: g.visibleH, bottom: g.bottom } },
     // a run acts: Pip's body next to the target never takes the agent's (or the person's) click on it
-    acting: st.acting && !el.stop.hidden,
+    acting: !!st.acting, // also while a card hides Stop: the run waits, Pip's body still takes no click
     boxes: [el.bubble, el.card, el.ask, el.panel, el.progress, el.stop, el.note].map(rectOf),
     micDown,
     viewport: { w: innerWidth, h: innerHeight },
@@ -843,8 +843,10 @@ function showCard(card) {
     $("card-no").textContent = card.no_label;
   }
   el.card.hidden = false;
-  // The card says it all and has its own "Noch nicht": the status line must never sit on its buttons.
+  // The card says it all and has its own "Noch nicht": the status line must never sit on its buttons, and Stop
+  // is gone while it is open (one clear choice; Esc still answers the card "no").
   el.dock.hidden = true;
+  syncStop();
   st.lastSpoke = performance.now();
   if (!same) hop();
   layout();
@@ -854,7 +856,22 @@ function hideCard() {
   st.cardSig = null;
   el.card.hidden = true;
   el.dock.hidden = false;
+  syncStop();
   layout();
+}
+/** Stop shows while a run acts and no card is open (ui/hits.js stopShown); toggled and logged once per change. */
+let stopHeldBy = null; // the card that hid the pill
+function syncStop() {
+  const change = Bubble.pillChange(!el.stop.hidden, Hits.stopShown(st.acting, !el.card.hidden));
+  if (change === "hide") {
+    el.stop.hidden = true;
+    if (st.card && st.acting) jsLog("info", `ui: stop pill hidden while card ${st.card} is open`);
+  } else if (change === "show") {
+    el.stop.hidden = false;
+    if (stopHeldBy) jsLog("info", `ui: stop pill shown again after card ${stopHeldBy}`);
+  }
+  // Another card may replace the open one before Stop returns: the "shown again" line names the last one.
+  stopHeldBy = st.acting && st.card && el.stop.hidden ? st.card : null;
 }
 /** via: how the person answered ("pointerup" | "click" | "key"); Stop leaves it empty (no card press). */
 function answerCard(answer, via) {
@@ -1145,7 +1162,7 @@ function onApp(ev) {
       if (ev.on) rise();
       st.acting = ev.on;
       if (!ev.on) st.actingEndedAt = performance.now();
-      el.stop.hidden = !ev.on;
+      syncStop();
       if (ev.on) {
         closeAsk(); el.panel.hidden = true; st.marks = [];
         // a warning left over from an ended run must not hold the new run's questions in the queue
