@@ -379,6 +379,8 @@ SAFE = [
     ("demo-unrelated/index.html", "demo-unrelated"),
     ("demo-unrelated/instructions.html", "demo-unrelated-instructions"),
     ("demo-insurer/help.html", "demo-insurer-help"),
+    # A task outside paperwork: flat search results in Munich (compare and name the pick, never reserve).
+    ("demo-stay/index.html", "demo-stay"),
 ]
 VARIANTS = [
     ("demo-insurer-v2/index.html", "demo-insurer-v2-popup", "?popup", [], True,

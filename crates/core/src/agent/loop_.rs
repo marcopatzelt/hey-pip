@@ -3549,17 +3549,12 @@ say argument of your action.",
                 ));
             }
         }
-        if !self.gate.url_allowed(url) {
-            let why = if self.gate.demo_mode {
-                "blocked: in demo mode only http://localhost, http://127.0.0.1 or the local demo pages are allowed"
-            } else {
-                "blocked: only http:// and https:// addresses are allowed"
-            };
-            return Ok(ToolRun::out(Risk::Act, why));
+        if !self.gate.open_allowed(url) {
+            return Ok(ToolRun::out(Risk::Act, "blocked: only http:// and https:// addresses are allowed"));
         }
         // No card for opening a page: the page only shows things. What leaves the computer is the send click,
         // and that is checked. Personal data inside the address itself would leave right now: refused.
-        if !self.gate.demo_mode && self.url_leaks_personal(url, state) {
+        if self.url_leaks_personal(url, state) {
             return Ok(ToolRun::out(
                 Risk::Commit,
                 "refused: this address contains the user's personal data. Open the page without it and fill \

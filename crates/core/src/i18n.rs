@@ -363,12 +363,8 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("btn_pause_link", "Pause machen", "Take a break"),
     ("queue_of", "Nachricht {i} von {n}", "Message {i} of {n}"),
     ("no_letter_known", "Ich habe noch keinen Brief von dir.", "I don't have a letter from you yet."),
-    (
-        "ask_placeholder",
-        "Schreib es hier hin. Oder halte das Mikrofon gedrückt.",
-        "Type it here. Or hold the microphone.",
-    ),
-    ("btn_go", "Los", "Go"),
+    ("ask_placeholder", "Frag Pip, was du willst …", "Ask Pip anything…"),
+    ("btn_go", "Senden ↵", "Send ↵"),
     ("btn_mic", "Gedrückt halten und sprechen", "Hold and speak"),
     ("btn_close", "Schließen", "Close"),
     ("btn_ok", "Gut", "OK"),
@@ -729,6 +725,12 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("card_what_form", "das Formular auf dieser Seite", "the form on this page"),
     // --- run 6: several files in the folder the user named fit equally well ---
     ("attach_pick_which", "Welche Datei ist deine {doc}?", "Which file is your {doc}?"),
+    // --- 27.10.: the text box says how to send ---
+    (
+        "ask_enter_hint",
+        "Enter ↵ schickt es an Pip · Umschalt+Enter für eine neue Zeile · oder Mikrofon gedrückt halten",
+        "Press Enter ↵ to send · Shift+Enter for a new line · or hold the microphone",
+    ),
 ];
 
 /// Lookup. Unknown key -> the key itself (visible in tests, never panics).

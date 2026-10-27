@@ -62,11 +62,14 @@
       <button id="ask-close" class="icon-btn" aria-label=""><svg><use href="#i-close"/></svg></button>
       <h2 id="ask-title"></h2>
       <form id="ask-form" autocomplete="off">
-        <textarea id="ask-input" rows="2"></textarea>
+        <div class="ask-box">
+          <textarea id="ask-input" rows="1"></textarea>
+          <button id="ask-send" type="submit" class="send-arrow" aria-label="" disabled><svg viewBox="0 0 24 24"><path d="M4 12h13M12 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        </div>
+        <p id="ask-hint" class="ask-hint"></p>
         <div id="ask-chips" class="chips"></div>
         <div class="buttons">
           <button id="ask-mic" type="button" class="btn mic"><svg><use href="#i-mic"/></svg><span></span></button>
-          <button id="ask-go" type="button" class="btn primary"></button>
         </div>
       </form>
       <div class="links">

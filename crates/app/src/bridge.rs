@@ -162,6 +162,7 @@ const UI_KEYS: &[&str] = &[
     "btn_elsewhere",
     "ask_what",
     "ask_placeholder",
+    "ask_enter_hint",
     "btn_go",
     "btn_mic",
     "btn_close",
@@ -1332,6 +1333,8 @@ impl Ctx {
             }
         }
         *self.last_text.lock().expect("text lock") = Some(text.clone());
+        // The typed message is shown back at once, so the user sees it reached Pip (like a spoken one).
+        self.say(tf("heard", self.lang(), &[("text", &text)]), vec![]);
         self.clone().start_task(task_from_words(&text, false));
     }
 

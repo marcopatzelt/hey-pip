@@ -80,6 +80,8 @@ button { font: inherit; }
    hover: raised 14 px, one gentle wiggle, the eyes follow the cursor, "Need help? Click me" after 1 s. */
 .pip.sliding { transition: transform .4s ease-out; }
 .pip.peek-rest .zzz, .pip.peek-rest .pip-floor, .pip.peek-hover .pip-floor { display: none; }
+/* Taking a break: he sleeps at the edge; the zzz above his head shows that he is asleep (a click wakes him). */
+.pip.paused.peek-rest .zzz { display: block; }
 .pip.peek-rest .pip-body, .pip.peek-hover .pip-body { transform: none; }
 .pip.peek-hover .pip-body { animation: wiggle 1.1s ease-in-out 2; }
 .pip-body img { transition: translate .18s ease-out; }
@@ -274,6 +276,13 @@ input[type=text]:focus, textarea:focus, select:focus { border-color: var(--blue)
 .remember input { width: 22px; height: 22px; margin: 0; accent-color: var(--blue); }
 
 .ask { width: 440px; }
+.ask-box { position: relative; }
+.ask-box textarea { width: 100%; min-height: 48px; padding-right: 52px; line-height: 26px; }
+.send-arrow { position: absolute; right: 6px; bottom: 6px; width: 38px; height: 38px; border: 0; border-radius: 50%;
+  background: var(--blue); color: #fff; display: grid; place-items: center; cursor: pointer; }
+.send-arrow svg { width: 20px; height: 20px; }
+.send-arrow:disabled { background: #c9d3e0; cursor: default; }
+.ask-hint { margin: 6px 2px 2px; font-size: 13px; color: var(--muted, #667); }
 .ask .links { display: flex; flex-wrap: wrap; gap: 4px 20px; margin-top: 6px; }
 .link.quiet { color: var(--ink-soft); }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }

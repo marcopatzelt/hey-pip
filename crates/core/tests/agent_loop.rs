@@ -852,14 +852,17 @@ async fn demo_mode_blocks_commit_on_unknown_page() {
 
 #[tokio::test]
 async fn open_url_is_checked() {
+    // Demo mode: a real web page opens (to look, search, compare; VM 27.10.: "find Airbnbs in Munich" was
+    // blocked), a script address never does. Sending on a real page stays blocked (demo_mode_blocks_commit_on_unknown_page).
     let h = Harness::new(true).await;
     h.agent_turns(vec![
-        calls("r1", &[("open_url", json!({"url": "https://www.example-insurer.de/kontakt"}))]),
-        calls("r2", &[done("x")]),
+        calls("r1", &[("open_url", json!({"url": "javascript:alert(1)"}))]),
+        calls("r2", &[("open_url", json!({"url": "https://www.example-stays.com/s/Munich"}))]),
+        calls("r3", &[done("x")]),
     ]);
-    h.run("Öffne die Seite").await;
-    assert!(h.opened.lock().unwrap().is_empty());
+    h.run("Find a flat in Munich").await;
     assert!(outputs(&h.requests()[1])[0].starts_with("blocked"));
+    assert_eq!(*h.opened.lock().unwrap(), vec!["https://www.example-stays.com/s/Munich".to_string()]);
 }
 
 #[tokio::test]

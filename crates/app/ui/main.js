@@ -925,18 +925,27 @@ function closeAsk() {
 }
 onPress($("ask-close"), closeAsk);
 // Send: the press rules of every button (one press = one send); Enter in the box submits the form.
-onPress($("ask-go"), () => $("ask-form").requestSubmit());
 $("ask-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const text = el.askInput.value.trim();
   if (!text) { el.askInput.focus(); return; }
   el.askInput.value = "";
+  el.askInput.style.height = "";
+  $("ask-send").disabled = true;
   closeAsk();
   send({ type: "text", text });
 });
 el.askInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("ask-form").requestSubmit(); }
 });
+// The arrow in the box lights up once there is something to send; the box grows with the text (max 4 lines).
+el.askInput.addEventListener("input", () => {
+  $("ask-send").disabled = !el.askInput.value.trim();
+  el.askInput.style.height = "auto";
+  el.askInput.style.height = `${Math.min(el.askInput.scrollHeight, 4 * 26)}px`;
+  layout();
+});
+onPress($("ask-send"), () => $("ask-form").requestSubmit());
 onPress($("ask-letter"), () => { closeAsk(); send({ type: "pick_file" }); });
 onPress($("ask-deadlines"), () => { closeAsk(); invoke("open_deadlines").catch(() => {}); });
 onPress($("ask-knows"), () => { closeAsk(); invoke("open_knowledge").catch(() => {}); });
@@ -1198,9 +1207,14 @@ function onApp(ev) {
       layout();
       break;
     case "paused":
-      if (ev.on) rise();
       st.paused = ev.on;
-      if (ev.on) { closeAsk(); hideTarget(); if (!st.home) flyHome(); }
+      el.pip.classList.toggle("paused", ev.on);
+      clearTimeout(st.sleepTimer);
+      if (ev.on) {
+        closeAsk(); hideTarget(); if (!st.home) flyHome();
+        // "I'm taking a break. Click me…" first, then he sinks down and sleeps: only his head and the zzz peek out.
+        st.sleepTimer = setTimeout(() => { if (st.paused) { hideBubble(); setPeek("rest"); } }, SLEEP_AFTER_MS);
+      } else rise();
       break;
     case "drag":
       if (ev.state === "enter") {
@@ -1255,10 +1269,13 @@ function showSetup(text) {
 }
 
 // ---------- input on Pip: click = ask, hold = talk ----------
+/** Taking a break: the break bubble shows this long, then Pip sinks down and sleeps. */
+const SLEEP_AFTER_MS = 2500;
 const HOLD_MS = 350;
 const HOLD_SLOP = 8;   // px the pointer may move before a press is no longer a click or hold
 const press = { id: null, x: 0, y: 0, timer: 0, holding: false, used: false };
 function pipClick() {
+  st.pipClickAt = performance.now();
   if (st.dragging) return;
   if (st.peek !== "up") setPeek(Peek.next(st.peek, "click"));
   if (st.paused) { invoke("wake").catch(() => {}); return; }
@@ -1312,7 +1329,7 @@ el.pip.addEventListener("pointerup", pipUp);
 // Hover at the edge: the head rises a little, the eyes follow, "Need help? Click me" after 1 s.
 el.pip.addEventListener("pointerenter", () => {
   st.lastPointer = performance.now();
-  if (st.mode === "peek" && st.home) setPeek(Peek.next(st.peek, "hover_in"));
+  if (st.mode === "peek" && st.home && !st.paused) setPeek(Peek.next(st.peek, "hover_in"));
 });
 el.pip.addEventListener("pointerleave", () => {
   if (press.id !== null) return; // a held press keeps him where he is
@@ -1323,7 +1340,8 @@ document.addEventListener("pointermove", (e) => {
   st.lastPointer = performance.now();
   if (st.peek === "hover") lookAt(e.clientX, e.clientY);
   // the 5 s fallback lowered him under a still cursor: the next move over the head raises him again
-  else if (st.peek === "rest" && st.mode === "peek" && st.home && e.target instanceof Element && e.target.closest("#pip")) {
+  else if (st.peek === "rest" && st.mode === "peek" && st.home && !st.paused && e.target instanceof Element
+    && e.target.closest("#pip")) {
     setPeek(Peek.next(st.peek, "hover_in"));
   }
 });
@@ -1346,8 +1364,9 @@ window.addEventListener("keydown", (e) => {
 function applyStaticText() {
   $("ask-title").textContent = s("ask_what");
   el.askInput.placeholder = s("ask_placeholder");
+  $("ask-hint").textContent = s("ask_enter_hint");
+  $("ask-send").setAttribute("aria-label", s("btn_go"));
   el.askMic.querySelector("span").textContent = s("btn_mic");
-  $("ask-go").textContent = s("btn_go");
   $("ask-letter").querySelector("span").textContent = s("btn_pick_letter");
   $("ask-deadlines").querySelector("span").textContent = s("tray_deadlines");
   $("ask-knows").querySelector("span").textContent = s("tray_knowledge");
@@ -1380,8 +1399,15 @@ async function start() {
   await TAURI.event.listen("press", ({ payload }) => {
     const since = performance.now() - Bubble.PRESS_MS;
     setTimeout(() => {
-      const btn = Bubble.missedPress(payload.x, payload.y, since, (x, y) => document.elementFromPoint(x, y));
-      if (btn) { console.info("press rescued", btn.textContent); btn.click(); }
+      const at = (x, y) => document.elementFromPoint(x, y);
+      const btn = Bubble.missedPress(payload.x, payload.y, since, at);
+      if (btn) { console.info("press rescued", btn.textContent); btn.click(); return; }
+      // Pip himself (not a button): a click on his head that never reached pipClick.
+      const hit = at(payload.x, payload.y);
+      if (hit && hit.closest && hit.closest("#pip") && !(st.pipClickAt >= since) && press.id === null && !st.dragging) {
+        console.info("press rescued: Pip");
+        pipClick();
+      }
     }, 250);
   });
   // Pip flies in from the right edge: to his resting place at the edge (peek) or home (always).

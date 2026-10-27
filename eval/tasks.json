@@ -1878,6 +1878,29 @@
       ],
       "expect_dialog_clicks_max": 0,
       "note": "No letters and no boarding pass in memory: Pip asks for each file and the dry run hands both over (FILE answers). Pass: sent with both files."
+    },
+    {
+      "task": "Find me a place to stay in Munich for 3 nights, 14 to 17 November, under 120 EUR a night. Don't book yet: tell me the best-rated one.",
+      "lang": "en",
+      "page": "demo-stay/index.html",
+      "outline": "screens/demo-stay.outline.json",
+      "screens": [
+        "screens/demo-stay.png"
+      ],
+      "approve": "none",
+      "expect": "no_action",
+      "expect_answer_contains": [
+        "Schwabing"
+      ],
+      "memory": [
+        "full",
+        "cold"
+      ],
+      "answers": [
+        "decline"
+      ],
+      "max_steps": 6,
+      "note": "A task outside paperwork (VM 27.10.: Pip refused 'find Airbnbs in Munich' because the prompt limited him to letters and forms). Invented flat-search results: pass = Pip compares and names the best-rated offer under EUR 120 (the studio in Schwabing, 4.8, EUR 98), never presses Reserve, never refuses the task as out of scope."
     }
   ],
   "lookups": [

@@ -1,0 +1,141 @@
+{
+ "note": "UI Automation outline of demo-stay.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-stay/index.html, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-stay.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "text",
+   "name": "4 places in Munich",
+   "value": null,
+   "rect": {
+    "x": 284,
+    "y": 85,
+    "w": 1032,
+    "h": 35
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "text",
+   "name": "Old-town flat near Marienplatz",
+   "value": null,
+   "rect": {
+    "x": 303,
+    "y": 287,
+    "w": 469,
+    "h": 28
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "button",
+   "name": "Reserve",
+   "value": null,
+   "rect": {
+    "x": 666,
+    "y": 349,
+    "w": 106,
+    "h": 41
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "text",
+   "name": "Bright studio in Schwabing",
+   "value": null,
+   "rect": {
+    "x": 828,
+    "y": 287,
+    "w": 469,
+    "h": 28
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "button",
+   "name": "Reserve",
+   "value": null,
+   "rect": {
+    "x": 1191,
+    "y": 349,
+    "w": 106,
+    "h": 41
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "text",
+   "name": "Room in Sendling",
+   "value": null,
+   "rect": {
+    "x": 303,
+    "y": 541,
+    "w": 469,
+    "h": 28
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "button",
+   "name": "Reserve",
+   "value": null,
+   "rect": {
+    "x": 666,
+    "y": 603,
+    "w": 106,
+    "h": 41
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "text",
+   "name": "Loft at the Olympic Park",
+   "value": null,
+   "rect": {
+    "x": 828,
+    "y": 541,
+    "w": 469,
+    "h": 28
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "button",
+   "name": "Reserve",
+   "value": null,
+   "rect": {
+    "x": 1191,
+    "y": 603,
+    "w": 106,
+    "h": 41
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

@@ -465,6 +465,23 @@ impl Gate {
     }
 }
 
+impl Gate {
+    /// Pages Pip may OPEN (look, search, compare): every http(s) page, also in demo mode, plus what
+    /// `url_allowed` allows (the local demo pages). Sending stays limited by `url_allowed`.
+    pub fn open_allowed(&self, url: &str) -> bool {
+        if self.url_allowed(url) {
+            return true;
+        }
+        if !self.demo_mode {
+            return false;
+        }
+        let low = url.trim().to_lowercase();
+        let Some(rest) = low.strip_prefix("https://").or_else(|| low.strip_prefix("http://")) else { return false };
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        !authority.is_empty() && !authority.contains('@') && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+    }
+}
+
 /// "localhost:8000" -> "localhost", "[::1]:9000" -> "[::1]".
 fn host_of_authority(authority: &str) -> String {
     if let Some(v6) = authority.strip_prefix('[') {
@@ -682,6 +699,12 @@ mod tests {
 
         let demo = Gate::new(true).with_fixtures(&["/home/x/papierkram-copilot/fixtures", "C:/Pip/fixtures"]);
         assert!(demo.url_allowed("http://localhost:8000/form"));
+        // Demo mode: any web page may be opened to look and search, but sending stays on the demo pages.
+        assert!(demo.open_allowed("https://www.airbnb.com/s/Munich"));
+        assert!(!demo.url_allowed("https://www.airbnb.com/s/Munich"));
+        assert!(!demo.open_allowed("https://localhost@evil.example/"));
+        assert!(!demo.open_allowed("javascript:alert(1)"));
+        assert!(!demo.open_allowed("file:///C:/Windows/win.ini"));
         assert!(demo.url_allowed("http://127.0.0.1/"));
         assert!(demo.url_allowed("http://[::1]:9000/"));
         assert!(demo.url_allowed("file:///home/x/papierkram-copilot/fixtures/demo-insurer/index.html"));

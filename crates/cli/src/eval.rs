@@ -142,6 +142,10 @@ struct AgentTask {
     /// `expect: needs_user`: exactly one question of the run (the closing one included) contains this (any case).
     #[serde(default)]
     expect_question_contains: Option<String>,
+    /// Pip's closing answer (the done text) must contain each of these (any case), e.g. the listing a search
+    /// task should pick. Also fails on a scope refusal ("I only help with …").
+    #[serde(default)]
+    expect_answer_contains: Vec<String>,
     /// The guard's text (bubble + warning signs) must contain each of these (any case).
     #[serde(default)]
     expect_guard_text_contains: Vec<String>,
@@ -483,6 +487,25 @@ fn met_task(a: &AgentTask, r: &Report) -> bool {
         && card_forbidden.is_empty()
         && card_title_misses(a, r).is_empty()
         && r.attached_all(&a.expect_attach_all)
+        && answer_misses(a, r).is_empty()
+}
+
+/// Words of `expect_answer_contains` missing from the closing answer, plus "refused" when the answer turns the
+/// task down as out of scope.
+fn answer_misses(a: &AgentTask, r: &Report) -> Vec<String> {
+    if a.expect_answer_contains.is_empty() {
+        return Vec::new();
+    }
+    let text = match &r.outcome {
+        Some(AgentOutcome::Done(t)) => t.to_lowercase(),
+        _ => String::new(),
+    };
+    let mut miss: Vec<String> =
+        a.expect_answer_contains.iter().filter(|w| !text.contains(&w.to_lowercase())).cloned().collect();
+    if ["i only help", "i only do", "can't help with that", "not something i can"].iter().any(|r| text.contains(r)) {
+        miss.push("refused".into());
+    }
+    miss
 }
 
 /// The Guard text note, None for a task without guard text checks.
@@ -1187,6 +1210,14 @@ async fn agent_unit(
         }
         if let Some(note) = guard_text_note(a, &r) {
             notes.push(note);
+        }
+        if !a.expect_answer_contains.is_empty() {
+            let miss = answer_misses(a, &r);
+            notes.push(if miss.is_empty() {
+                "Answer: yes".into()
+            } else {
+                format!("Answer misses: {}", miss.join(", "))
+            });
         }
         if run_n >= 2 && !a.playbook_steps_contains.is_empty() {
             let (yes, note) = playbook_check(&a.playbook_steps_contains, &c.memory);
@@ -2554,6 +2585,19 @@ mod tests {
             cell("What is your\nstudent number? | -> 7654321\r\n"),
             "What is your student number? / -> 7654321  "
         );
+    }
+
+    #[test]
+    fn the_answer_must_name_the_pick_and_never_refuse() {
+        let a: AgentTask = serde_json::from_str(
+            r#"{"task": "x", "screens": [], "expect": "no_action", "expect_answer_contains": ["Schwabing"]}"#,
+        )
+        .unwrap();
+        let mut r = report(2, 5.0, 0, true);
+        r.outcome = Some(AgentOutcome::Done("The bright studio in Schwabing, EUR 98 a night.".into()));
+        assert!(answer_misses(&a, &r).is_empty());
+        r.outcome = Some(AgentOutcome::Done("Sorry, I only help with letters and forms.".into()));
+        assert_eq!(answer_misses(&a, &r), vec!["Schwabing".to_string(), "refused".to_string()]);
     }
 
     #[test]
