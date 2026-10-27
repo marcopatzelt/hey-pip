@@ -1812,6 +1812,11 @@ impl Agent {
         let path = doc.path.display().to_string();
         // The name after the last slash of either kind (a Windows path read on any system).
         let file = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
+        // A slow dialog is in front before its name box has the keyboard: the first letters went nowhere
+        // (VM: ":\Users\…" without the "C"). Wait for the box, then type.
+        if !self.wait_for_text_focus(cancel).await {
+            return Ok(None);
+        }
         if !self.type_chunks(&path, cancel).await? {
             return Ok(None);
         }
@@ -3899,6 +3904,29 @@ say argument of your action.",
                 None => return None,
                 Some(_) if Instant::now() >= deadline || cancel.is_cancelled() => return Some(false),
                 Some(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+            }
+        }
+    }
+
+    /// True once the keyboard is in a text box (max 3 s), or when the focus cannot be read (Linux); false if stopped
+    /// or no box got the keyboard.
+    async fn wait_for_text_focus(&self, cancel: &CancellationToken) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if cancel.is_cancelled() {
+                return false;
+            }
+            match self.focused().await {
+                Some(el) if el.is_text_input() => {
+                    // the box can report focus a moment before it takes keys
+                    return self.pause(Duration::from_millis(150), cancel).await;
+                }
+                None => return true,
+                _ if Instant::now() >= deadline => {
+                    tracing::info!("attach: the file dialog's name box never got the keyboard");
+                    return false;
+                }
+                _ => tokio::time::sleep(Duration::from_millis(150)).await,
             }
         }
     }
