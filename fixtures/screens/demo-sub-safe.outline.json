@@ -1,0 +1,201 @@
+{
+ "note": "UI Automation outline of demo-sub-safe.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-sub-safe/index.html, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-sub-safe.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "Home",
+   "value": null,
+   "rect": {
+    "x": 1130,
+    "y": 24,
+    "w": 43,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "My list",
+   "value": null,
+   "rect": {
+    "x": 1193,
+    "y": 24,
+    "w": 45,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "Account",
+   "value": null,
+   "rect": {
+    "x": 1258,
+    "y": 24,
+    "w": 58,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "link",
+   "name": "Profile",
+   "value": null,
+   "rect": {
+    "x": 284,
+    "y": 94,
+    "w": 260,
+    "h": 44
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "link",
+   "name": "Membership and payment",
+   "value": null,
+   "rect": {
+    "x": 284,
+    "y": 138,
+    "w": 260,
+    "h": 44
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "link",
+   "name": "Devices",
+   "value": null,
+   "rect": {
+    "x": 284,
+    "y": 182,
+    "w": 260,
+    "h": 44
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "link",
+   "name": "Help",
+   "value": null,
+   "rect": {
+    "x": 284,
+    "y": 226,
+    "w": 260,
+    "h": 44
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "text",
+   "name": "Account settings",
+   "value": null,
+   "rect": {
+    "x": 570,
+    "y": 94,
+    "w": 746,
+    "h": 39
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "text",
+   "name": "Membership",
+   "value": null,
+   "rect": {
+    "x": 597,
+    "y": 166,
+    "w": 692,
+    "h": 30
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 10,
+   "role": "text",
+   "name": "Payment method",
+   "value": null,
+   "rect": {
+    "x": 597,
+    "y": 319,
+    "w": 692,
+    "h": 30
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 11,
+   "role": "edit",
+   "name": "Card number",
+   "value": "•••• •••• •••• 4821",
+   "rect": {
+    "x": 597,
+    "y": 388,
+    "w": 451,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 12,
+   "role": "edit",
+   "name": "Expiry date (MM/YY)",
+   "value": "08/28",
+   "rect": {
+    "x": 1064,
+    "y": 388,
+    "w": 225,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 13,
+   "role": "button",
+   "name": "Save",
+   "value": null,
+   "rect": {
+    "x": 597,
+    "y": 451,
+    "w": 98,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

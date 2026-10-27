@@ -41,6 +41,7 @@ const st = {
   bubbleKind: null,
   bubbleQid: null,       // question id of the bubble on screen (a guard bubble asked by a run)
   bubbleEnded: false,    // the shown question outlived its run (kept with its buttons; a new run closes it)
+  cardSig: null,         // Bubble.cardSignature of the open card: the same id again keeps its buttons
   bubbleSig: null,       // Bubble.signature of the bubble on screen (text, kind, qid, labels): same = keep its buttons
   guardPose: false,      // the guard bubble put Pip in the "ask" pose; cleared when it closes
   tipLabel: "",          // "Good to know" of the last tip bubble (its "Why?" bubble shows the same label)
@@ -394,7 +395,11 @@ function layout() {
   const target = hl && { x: hl.x - 8, y: hl.y - 48, w: hl.w + 16, h: hl.h + 56 };
   const pipBox = { x: p.x, y: p.y, w: P, h: P };
 
-  // 1) dock (progress + Stopp): under Pip, else beside him at his feet, else above
+  // 0) Stop: a fixed place at Pip's home corner while he acts (ui/hits.js stopPlace); it never flies with him.
+  // Only a highlighted field at that corner lifts it: Pip's own click on the field must never press Stop.
+  const stopBox = placeStop(target);
+
+  // 1) dock (progress line): under Pip, else beside him at his feet, else above
   const dw = el.dock.offsetWidth, dh = el.dock.offsetHeight;
   let dockBox = null;
   if (dw && dh) {
@@ -404,7 +409,7 @@ function layout() {
       away === "left" ? { x: p.x - 12 - dw, y: p.y + P - dh, cls: "side-left" } : { x: p.x + P + 12, y: p.y + P - dh, cls: "side-right" },
       away === "left" ? { x: p.x + P + 12, y: p.y + P - dh, cls: "side-right" } : { x: p.x - 12 - dw, y: p.y + P - dh, cls: "side-left" },
       { x: p.x + P / 2 - dw / 2, y: p.y - 10 - dh, cls: "" },
-    ], [[target, 100], [pipBox, 50]]);
+    ], [[target, 100], [pipBox, 50], [stopBox, 100]]);
     el.dock.className = `dock ${d.cls}`;
     el.dock.style.left = `${d.x}px`;
     el.dock.style.top = `${d.y}px`;
@@ -426,7 +431,7 @@ function layout() {
       below: { x: leftHalf ? p.x : p.x + P - colW, y: botY + 12, cls: leftHalf ? "right vert" : "left vert" },
     };
     const order = [first, "above", "below", first === "left" ? "right" : "left"];
-    const obstacles = [[target, 100], [pipBox, 30], [dockBox, 30]];
+    const obstacles = [[target, 100], [pipBox, 30], [dockBox, 30], [stopBox, 100]];
     // While the card is open, the fields Pip filled in must stay visible so the user can check them.
     if (!el.card.hidden) for (const m of st.marks) obstacles.push([m, 60]);
     const c = placeBest(colW, h, order.map((k) => spot[k]), obstacles);
@@ -436,6 +441,17 @@ function layout() {
     el.col.style.maxHeight = `${workBottom() - 2 * EDGE}px`;
   }
   scheduleHits();
+}
+
+/** Put Stop at its fixed place (VM 27.10. 14:54: a Stop click landed on Edge, the pill had moved on with Pip). */
+function placeStop(avoid) {
+  if (el.stop.hidden) return null;
+  const r = window.Hits.stopPlace(homePos(), P, { w: el.stop.offsetWidth, h: el.stop.offsetHeight },
+    { w: innerWidth, h: innerHeight }, undefined, avoid);
+  if (!r) return null;
+  el.stop.style.left = `${r.x}px`;
+  el.stop.style.top = `${r.y}px`;
+  return r;
 }
 
 // ---------- hit rects (click-through + screenshot masking) ----------
@@ -486,6 +502,7 @@ setInterval(() => {
 const ro = new ResizeObserver(() => layout());
 ro.observe(el.col);
 ro.observe(el.dock);
+ro.observe(el.stop);
 
 // ---------- bubble ----------
 // One bubble on screen. A bubble that waits for an answer (buttons, question, reminder, onboarding) is never
@@ -778,9 +795,14 @@ function stopNow() {
 // ---------- approval card ----------
 function showCard(card) {
   rise();
+  // The same card again (same id): its buttons stay as they are, not re-labelled, the "Don't ask again" box not
+  // reset (ui/bubble.js sameCard). A press between pointerdown and pointerup still answers.
+  const sig = Bubble.cardSignature(card);
+  const same = !el.card.hidden && Bubble.sameCard(st.cardSig, sig);
   if (!st.bubbleSticky) hideBubble();
   closeAsk();
   st.card = card.id;
+  st.cardSig = sig;
   $("card-title").textContent = card.title;
   $("card-what").textContent = card.what;
   $("card-to").textContent = card.to;
@@ -813,32 +835,39 @@ function showCard(card) {
     return li;
   }));
   // "Don't ask again for <site>": only on plain send cards on a known site.
-  $("card-remember").hidden = !card.remember_label;
-  $("card-remember-text").textContent = card.remember_label || "";
-  $("card-remember-box").checked = false;
-  $("card-yes").textContent = card.yes_label;
-  $("card-no").textContent = card.no_label;
+  if (!same) {
+    $("card-remember").hidden = !card.remember_label;
+    $("card-remember-text").textContent = card.remember_label || "";
+    $("card-remember-box").checked = false;
+    $("card-yes").textContent = card.yes_label;
+    $("card-no").textContent = card.no_label;
+  }
   el.card.hidden = false;
   // The card says it all and has its own "Noch nicht": the status line must never sit on its buttons.
   el.dock.hidden = true;
   st.lastSpoke = performance.now();
-  hop();
+  if (!same) hop();
   layout();
 }
 function hideCard() {
   st.card = null;
+  st.cardSig = null;
   el.card.hidden = true;
   el.dock.hidden = false;
   layout();
 }
-function answerCard(answer) {
+/** via: how the person answered ("pointerup" | "click" | "key"); Stop leaves it empty (no card press). */
+function answerCard(answer, via) {
   if (!st.card) return;
+  if (via) jsLog("info", `ui command: Approve approved=${answer === "yes"} via=${via}`);
   const remember = answer === "yes" && !$("card-remember").hidden && $("card-remember-box").checked;
   send({ type: "approve", id: st.card, answer, remember_site: remember });
   hideCard();
 }
-$("card-yes").addEventListener("click", () => answerCard("yes"));
-$("card-no").addEventListener("click", () => answerCard("no"));
+// The card's buttons press like the bubble buttons (ui/bubble.js): on pointerup, click or Enter / Space, exactly
+// once per press. VM 27.10. 14:54: the first "Not yet" with a plain click listener was lost.
+Bubble.attach($("card-yes"), (via) => answerCard("yes", via));
+Bubble.attach($("card-no"), (via) => answerCard("no", via));
 
 // ---------- reminder ----------
 function showReminder(ev) {
@@ -878,6 +907,8 @@ function closeAsk() {
   layout();
 }
 onPress($("ask-close"), closeAsk);
+// Send: the press rules of every button (one press = one send); Enter in the box submits the form.
+onPress($("ask-go"), () => $("ask-form").requestSubmit());
 $("ask-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const text = el.askInput.value.trim();
@@ -1285,10 +1316,10 @@ window.addEventListener("keydown", (e) => {
   // Enter on the card = the primary button (only when Pip's window has the keyboard: an Enter typed into
   // another program never answers a card).
   const otherButton = document.activeElement instanceof HTMLButtonElement && document.activeElement.id !== "card-yes";
-  if (e.key === "Enter" && st.card && !e.repeat && !otherButton) { e.preventDefault(); answerCard("yes"); return; }
+  if (e.key === "Enter" && st.card && !e.repeat && !otherButton) { e.preventDefault(); answerCard("yes", "key"); return; }
   if (e.key !== "Escape") return;
   if (st.acting) { stopNow(); return; }
-  if (st.card) answerCard("no");
+  if (st.card) answerCard("no", "key");
   if (!el.ask.hidden) closeAsk();
   else if (!el.panel.hidden) { el.panel.hidden = true; layout(); }
   else if (el.bubble.classList.contains("closable") || st.bubbleKind === "error") hideBubble();

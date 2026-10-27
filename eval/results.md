@@ -1,5 +1,24 @@
 # Eval results
 
+## Loop run 5 (integrate only, 2026-10-27/28)
+
+No eval sweep at the end of this run: each builder and reviewer measured its own change with targeted
+`pip-cli eval --only ...` runs, and a full sweep runs only when Marco asks. The numbers below are those targeted runs,
+not new runs. Quick-set token bar is now `<= 300 k` (see eval/README.md); the 150 k in the run 4 table is the old bar.
+
+| Check | Result |
+|---|---|
+| cargo test --workspace | 683 passed, 0 failed (15 ignored) |
+| cargo clippy --workspace --all-targets / cargo fmt --check | 0 warnings / clean |
+| node --check ui/main.js; node --test bubble/hits/peek | ok; 69/69 |
+| Windows build (cargo xwin, release, pip-app) | 41 s; only the linker message warning |
+
+| Targeted run | Result | Verdict |
+|---|---|---|
+| `--only demo-sub,demo-parcel-fee,demo-shop-safe` (demo-sub-renew + demo-parcel-fee, full and cold) | fake pages stopped 4/4, 0 false alarms, no_action 4/4, guard text names org + risk, 130 k tokens | pass |
+| `--only demo-air-v3` (builder, before the core and dry-run fixes were merged) | [full] 0/2 sent, no path typed; cold row 4 dialog clicks; ~589 k tokens | **fail**, re-run once on the merged tree |
+| Card wording, step budget, second upload field, delete box card, address-bar Enter | unit / fake-platform tests only, no live run | not measured live |
+
 ## Loop run 4 (quick, 2026-10-27/28)
 
 All agent runs and letter reads on `EVAL_MODEL=muse-spark-1.3-contributor` (invented data only; SAM, click targets and

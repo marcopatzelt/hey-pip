@@ -155,3 +155,53 @@ test("acting with nothing open: no rect at all (every click goes to the page)", 
   const css = Hits.cssRects({ pip: { box: pipAway, home: false, peek: "up", head: head("up") }, boxes: [null, null, null, null, null, null, null], acting: true });
   assert.deepEqual(css, []);
 });
+
+// VM 27.10. 14:54: a Stop click landed on Edge: the pill had moved on with Pip. While a run acts Stop sits at a
+// fixed place at Pip's home corner (Hits.stopPlace), and its rect is in every report wherever Pip is.
+test("the Stop pill rect is reported at its fixed place while acting, before and after Pip moves", () => {
+  const size = { w: 110, h: 52 };
+  for (const bar of [0, 48]) {
+    const g = Peek.geometry("up", P, H, bar, W);
+    const home = { x: g.x, y: g.y, w: P, h: P };
+    const place = Hits.stopPlace({ x: g.x, y: g.y }, P, size, { w: W, h: H });
+    assert.ok(place, "a place");
+    // bottom right of the work area, above the taskbar, never under Pip at home
+    assert.ok(place.x > W / 2 && place.y > H / 2, JSON.stringify(place));
+    assert.ok(place.y + place.h <= g.bottom, "above the taskbar");
+    assert.ok(place.x + place.w <= home.x, "left of Pip's home spot");
+    assert.ok(place.x >= 8 && place.x + place.w <= W - 8);
+    for (const { k, origin } of SCALES) {
+      // at home (the run starts), flown to a field mid-screen, flown to a field near the corner
+      for (const pipBox of [home, pipAway, { x: W - 300, y: H - 220, w: P, h: P }]) {
+        const css = Hits.cssRects({
+          pip: { box: pipBox, home: pipBox === home, peek: "up", head: head("up") },
+          boxes: [null, null, null, null, { x: pipBox.x - 60, y: pipBox.y + P + 10, w: 215, h: 41 }, place, null],
+          acting: true,
+        });
+        const rects = Hits.toPhys(css, origin, k);
+        assert.ok(covered(rects, place, origin, k), `Stop with Pip at ${pipBox.x},${pipBox.y}`);
+        assert.deepEqual(Hits.stopPlace({ x: g.x, y: g.y }, P, size, { w: W, h: H }), place, "the place does not move");
+      }
+    }
+  }
+  assert.equal(Hits.stopPlace(null, P, size, { w: W, h: H }), null);
+  assert.equal(Hits.stopPlace({ x: 10, y: 10 }, P, { w: 0, h: 0 }, { w: W, h: H }), null, "hidden button: no rect");
+});
+
+test("a highlighted field at the home corner lifts Stop above it: Pip's own click on the field never presses Stop", () => {
+  const size = { w: 110, h: 52 };
+  const g = Peek.geometry("up", P, H, 48, W);
+  const home = { x: g.x, y: g.y };
+  const place = Hits.stopPlace(home, P, size, { w: W, h: H });
+  const touches = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  // a cookie bar's Accept button at the bottom right, under the fixed place
+  const field = { x: place.x - 30, y: place.y + 10, w: 160, h: 44 };
+  const lifted = Hits.stopPlace(home, P, size, { w: W, h: H }, undefined, field);
+  assert.ok(touches(place, field), "the test field really sits under the fixed place");
+  assert.ok(!touches(lifted, field), JSON.stringify({ lifted, field }));
+  assert.equal(lifted.x, place.x, "only lifted, not moved sideways");
+  assert.ok(lifted.y + lifted.h <= field.y, "above the field");
+  // a field elsewhere leaves Stop at its fixed place
+  assert.deepEqual(Hits.stopPlace(home, P, size, { w: W, h: H }, undefined, { x: 100, y: 100, w: 200, h: 40 }), place);
+  assert.deepEqual(Hits.stopPlace(home, P, size, { w: W, h: H }, undefined, null), place);
+});

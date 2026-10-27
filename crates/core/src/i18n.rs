@@ -720,6 +720,13 @@ static TABLE: &[(&str, &str, &str)] = &[
         "Sie nennt sich {org}, aber ich kann nicht prüfen, ob sie wirklich zu {org} gehört.",
         "It uses the name {org}, but I can't check that it really belongs to {org}.",
     ),
+    // --- run 5: the file dialog without a stored letter, the card's "what" for a form ---
+    (
+        "attach_ask_where",
+        "Ich brauche deine {doc}. Wo liegt sie auf diesem Computer?",
+        "I need your {doc}. Where is it on this computer?",
+    ),
+    ("card_what_form", "das Formular auf dieser Seite", "the form on this page"),
 ];
 
 /// Lookup. Unknown key -> the key itself (visible in tests, never panics).

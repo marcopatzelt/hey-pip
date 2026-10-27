@@ -12,7 +12,7 @@
      Success: "Thank you, your claim BX7Q2K was received on …" (also thanks.html). Nothing leaves the page.
      Switches (fixture screenshots only, fixtures/screens/make_outline.py): ?fill (step 1: all three; step 2: only the
      name, what memory knows), ?step2,
-     ?error (step 2 filled with an IBAN with spaces, after Send claim), ?thanks, ?mark (targets in solid colours). -->
+     ?error (step 2 filled with an IBAN with spaces, after Send claim), ?attached (the boarding pass is chosen), ?thanks, ?mark (targets in solid colours). -->
 <style>
   :root {
     --red: #c8102e; --red-dark: #8e0b20; --navy: #1d2b4f; --sky: #eef3fb;
@@ -226,6 +226,11 @@
     fileName.textContent = "boarding_pass_bx2041.pdf";
     fileName.classList.add("chosen");
     $("f-confirm").checked = true;
+  }
+  // ?attached: the boarding pass picked in the file dialog (what the page shows once a file is chosen).
+  if (params.has("attached")) {
+    fileName.textContent = "boarding_pass_bx2041.pdf";
+    fileName.classList.add("chosen");
   }
   if (params.has("error")) $("submit").click();
   if (params.has("thanks")) {

@@ -29,6 +29,21 @@
     return a.length === b.length && a.every((l, i) => l === b[i]);
   }
 
+  /**
+   * The approval card's signature: its id. VM 27.10. 14:54: the first "Not yet" on the send card was lost. While
+   * the same card (same id) is open its buttons are kept as they are: not re-labelled, the "Don't ask again" box
+   * not reset. A card with another id gets fresh buttons.
+   */
+  function cardSignature(card) {
+    const c = card || {};
+    return { id: c.id == null ? null : String(c.id), yes: String(c.yes_label ?? ""), no: String(c.no_label ?? "") };
+  }
+
+  /** The open card (prev) and the one to show (next) are the same card: keep its buttons. */
+  function sameCard(prev, next) {
+    return !!(prev && next && prev.id != null && prev.id === next.id);
+  }
+
   /** One clock for all buttons: a press that closed a bubble cannot fire the button shown in its place. */
   function pressClock() {
     return { at: -Infinity };
@@ -91,7 +106,7 @@
     return { queue: rest, keep };
   }
 
-  const Bubble = { PRESS_MS, signature, sameBubble, pressClock, pressGuard, attach, afterRun };
+  const Bubble = { PRESS_MS, signature, sameBubble, cardSignature, sameCard, pressClock, pressGuard, attach, afterRun };
   root.Bubble = Bubble;
   if (typeof module !== "undefined" && module.exports) module.exports = Bubble;
 })(typeof window !== "undefined" ? window : globalThis);

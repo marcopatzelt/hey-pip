@@ -320,6 +320,8 @@ input[type=text]:focus, textarea:focus, select:focus { border-color: var(--blue)
 .dots i:nth-child(3) { animation-delay: .3s; }
 @keyframes dot { 0%, 80%, 100% { opacity: .3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-4px); } }
 
+/* Stop: a fixed place at Pip's home corner while he acts (main.js sets left/top from Hits.stopPlace) */
+.btn.stop { position: fixed; left: 0; top: 0; z-index: 21; pointer-events: auto; }
 .btn.stop { background: #fff; border-color: #e0e4ec; color: var(--ink); min-height: 52px; font-size: 21px; box-shadow: var(--shadow); }
 .btn.stop svg { color: #d93a3a; }
 

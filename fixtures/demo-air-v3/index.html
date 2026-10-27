@@ -14,7 +14,7 @@
      Success: "Thank you. Claim BX7Q2K received on …". Nothing leaves the page.
      Switches (fixture screenshots only, fixtures/screens/make_outline.py): ?fill (step 1: all three; step 2: only
      the name, what memory knows), ?step2 (with ?popup: the cookie banner still open), ?step3, ?error (step 3 with the
-     file chosen and the box empty, after Send), ?thanks, ?mark. -->
+     file chosen and the box empty, after Send), ?attached (the boarding pass is chosen), ?thanks, ?mark. -->
 <style>
   :root {
     --red: #c8102e; --red-dark: #8e0b20; --navy: #1d2b4f; --teal: #0d6b73;
@@ -42,6 +42,7 @@
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; }
   .field { margin-bottom: 14px; }
   .lbl { display: block; font-weight: 600; margin-bottom: 6px; }
+  .has-file .lbl::after { content: " ✓"; color: #1a7f37; }
   .hint { font-size: 14px; color: var(--muted); margin-top: 3px; }
   input[type=text], input[type=email], input[type=date] {
     width: 100%; font: inherit; padding: 10px 12px; border: 1px solid #9aa5b8; border-radius: 4px; background: #fff; color: var(--ink);
@@ -215,6 +216,9 @@
     const f = file.files[0];
     fileName.textContent = f ? f.name : "No file selected";
     fileName.classList.toggle("chosen", !!f);
+    // The required mark turns into a tick once a file is chosen.
+    $("w-file").classList.toggle("has-file", !!f);
+    if (f) $("w-file").classList.remove("invalid");
   });
   $("step1").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -271,6 +275,12 @@
   }
   // Step 2 ?fill shows only the name (what memory knows): a picture cannot show what was typed.
   if (params.has("fill") && s2) $("f-name").value = "Erika Beispiel";
+  // ?attached: the boarding pass picked in the file dialog (the name next to the button, the required mark ticked).
+  if (params.has("attached")) {
+    fileName.textContent = "boarding_pass_bx2041.pdf";
+    fileName.classList.add("chosen");
+    $("w-file").classList.add("has-file");
+  }
   if (params.has("error")) {
     fileName.textContent = "boarding_pass_bx2041.pdf";
     fileName.classList.add("chosen");

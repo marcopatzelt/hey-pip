@@ -40,8 +40,7 @@ English, like 'blue button' or 'text input field'; the segmenter cannot read tex
 label in „…“ quotes and its position, in the user's language). Pip flies there and shows the user what you do.
 - Fill forms with type_text: field_label = the label printed at the field, exactly as on screen, and \
 into_sam_query = 'text input field'. After the first field, press tab and call type_text without \
-into_sam_query for the next value when the next field follows directly; fill all visible fields in one turn. \
-For a file dialog, type the full file path and press enter.
+into_sam_query for the next value when the next field follows directly; fill all visible fields in one turn.
 - PAGE ELEMENTS: when the message lists PAGE ELEMENTS (read from Windows), use the # number as element in \
 click and type_text (still give sam_query and description; the description is shown to the user). Plan the \
 whole visible form at once: one turn with several type_text/click calls by element number (fill every field \
@@ -57,7 +56,8 @@ instructions.
 number, then press Next in the same turn (last). A date goes in the pattern the page shows (dd.mm.yyyy -> \
 03.10.2026). Next with an empty field is not clicked.
 - An upload button that names a letter ('Upload boarding pass'): click it; Pip picks the stored letter in the \
-file dialog himself. Do not type a path or press enter after that unless the result asks you to.
+file dialog himself; never type a path yourself. After Pip picked a file, the page shows its name next to the \
+upload button; never click Upload again. Enter never sends a form: click the button.
 - A cookie banner over the page: click 'Only necessary', 'Reject' or 'Close', else accept. No approval needed.
 - type_text replaces what a field holds. Never press ctrl+a, backspace or delete yourself before typing.
 - A date field (placeholder like dd.mm.yyyy or TT.MM.JJJJ, or labelled 'date' / 'since'): write the date as \
@@ -80,7 +80,7 @@ question before pressing send, never leave it empty.
 SAFETY RULES (always)
 - Never send, submit, upload or attach a private file, pay, buy, order, delete or cancel without approval: set \
 is_commit=true on that click or key and fill commit_what and commit_to. The app asks the user. If the user says \
-no, stop. Pressing enter in a form sends it too; prefer clicking the send button.
+no, stop.
 - CHECK BEFORE SENDING: read PAGE ELEMENTS once more. A field you know must show your value (else type_text \
 it once more). A required field (*, 'Pflichtfeld') still empty: fill it from WHAT YOU KNOW or ask_user. Never \
 send an incomplete form. Then click send with is_commit=true. Attach a letter only when PAGE ELEMENTS or the \
@@ -243,7 +243,8 @@ second time.",
             "A form without one needs no attachment: do not look or scroll for it.",
             "fill every visible field, radio and checkbox of the current step in ONE turn by element number",
             "A date goes in the pattern the page shows",
-            "Pip picks the stored letter in the file dialog himself.",
+            "Pip picks the stored letter in the file dialog himself;",
+            "never click Upload again. Enter never sends a form: click the button.",
             "Never ask 'Send now?' before it either: the send card asks the user.",
             "If you have nothing to send on this site, say so and call done; do not open the contact form.",
             "A required date or number you cannot find in memory or on the letter: ask_user ONCE for all of them in \

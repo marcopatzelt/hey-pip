@@ -7,6 +7,7 @@ Run: python3 fixtures/screens/make_screens.py [insurer|uni|questionnaire|variant
 `variants` writes every state of the eval page variants (demo-insurer-v2, demo-uni-v2, questionnaire-v2, the tall
 questionnaire-v3 with its scrolled states, the lookalike and the fake warning) with make_outline.py: PNG + PAGE ELEMENTS
 + boxes from the live page, no hand-written outlines. A stem prefix captures only the states whose stem starts with it.
+(`variants demo-air` writes the Beispiel Air `-attached` states: the boarding pass picked, its name on the page.)
 `flight` writes the Beispiel Air family the same way: demo-air (two steps: step 1, -step1-filled, -step2,
 -step2-filled, -error = an IBAN with spaces refused, -thanks), demo-air-v2 (-popup, the page, -filled, -error, -thanks)
 the lookalike demo-air-refund-check, demo-air-v3 (three steps: -step1-filled, -step2-popup = a cookie dialog first,
@@ -419,6 +420,18 @@ VARIANTS = [
      {"member_field": "#c-member", "sms_field": "#c-sms", "submit_button": "#submit"}),
     ("demo-alert-locked/index.html", "demo-alert-locked", "", [], True, {"call_button": "#call"}),
 ]
+
+# The Beispiel Air forms once the boarding pass is picked in the file dialog (?attached: the file name next to the
+# button). The dry run shows `<stem>-attached.png` after a path typed into the dialog and Enter / "Open". Same form:
+# no outline (the dry run keeps the list and adds the file name), the same targets as the base screen.
+ATTACHED = [
+    ("demo-air/index.html", "demo-air-step2-attached", "?step2&attached", [], False, AIR_STEP2),
+    ("demo-air/index.html", "demo-air-step2-filled-attached", "?step2&fill&attached", [], False, AIR_STEP2),
+    ("demo-air-v2/index.html", "demo-air-v2-attached", "?attached", ["#cookie-necessary"], False, AIR_V2),
+    ("demo-air-v2/index.html", "demo-air-v2-filled-attached", "?fill&attached", [], False, AIR_V2),
+    ("demo-air-v3/index.html", "demo-air-v3-step3-attached", "?step3&attached", [], False, AIR_V3_STEP3),
+]
+VARIANTS += ATTACHED
 
 
 def main_variants(prefix: str = "") -> None:

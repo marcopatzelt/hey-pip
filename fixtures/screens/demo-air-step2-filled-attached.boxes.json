@@ -1,0 +1,88 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-air-step2-filled-attached.png",
+  "targets": {
+    "name_field": {
+      "box": [
+        423,
+        322,
+        788,
+        374
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Full name\", top left"
+    },
+    "email_field": {
+      "box": [
+        811,
+        322,
+        1176,
+        374
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"E-mail\", top right"
+    },
+    "iban_field": {
+      "box": [
+        423,
+        424,
+        788,
+        476
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"IBAN\", left below \"Full name\""
+    },
+    "voucher_yes_radio": {
+      "box": [
+        816,
+        436,
+        837,
+        457
+      ],
+      "sam_query": "radio button",
+      "description": "Radio button \"Yes\" under \"Did the airline offer you a voucher?\", left of \"No\""
+    },
+    "voucher_no_radio": {
+      "box": [
+        912,
+        436,
+        933,
+        457
+      ],
+      "sam_query": "radio button",
+      "description": "Radio button \"No\" under \"Did the airline offer you a voucher?\", right of \"Yes\""
+    },
+    "file_button": {
+      "box": [
+        443,
+        540,
+        718,
+        590
+      ],
+      "sam_query": "button",
+      "description": "Button \"Upload boarding pass\" with a paper clip, left in the dashed upload box"
+    },
+    "confirm_checkbox": {
+      "box": [
+        427,
+        624,
+        448,
+        645
+      ],
+      "sam_query": "checkbox",
+      "description": "Checkbox \"I confirm the information is correct\""
+    },
+    "submit_button": {
+      "box": [
+        981,
+        665,
+        1176,
+        720
+      ],
+      "sam_query": "button",
+      "description": "Red button \"Send claim\" bottom right of the form"
+    }
+  }
+}

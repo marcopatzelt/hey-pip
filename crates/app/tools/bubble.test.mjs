@@ -252,3 +252,82 @@ test("the kept question's press sends the answer with its question id", () => {
   before.dispatch("pointerup");
   assert.deepEqual(sent, [{ type: "answer", question_id: qid, choice: "no" }]);
 });
+
+// ---------- the approval card (main.js showCard / answerCard) ----------
+// VM 27.10. 14:54: "Not yet" on the send card lost its first click (a plain click listener). The card's two
+// buttons are fixed nodes with the press guard; showCard keeps them as they are while the same card is open.
+function fakeCard(now) {
+  const yes = new FakeNode("card-yes"), no = new FakeNode("card-no");
+  yes.text = ""; no.text = "";
+  const sent = [], relabels = [];
+  let card = null, sig = null;
+  const clock = Bubble.pressClock();
+  const answer = (a, via) => {
+    if (!card) return;
+    sent.push({ id: card, answer: a, via });
+    card = null; sig = null;
+  };
+  Bubble.attach(yes, (via) => answer("yes", via), { clock, now });
+  Bubble.attach(no, (via) => answer("no", via), { clock, now });
+  const show = (c) => {
+    const next = Bubble.cardSignature(c);
+    const same = card !== null && Bubble.sameCard(sig, next);
+    card = c.id; sig = next;
+    if (!same) { yes.text = c.yes_label; no.text = c.no_label; relabels.push(c.id); }
+  };
+  return { yes, no, sent, relabels, show };
+}
+const sendCard = (id, yes = "Send") => ({ id, title: "Send the claim?", yes_label: yes, no_label: "Not yet" });
+
+test("the card answers Not yet on the first pointerup even when the card re-renders between pointerdown and pointerup", () => {
+  const c = fakeClock();
+  const k = fakeCard(c.now);
+  k.show(sendCard("card-1"));
+  k.no.dispatch("pointerdown");
+  c.t += 40;
+  k.show(sendCard("card-1")); // the app sends the same card again (status refresh) while the button is held
+  assert.equal(k.no.text, "Not yet");
+  c.t += 60;
+  const up = k.no.dispatch("pointerup");
+  assert.deepEqual(k.sent, [{ id: "card-1", answer: "no", via: "pointerup" }]);
+  assert.deepEqual(k.relabels, ["card-1"], "the same card is not re-labelled");
+  assert.equal(up.defaultPrevented, false);
+  c.t += 10;
+  k.no.dispatch("click");
+  assert.equal(k.sent.length, 1, "its click is the same press");
+});
+
+test("Send on the card fires exactly once per press (pointerup then click)", () => {
+  const c = fakeClock();
+  const k = fakeCard(c.now);
+  k.show(sendCard("card-2"));
+  const down = k.yes.dispatch("pointerdown");
+  assert.ok(down.defaultPrevented, "no activation click for the webview");
+  c.t += 90;
+  k.yes.dispatch("pointerup");
+  c.t += 5;
+  k.yes.dispatch("click");
+  assert.deepEqual(k.sent, [{ id: "card-2", answer: "yes", via: "pointerup" }]);
+  // Enter on the focused button: one answer, the held key does not repeat
+  c.t += 1000;
+  k.show(sendCard("card-3"));
+  k.yes.dispatch("keydown", { key: "Enter" });
+  k.yes.dispatch("keydown", { key: "Enter", repeat: true });
+  assert.deepEqual(k.sent.slice(1), [{ id: "card-3", answer: "yes", via: "key" }]);
+});
+
+test("a second card with another id gets fresh buttons", () => {
+  const c = fakeClock();
+  const k = fakeCard(c.now);
+  k.show(sendCard("card-4", "Send"));
+  k.show(sendCard("card-5", "Pay 0 EUR"));
+  assert.deepEqual(k.relabels, ["card-4", "card-5"]);
+  assert.equal(k.yes.text, "Pay 0 EUR");
+  k.yes.dispatch("pointerdown");
+  k.yes.dispatch("pointerup");
+  assert.deepEqual(k.sent, [{ id: "card-5", answer: "yes", via: "pointerup" }]);
+  assert.ok(Bubble.sameCard(Bubble.cardSignature(sendCard("a", "Send")), Bubble.cardSignature(sendCard("a", "Pay"))));
+  assert.ok(!Bubble.sameCard(Bubble.cardSignature(sendCard("a")), Bubble.cardSignature(sendCard("b"))));
+  assert.ok(!Bubble.sameCard(null, Bubble.cardSignature(sendCard("a"))));
+  assert.ok(!Bubble.sameCard(Bubble.cardSignature({}), Bubble.cardSignature({})), "a card without an id is never the same");
+});

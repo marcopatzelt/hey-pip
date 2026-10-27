@@ -66,7 +66,7 @@
         <div id="ask-chips" class="chips"></div>
         <div class="buttons">
           <button id="ask-mic" type="button" class="btn mic"><svg><use href="#i-mic"/></svg><span></span></button>
-          <button id="ask-go" type="submit" class="btn primary"></button>
+          <button id="ask-go" type="button" class="btn primary"></button>
         </div>
       </form>
       <div class="links">
@@ -91,11 +91,12 @@
 
   </div>
 
-  <!-- while Pip works: one line of what he does + the big Stopp button, right at Pip -->
+  <!-- while Pip works: one line of what he does, right at Pip -->
   <div id="dock" class="dock">
     <div id="progress" class="progress" hidden><span class="dots"><i></i><i></i><i></i></span><span id="progress-text"></span></div>
-    <button id="stop" class="btn stop" hidden><svg><use href="#i-stop"/></svg><span></span></button>
   </div>
+  <!-- the big Stop button: a fixed place at Pip's home corner while he works (it never flies with him) -->
+  <button id="stop" class="btn stop" hidden><svg><use href="#i-stop"/></svg><span></span></button>
 
   <script src="peek.js"></script>
   <script src="tip.js"></script>

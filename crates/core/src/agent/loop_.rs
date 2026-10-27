@@ -4,7 +4,7 @@
 //! gate, approval card, act, log. The cancel token is checked before every tool and raced against every wait.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -17,8 +17,9 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::gate::{
-    ApprovalAnswer, ApprovalCard, Gate, Risk, is_attach_target, is_cancel_target, is_delete_target, is_money_target,
-    is_next_target, is_send_target, is_taskbar_target, label_hit, normalize_address, quoted_label, url_host, word_hit,
+    ApprovalAnswer, ApprovalCard, Gate, Risk, is_attach_target, is_cancel_target, is_delete_target, is_dialog_button,
+    is_dialog_plain_button, is_money_target, is_next_target, is_send_target, is_taskbar_target, label_hit,
+    normalize_address, quoted_label, url_host, word_hit,
 };
 use super::tools::{DISCOVER_TOOLS, ScrollDir, Tool, bad_call, normalize_combo, say_of, tool_defs, truncate};
 use super::typing::{DateField, Mask, date_field, date_keys, date_shown, iso, parse_date_in, shows_mask};
@@ -358,6 +359,12 @@ pub struct RunState {
     prepicked_step: Option<u32>,
     /// The step that last counted an "already done" field (one count per turn, however many fields it retyped).
     already_done_step: Option<u32>,
+    /// A file went in through the file dialog in this run and the dialog closed: another click on the upload
+    /// button is answered without a click (the page shows the file next to it).
+    attached_done: bool,
+    /// The file dialog opened with no stored letter for its button, and the user was asked where the file is
+    /// (asked once per run).
+    dialog_asked: bool,
 }
 
 /// The last question of a run and the page it was asked on.
@@ -492,12 +499,27 @@ impl RunState {
             upload_held: false,
             prepicked_step: None,
             already_done_step: None,
+            attached_done: false,
+            dialog_asked: false,
         }
     }
 
     /// The tool calls the model made in the last step (the CLI prints how many per step).
     pub fn last_calls(&self) -> &[FunctionCall] {
         &self.last_calls
+    }
+
+    /// The upload button clicked again after a file went in through its dialog: the same button (its label
+    /// names the same letter as the one Pip picked for, or neither names one). A second upload field of the
+    /// page ("Upload receipt" after the boarding pass) is a new attach, never "already attached".
+    fn attached_already(&self, target_text: &str, label: &str) -> bool {
+        if !self.attached_done || self.doc_file.is_none() || !is_attach_target(target_text) {
+            return false;
+        }
+        self.attach_label.as_deref().is_none_or(|prev| {
+            let (a, b) = (doc_query_words(prev), doc_query_words(label));
+            a.is_empty() || b.is_empty() || a.iter().any(|w| b.contains(w))
+        })
     }
 
     /// Step and time budget of the current phase.
@@ -534,6 +556,8 @@ impl RunState {
         self.next_held = None;
         self.prepicked_step = None;
         self.already_done_step = None;
+        // "Weiter" after the open question: the user may have put the file in place, one question again is fine.
+        self.dialog_asked = false;
         self.guard_hits = 0;
         self.nothing_changed = 0;
         // A resumed run looks at the screen afresh.
@@ -1556,7 +1580,19 @@ impl Agent {
         let once = matches!(tool, Tool::Click { .. } | Tool::Key { .. } | Tool::OpenUrl { .. })
             && !state.dialog_open
             && !steps_by_itself(&tool);
-        let repeat = repeat_key(&tool, &state.outline);
+        // The upload button again after a file went in: `click` answers it without a click; never a repeat.
+        let attach_again = match &tool {
+            Tool::Click { description, element, .. } => {
+                let name = element
+                    .and_then(|id| state.outline.iter().find(|i| i.id == id))
+                    .map(|i| i.name.as_str())
+                    .unwrap_or_default();
+                state.attached_already(&format!("{description} {name}"), &button_label(name, description))
+            }
+            _ => false,
+        };
+        let once = once && !attach_again;
+        let repeat = repeat_key(&tool, &state.outline).filter(|_| !attach_again);
         let page_before = once.then(|| (outline_shape(&state.outline), state.last_api.clone()));
         if let Some((key, target)) = repeat.clone() {
             if once && state.repeat_on_same_page(&key) {
@@ -1789,6 +1825,21 @@ impl Agent {
         Ok(lines.join("\n"))
     }
 
+    /// The stored letter a file button's label names ("Upload boarding pass"): with a task letter only that one.
+    /// None = the label names no letter, or no stored letter fits it.
+    fn doc_for_label(&self, state: &RunState, label: &str) -> Result<Option<crate::memory::DocumentRow>> {
+        let words = doc_query_words(label);
+        if words.is_empty() {
+            return Ok(None);
+        }
+        let mut rows = match &state.doc_path {
+            Some(p) => self.memory.document_by_path(&p.display().to_string())?.into_iter().collect(),
+            None => self.memory.search_documents("", 50)?,
+        };
+        rank_documents(&mut rows, &words);
+        Ok(rows.into_iter().next().filter(|d| doc_hits(&words, d) > 0))
+    }
+
     /// The file dialog just opened from a button whose label names a stored letter ("Upload boarding pass"):
     /// Pip types that letter's path and presses Enter himself, in the same tool run. Only a stored letter goes
     /// in, and with a task letter (a sick note to send) only that one. None = no letter fits the label (the
@@ -1799,16 +1850,7 @@ impl Agent {
         label: &str,
         cancel: &CancellationToken,
     ) -> Result<Option<String>> {
-        let words = doc_query_words(label);
-        if words.is_empty() {
-            return Ok(None);
-        }
-        let mut rows = match &state.doc_path {
-            Some(p) => self.memory.document_by_path(&p.display().to_string())?.into_iter().collect(),
-            None => self.memory.search_documents("", 50)?,
-        };
-        rank_documents(&mut rows, &words);
-        let Some(doc) = rows.into_iter().next().filter(|d| doc_hits(&words, d) > 0) else { return Ok(None) };
+        let Some(doc) = self.doc_for_label(state, label)? else { return Ok(None) };
         let path = doc.path.display().to_string();
         // The name after the last slash of either kind (a Windows path read on any system).
         let file = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
@@ -1838,6 +1880,7 @@ impl Agent {
         );
         let _ = self.pause(self.batch_pace(), cancel).await;
         let still_open = self.foreground().await.is_some_and(|w| w.is_file_dialog());
+        state.attached_done = !still_open;
         Ok(Some(if still_open {
             format!(
                 ". The file dialog opened; I typed the path of {file} (from memory, it fits \"{label}\") and pressed \
@@ -2323,6 +2366,65 @@ say argument of your action.",
         // dialog (approved_file), and the final send button still needs a yes.
         let target_text = format!("{description} {ui_name} {element_name}");
         let button_label = button_label(&ui_name, description);
+        // The upload button again after a file went in: the page shows the file next to it (the picture may be
+        // too small to read). Not clicked, no repeat counted, so the run goes on to the send button.
+        if state.attached_already(&target_text, &button_label)
+            && let Some(file) = state.doc_file.clone()
+        {
+            tracing::info!(file, "upload button again after the attach: not clicked");
+            return Ok(ToolRun::out(
+                Risk::Act,
+                format!(
+                    "already attached: {file} is attached to \"{}\". Do not open the file dialog again. Tick the \
+                     confirm box if there is one and click the send button with is_commit=true.",
+                    truncate(&button_label, 60)
+                ),
+            ));
+        }
+        let front = self.foreground().await;
+        // The name of what is clicked: the UI tree's, the element's, else the quoted label of the description.
+        let name = [ui_name.trim(), element_name.trim()]
+            .into_iter()
+            .find(|n| !n.is_empty())
+            .map(str::to_string)
+            .or_else(|| quoted_label(description))
+            .unwrap_or_default();
+        // Inside a file dialog Pip only types a path (and presses Open / Cancel): a folder or a file in the
+        // list would wander through the user's disk.
+        if front.as_ref().is_some_and(|w| w.is_file_dialog())
+            && !is_dialog_button(&name)
+            && !is_attach_target(&target_text)
+        {
+            tracing::info!(name, "click inside the file dialog refused");
+            return Ok(ToolRun::out(
+                Risk::Act,
+                "not clicked: inside the file dialog Pip only types a path. The file is not in memory: ask the user \
+                 where it is.",
+            ));
+        }
+        // "OK" / "Close" / "Retry" on an error or info box (a dialog or any window that is not the browser) sends
+        // nothing: no card. What the box said goes to the model (e.g. "file name not valid": type the path again).
+        let mut box_note = None;
+        if let Some(w) = front.as_ref().filter(|w| w.is_file_dialog() || !looks_like_browser(w))
+            && is_dialog_plain_button(&name)
+        {
+            let texts: Vec<&str> = state
+                .outline
+                .iter()
+                .filter(|i| i.role == "text")
+                .map(|i| i.name.trim())
+                .filter(|n| !n.is_empty())
+                .collect();
+            let said = std::iter::once(w.title.trim()).filter(|t| !t.is_empty()).chain(texts).collect::<Vec<_>>();
+            let said = said.join(" ");
+            // OK on a box that asks to delete, pay or cancel something ("Delete this file?") stays a card.
+            if is_cancel_target(&name)
+                || !(is_delete_target(&said) || is_money_target(&said) || is_cancel_target(&said))
+            {
+                risk = Risk::Act;
+            }
+            box_note = Some(format!(" (the box said: \"{}\")", truncate(&said, 200)));
+        }
         if risk == Risk::Commit && is_attach_target(&target_text) && !is_send_target(&target_text) {
             risk = Risk::Act;
             state.enter_after_attach = true;
@@ -2403,6 +2505,9 @@ say argument of your action.",
         }
         let attach_note = if attach_card { ATTACH_APPROVED_NOTE } else { "" };
         let mut out = format!("clicked {description}{attach_note}{note}");
+        if let Some(b) = &box_note {
+            out.push_str(b);
+        }
         if just_sent {
             out.push_str(SENT_NOTE);
         }
@@ -2428,6 +2533,13 @@ say argument of your action.",
                     let label = state.attach_label.clone().unwrap_or(button_label);
                     match self.prepick_attach(state, &label, cancel).await? {
                         Some(note) => out.push_str(&note),
+                        // The label names a letter memory does not hold (cold): ask the user once, then stop.
+                        None if state.doc_path.is_none()
+                            && !doc_query_words(&label).is_empty()
+                            && self.doc_for_label(state, &label)?.is_none() =>
+                        {
+                            return self.ask_for_file(state, &label, out, cancel, lang).await;
+                        }
                         None => {
                             out.push_str(". The file dialog is open now: type the full file path, then press enter.")
                         }
@@ -3042,6 +3154,91 @@ say argument of your action.",
         Ok(Some(doc.path.display().to_string()))
     }
 
+    /// The user's own answer to "where is your boarding pass?": a stored letter or an existing file on this
+    /// computer (the answer is the consent to attach it). None = no such file.
+    fn user_given_file(&self, state: &mut RunState, text: &str) -> Result<Option<String>> {
+        let text = text.trim().trim_matches(['"', '\'', '„', '“', '”']).trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        let path = match self.memory.document_by_path(text)? {
+            Some(doc) => {
+                state.doc_id = Some(doc.id);
+                doc.path
+            }
+            None if Path::new(text).is_file() => PathBuf::from(text),
+            None => return Ok(None),
+        };
+        state.doc_file = path.file_name().map(|f| f.to_string_lossy().into_owned());
+        state.doc_path = Some(path.clone());
+        Ok(Some(path.display().to_string()))
+    }
+
+    /// The file dialog is open and no stored letter fits its button ("Upload boarding pass", cold memory): ask
+    /// the user ONE open question naming the file. A file path for an answer goes in; no answer ends the run as
+    /// NeedsUser. Asked already in this run: the run ends at once, never a second question.
+    async fn ask_for_file(
+        &self,
+        state: &mut RunState,
+        label: &str,
+        clicked: String,
+        cancel: &CancellationToken,
+        lang: Lang,
+    ) -> Result<ToolRun> {
+        let doc = doc_query_words(label).join(" ");
+        let question = tf("attach_ask_where", lang, &[("doc", &doc)]);
+        if std::mem::replace(&mut state.dialog_asked, true) {
+            tracing::info!("file dialog again without a stored letter: the run ends");
+            return Ok(ToolRun::finish(Risk::Act, AgentOutcome::NeedsUser(question)));
+        }
+        state.enter_after_attach = false;
+        match self.ask(state, &question, &[], cancel, lang).await {
+            Asked::Answer(a) => {
+                state.answers.push(a.clone());
+                let Some(path) = self.user_given_file(state, &a)? else {
+                    return Ok(ToolRun::out(
+                        Risk::Act,
+                        format!(
+                            "{clicked}. The file dialog is open; no stored letter fits \"{}\". The user answered: {a}. \
+                             That is no file on this computer, so nothing was attached. Do not click in the dialog; \
+                             call done and say the {doc} is missing.",
+                            truncate(label, 60)
+                        ),
+                    ));
+                };
+                let file = state.doc_file.clone().unwrap_or_else(|| path.clone());
+                if !self.wait_for_text_focus(cancel).await || !self.type_chunks(&path, cancel).await? {
+                    return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped));
+                }
+                self.blocking(|pl| pl.input.key("enter")).await?;
+                state.prepicked_step = Some(state.step);
+                tracing::info!("attach: {file} given by the user for \"{}\"", truncate(label, 60));
+                let _ = self.pause(self.batch_pace(), cancel).await;
+                let still_open = self.foreground().await.is_some_and(|w| w.is_file_dialog());
+                state.attached_done = !still_open;
+                Ok(ToolRun::out(
+                    Risk::Act,
+                    if still_open {
+                        format!(
+                            "{clicked}. The user gave {file}; I typed its path and pressed enter, but the dialog is \
+                             still open. Look at it."
+                        )
+                    } else {
+                        format!(
+                            "{clicked}. The user gave {file}: it is attached. Do not open the file dialog again; \
+                             continue with the rest."
+                        )
+                    },
+                ))
+            }
+            Asked::Timeout => {
+                self.away_bubble("question_timeout", "btn_ask_again", None, lang);
+                Ok(ToolRun::finish(Risk::Act, AgentOutcome::NeedsUser(question)))
+            }
+            Asked::Cancelled => Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped)),
+        }
+    }
+
     async fn press_key(
         &self,
         tool: &Tool,
@@ -3082,6 +3279,18 @@ say argument of your action.",
             return Ok(ToolRun::out(
                 Risk::Act,
                 "not pressed: the file is already attached and the dialog is closed. Continue with the rest.",
+            ));
+        }
+        // Enter in a text field submits the form behind Pip's back (and raised a card reading "the filled-in form"):
+        // never pressed there. The model clicks Next or the send button instead. Enter on a focused button and
+        // Ctrl+Enter stay as the gate classifies them.
+        let in_field = ui.as_ref().is_some_and(|u| u.is_text_input() && !is_address_bar(&u.name));
+        if is_enter && !dialog_now && !state.enter_after_attach && in_field {
+            tracing::info!("enter in a text field: not pressed");
+            return Ok(ToolRun::out(
+                Risk::Act,
+                "not pressed: Enter in a field would send the form. Fill the rest, then click Next or the send button \
+                 by element number (send with is_commit=true).",
             ));
         }
         let attach_enter = std::mem::take(&mut state.enter_after_attach);
@@ -3136,6 +3345,7 @@ say argument of your action.",
             // too small to read in the picture).
             let file = state.doc_file.clone().unwrap_or_else(|| "the file".into());
             out.push_str(&format!(" (the file dialog closed: {file} is attached; do not upload it again)"));
+            state.attached_done = true;
         }
         if let Some(to) = &trusted {
             self.bubble(tf("sent_trusted", lang, &[("to", to)]), true);
@@ -3327,6 +3537,31 @@ say argument of your action.",
         self.event("trusted_site", site);
     }
 
+    /// The organisation memory keeps for the page in front: a profile key ending in `_form` or `_page` whose
+    /// address is this page (or its site) names it by its prefix ("airline_claim_form" -> "airline" ->
+    /// "Beispiel Air"). None = no such page in memory.
+    fn page_org(&self, url: Option<&str>) -> Option<String> {
+        let url = url?;
+        let facts = self.memory.profile_all().ok()?;
+        let site = self.gate.site_key(url);
+        facts.iter().find_map(|(key, address)| {
+            let stem = key.strip_suffix("_form").or_else(|| key.strip_suffix("_page"))?;
+            let here = same_page(address, url)
+                || site.as_ref().is_some_and(|s| self.gate.site_key(address).as_ref() == Some(s));
+            if !here {
+                return None;
+            }
+            // "airline_claim" -> "airline": the organisation is the first part that memory holds.
+            let mut prefix = stem;
+            loop {
+                if let Some((_, org)) = facts.iter().find(|(k, v)| k == prefix && !v.trim().is_empty()) {
+                    return Some(org.trim().to_string());
+                }
+                prefix = prefix.rsplit_once('_')?.0;
+            }
+        })
+    }
+
     /// DEMO_MODE page check + approval card. Ok(card facts) = approved; Err(run) = what to return instead.
     /// No card when the user ticked "Don't ask again" for this site and the target is a plain send (never a
     /// delete, payment, order or cancellation), or when the user already said yes to this very button and only
@@ -3355,17 +3590,9 @@ say argument of your action.",
                 (format!("{description} {sam_query}"), commit_what.clone(), commit_to.clone())
             }
             Tool::Key { commit_what, commit_to, combo, .. } => {
-                // A key name means nothing to the user: "Was: das ausgefüllte Formular".
-                let form = match lang {
-                    Lang::De => "das ausgefüllte Formular",
-                    Lang::En => "the filled-in form",
-                };
+                // A key name means nothing to the user; `what` below says "the form on this page".
                 let delete = matches!(combo.to_lowercase().rsplit('+').next(), Some("delete" | "d"));
-                (
-                    if delete { format!("{form} delete") } else { form.to_string() },
-                    commit_what.clone(),
-                    commit_to.clone(),
-                )
+                (if delete { "delete".to_string() } else { String::new() }, commit_what.clone(), commit_to.clone())
             }
             _ => (String::new(), None, None),
         };
@@ -3379,15 +3606,35 @@ say argument of your action.",
             && !is_delete_target(&target_text)
             && !is_money_target(&target_text)
             && !is_cancel_target(&target_text);
-        let what = what.or_else(|| state.doc_label.clone()).unwrap_or_else(|| description.clone());
+        // "What": the model's words unless they only say "the form" / "the page"; then the task's letter, else
+        // "the form on this page" (never the click's description or "the filled-in form").
+        let what = what
+            .filter(|w| !only_generic_words(w))
+            .or_else(|| state.doc_label.clone())
+            .unwrap_or_else(|| t("card_what_form", lang).to_string());
         let site = url.as_deref().and_then(|u| self.gate.site_key(u));
-        // The recipient is never only the model's word: the real host goes next to it.
-        let host = url.as_deref().and_then(|u| {
-            url_host(u).or_else(|| u.to_lowercase().starts_with("file:").then(|| t("page_local", lang).to_string()))
-        });
-        let to_name = to.clone().or_else(|| host.clone()).unwrap_or_else(|| "–".into());
-        let to_line = match (&to, &host) {
-            (Some(name), Some(h)) if !name.to_lowercase().contains(h.as_str()) => format!("{name} ({h})"),
+        let local = url.as_deref().is_some_and(|u| u.trim().to_lowercase().starts_with("file:"));
+        let real_host = url.as_deref().and_then(url_host);
+        // "To": the model's name unless it is empty or only says "page / form / website"; then the organisation
+        // memory keeps for this page ("airline" for "airline_claim_form"), the page's heading, the host.
+        let given = to.filter(|n| !n.trim().is_empty() && n.trim() != "null" && !generic_recipient(n));
+        let remembered_org = self.page_org(url.as_deref());
+        let heading = if given.is_none() && remembered_org.is_none() { page_heading(&state.outline) } else { None };
+        // The recipient is never only the page's or the model's word: the real host goes next to it (a local
+        // page says so). The organisation memory keeps for this very page needs nothing next to it.
+        // The model's "Beispiel Air (claim form)" for the page memory keeps for Beispiel Air: just the organisation.
+        let given = match (given, &remembered_org) {
+            (Some(n), Some(org)) if n.to_lowercase().contains(&org.to_lowercase()) => Some(org.clone()),
+            (g, _) => g,
+        };
+        let named = given.or_else(|| remembered_org.clone()).or(heading);
+        let trusted_name = named.as_ref().zip(remembered_org.as_ref()).is_some_and(|(n, o)| n.eq_ignore_ascii_case(o));
+        let host = real_host.clone().or_else(|| local.then(|| t("page_local", lang).to_string()));
+        let to_name = named.clone().or_else(|| host.clone()).unwrap_or_else(|| "–".into());
+        let to_line = match (&named, &host) {
+            (Some(name), Some(h)) if !trusted_name || real_host.is_some() => {
+                if name.to_lowercase().contains(h.as_str()) { name.clone() } else { format!("{name} ({h})") }
+            }
             _ => to_name.clone(),
         };
         let site_label = host.clone().unwrap_or_else(|| to_name.clone());
@@ -4530,6 +4777,14 @@ fn same_picture(before: &ApiImage, after: &ApiImage) -> bool {
     crate::meta::image::mean_diff(&before.png, &after.png).is_some_and(|d| d < SCROLL_MOVED)
 }
 
+/// The browser's address bar by its UI name: Enter there opens a page, it sends no form.
+fn is_address_bar(name: &str) -> bool {
+    let low = name.to_lowercase();
+    ["address and search bar", "adress- und suchleiste", "address bar", "adressleiste", "search or enter web address"]
+        .iter()
+        .any(|w| low.contains(w))
+}
+
 /// A browser window (Edge, Chrome, Firefox) by class or title.
 fn looks_like_browser(w: &crate::platform::WindowInfo) -> bool {
     let title = w.title.to_lowercase();
@@ -4594,6 +4849,88 @@ fn steps_by_itself(tool: &Tool) -> bool {
         }
         _ => false,
     }
+}
+
+/// A recipient that names no one: "the page", "page on this computer", "the contact form", "die Webseite". A name
+/// with a note ("Evergreen Health (Kontaktformular)") names someone.
+fn generic_recipient(to: &str) -> bool {
+    let low = to.trim().to_lowercase();
+    let bare = low.split('(').next().unwrap_or(&low).trim();
+    // Whole words only: "the Information desk" and "This Platform GmbH" name someone.
+    let generic = bare
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| matches!(w, "page" | "computer" | "form" | "website" | "seite" | "webseite" | "formular"));
+    let article = ["the ", "this ", "that ", "your ", "a ", "das ", "die ", "der ", "dein", "diese"]
+        .iter()
+        .any(|a| bare.starts_with(a));
+    only_generic_words(bare) || (generic && article)
+}
+
+/// "What" that only says "the form" or "the page" ("the filled-in form", "das ausgefüllte Formular"): no thing the
+/// user would recognise. "Your delay claim form (EUR 400)" says more and stays.
+fn only_generic_words(what: &str) -> bool {
+    const FILLER: &[&str] = &[
+        "the",
+        "a",
+        "this",
+        "that",
+        "your",
+        "my",
+        "filled",
+        "in",
+        "on",
+        "of",
+        "completed",
+        "das",
+        "die",
+        "der",
+        "den",
+        "dein",
+        "deine",
+        "dieser",
+        "diese",
+        "auf",
+        "ausgefüllte",
+        "ausgefülltes",
+        "null",
+        "page",
+        "form",
+        "website",
+        "web",
+        "site",
+        "computer",
+        "data",
+        "seite",
+        "webseite",
+        "formular",
+        "daten",
+    ];
+    what.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).all(|w| FILLER.contains(&w))
+}
+
+/// The page's heading: a text marked as heading, or a short text before the first field or button ("Beispiel
+/// Air"). None when the page starts with a field or its first text is a sentence.
+fn page_heading(outline: &[OutlineItem]) -> Option<String> {
+    let first_field = outline
+        .iter()
+        .position(|i| i.takes_text() || matches!(i.role.as_str(), "button" | "checkbox" | "radio"))
+        .unwrap_or(outline.len());
+    let before = &outline[..first_field];
+    let marked = |i: &&OutlineItem| {
+        i.localized_role.as_deref().is_some_and(|r| {
+            let r = r.to_lowercase();
+            r.contains("heading") || r.contains("überschrift")
+        })
+    };
+    let short = |i: &&OutlineItem| {
+        let n = i.name.trim();
+        i.role == "text" && !n.is_empty() && n.split_whitespace().count() <= 6 && !n.contains([':', '.', '?', '!'])
+    };
+    before
+        .iter()
+        .find(|i| i.role == "text" && !i.name.trim().is_empty() && marked(i))
+        .or_else(|| before.iter().find(short))
+        .map(|i| truncate(i.name.trim(), 60))
 }
 
 /// The address bar shows this URL already: scheme, file://localhost, slashes, case, %XX, #fragment and a
@@ -5850,6 +6187,23 @@ fn nothing_here(lang: Lang) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_generic_recipient_names_no_one_but_a_name_with_form_in_it_does() {
+        use super::{generic_recipient, is_address_bar, only_generic_words};
+        for g in ["the page", "page on this computer", "the contact form", "die Webseite", "this website", "null", ""] {
+            assert!(generic_recipient(g), "{g}");
+        }
+        for n in
+            ["Beispiel Air (claim form)", "the Information desk", "This Platform GmbH", "Evergreen Health", "Airline"]
+        {
+            assert!(!generic_recipient(n), "{n}");
+        }
+        assert!(only_generic_words("the filled-in form") && only_generic_words("das ausgefüllte Formular"));
+        assert!(!only_generic_words("your delay claim form (EUR 400)"));
+        assert!(is_address_bar("Address and search bar") && is_address_bar("Adress- und Suchleiste"));
+        assert!(!is_address_bar("Full name"));
+    }
+
     #[test]
     fn an_iban_in_groups_is_typed_without_spaces() {
         use super::compact_iban;

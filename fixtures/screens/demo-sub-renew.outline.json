@@ -1,0 +1,96 @@
+{
+ "note": "UI Automation outline of demo-sub-renew.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-sub-renew/index.html, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-sub-renew.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "text",
+   "name": "Update your payment method within 12 hours or lose your account",
+   "value": null,
+   "rect": {
+    "x": 491,
+    "y": 178,
+    "w": 618,
+    "h": 78
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "edit",
+   "name": "Card number",
+   "value": "",
+   "rect": {
+    "x": 491,
+    "y": 357,
+    "w": 240,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "edit",
+   "name": "Expiry date (MM/YY)",
+   "value": "",
+   "rect": {
+    "x": 747,
+    "y": 357,
+    "w": 195,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "edit",
+   "name": "CVV",
+   "value": "",
+   "rect": {
+    "x": 959,
+    "y": 357,
+    "w": 150,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "edit",
+   "name": "SMS code",
+   "value": "",
+   "rect": {
+    "x": 491,
+    "y": 452,
+    "w": 618,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "button",
+   "name": "Update payment and keep my account",
+   "value": null,
+   "rect": {
+    "x": 491,
+    "y": 536,
+    "w": 618,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

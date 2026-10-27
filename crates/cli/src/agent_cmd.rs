@@ -12,7 +12,7 @@ use pip_core::clock::{Clock, FixedClock};
 use pip_core::config::file_url;
 use pip_core::events::{Bus, Button, UiEvent};
 use pip_core::i18n::t;
-use pip_core::platform::{Input, PhysPoint, PhysRect, Platform, WindowInfo};
+use pip_core::platform::{Input, OutlineItem, PhysPoint, PhysRect, Platform, UiElement, WindowInfo};
 use pip_core::rules::RuleEngine;
 use pip_platform::fake::{Action, FakePlatform};
 use serde_json::Value;
@@ -180,6 +180,12 @@ pub struct Report {
     pub guard_text: Vec<String>,
     /// Files the dry run handed Pip on a FILE answer (stored as documents), as stored paths.
     pub files_given: Vec<String>,
+    /// The file name the page shows next to its upload button (picked in the file dialog): set when the PAGE
+    /// ELEMENTS still list it at the end, or listed it when a send card was approved. Printed as `Page shows: …`.
+    pub page_shows_attach: Option<String>,
+    /// Clicks in the open file dialog that were not on "Open", "Cancel", its "×" or the name box (wandering in
+    /// the folder list). Printed as `Dialog clicks: N`.
+    pub dialog_clicks: u32,
 }
 
 impl Report {
@@ -453,6 +459,76 @@ struct ScrollInput {
     with_outline: bool,
     /// Set by a scroll that swapped the screen; the loop takes it after the step.
     swapped: Arc<Mutex<Option<PathBuf>>>,
+    /// The file dialog: what was typed into it and what the page shows once a file is picked.
+    picker: Arc<Mutex<Picker>>,
+}
+
+/// The file dialog of the dry run and what it left on the page.
+#[derive(Debug, Default)]
+struct Picker {
+    /// The text in the dialog's "File name" box (keys typed while the box has the keyboard; None = nothing yet).
+    typed_path: Option<String>,
+    /// Ctrl+A selected the box's text: the next text replaces it.
+    select_all: bool,
+    /// Counts dialog openings, so a late "the name box gets the keyboard" belongs to the dialog still open.
+    opened: u64,
+    /// The file picked (dialog closed by Enter or "Open" with a typed file path).
+    attached: Option<String>,
+    /// The page's `text "<file>"` item next to the upload button (added to the PAGE ELEMENTS).
+    item: Option<OutlineItem>,
+    /// Clicks in the dialog off its buttons and name box.
+    dialog_clicks: u32,
+    /// Set when picking a file swapped to the `-attached` screen; the loop takes it after the step.
+    shown: Option<PathBuf>,
+    /// The clicks made while the dialog was open, as positions in the fake platform's action list of this step
+    /// (it covers the page: none of them hit a page target, a radio or an `advance_on_click` button under it);
+    /// the loop takes them with the actions after the step.
+    in_dialog: Vec<usize>,
+}
+
+/// The actions of a step that went to the page: the clicks made while the file dialog was open are taken out.
+fn page_actions(actions: &[Action], in_dialog: &[usize]) -> Vec<Action> {
+    actions.iter().enumerate().filter(|(i, _)| !in_dialog.contains(i)).map(|(_, a)| a.clone()).collect()
+}
+
+/// The time between the dialog opening and its "File name" box taking keys (the "Open" button has the focus
+/// first, as on the VM).
+const NAME_BOX_DELAY: Duration = Duration::from_millis(300);
+
+/// `<stem>-attached.png` next to a screenshot: the same form with the picked file's name next to its button.
+fn attached_sibling(screen: &Path) -> Option<PathBuf> {
+    let stem = screen.file_stem()?.to_str()?;
+    if stem.ends_with("-attached") {
+        return None;
+    }
+    let path = screen.with_file_name(format!("{stem}-attached.png"));
+    path.is_file().then_some(path)
+}
+
+/// The file name a typed path ends in ("C:\Users\Erika\boarding_pass.pdf" -> "boarding_pass.pdf"); None when it
+/// does not end in a name with an extension.
+fn picked_file(path: &str) -> Option<String> {
+    let name = path.trim().trim_matches('"').rsplit(['/', '\\']).next()?.trim();
+    let (stem, ext) = name.rsplit_once('.')?;
+    (!stem.is_empty() && !ext.is_empty() && !ext.contains(' ')).then(|| name.to_string())
+}
+
+/// The page's `text "<file>"` item: a 300x28 box right of the upload button, as Windows UI Automation lists the
+/// file name a page shows there.
+fn attached_item(items: &[OutlineItem], file_button: [i32; 4], file: &str) -> OutlineItem {
+    let [_, y1, x2, y2] = file_button;
+    OutlineItem {
+        id: items.iter().map(|i| i.id).max().unwrap_or(0) + 1,
+        role: "text".into(),
+        name: file.into(),
+        value: None,
+        rect: PhysRect { x: x2 + 18, y: (y1 + y2) / 2 - 14, w: 300, h: 28 },
+        offscreen: false,
+        enabled: true,
+        is_password: false,
+        localized_role: None,
+        is_date: false,
+    }
 }
 
 impl ScrollInput {
@@ -473,9 +549,18 @@ impl ScrollInput {
     }
 }
 
+/// Where a click lands in the open file dialog (the 880x540 file-dialog.png, pasted in the middle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DialogSpot {
+    Open,
+    /// "Cancel" or the "×".
+    Cancel,
+    NameBox,
+    Elsewhere,
+}
+
 impl ScrollInput {
-    /// The point is on the dialog's "Open", "Cancel" or "×" (their places in the 880x540 file-dialog.png).
-    fn on_dialog_button(&self, p: PhysPoint) -> bool {
+    fn dialog_spot(&self, p: PhysPoint) -> DialogSpot {
         let (sw, sh) = {
             let shown = self.screen.lock().expect("screen").clone();
             image::image_dimensions(&shown).unwrap_or((0, 0))
@@ -483,7 +568,122 @@ impl ScrollInput {
         let (x0, y0) = ((i64::from(sw) - 880) / 2, (i64::from(sh) - 540) / 2);
         let (x, y) = (i64::from(p.x) - x0, i64::from(p.y) - y0);
         let in_box = |x1: i64, y1: i64, x2: i64, y2: i64| (x1..=x2).contains(&x) && (y1..=y2).contains(&y);
-        in_box(614, 488, 864, 522) || in_box(830, 2, 878, 40)
+        if in_box(614, 488, 735, 522) {
+            DialogSpot::Open
+        } else if in_box(744, 488, 864, 522) || in_box(830, 2, 878, 40) {
+            DialogSpot::Cancel
+        } else if in_box(200, 444, 620, 464) {
+            DialogSpot::NameBox
+        } else {
+            DialogSpot::Elsewhere
+        }
+    }
+
+    fn dialog_open(&self) -> bool {
+        self.fake.window.lock().expect("window").as_ref().is_some_and(WindowInfo::is_file_dialog)
+    }
+
+    /// The dialog opens: the "Open" button has the keyboard first, the "File name" box a moment later.
+    fn open_dialog(&self) -> Result<()> {
+        *self.fake.window.lock().expect("window") =
+            Some(WindowInfo { title: "Open".into(), class: "#32770".into(), address: None });
+        let opened = {
+            let mut pk = self.picker.lock().expect("picker");
+            pk.opened += 1;
+            pk.typed_path = None;
+            pk.select_all = false;
+            pk.opened
+        };
+        *self.fake.focus.lock().expect("focus") =
+            Some(UiElement { name: "Open".into(), control: "Button".into(), is_password: false });
+        let (fake, picker) = (self.fake.clone(), self.picker.clone());
+        std::thread::spawn(move || {
+            std::thread::sleep(NAME_BOX_DELAY);
+            let still = picker.lock().is_ok_and(|pk| pk.opened == opened)
+                && fake.window.lock().is_ok_and(|w| w.as_ref().is_some_and(WindowInfo::is_file_dialog));
+            if still && let Ok(mut f) = fake.focus.lock() {
+                *f = Some(UiElement { name: "File name".into(), control: "Edit".into(), is_password: false });
+            }
+        });
+        self.show_file_dialog(true)
+    }
+
+    /// The dialog closes; with `pick` (Enter or "Open") the typed path's file is picked: the page shows its name.
+    fn close_dialog(&self, pick: bool) -> Result<()> {
+        self.fake.window.lock().expect("window").take();
+        *self.fake.focus.lock().expect("focus") = None;
+        let file = {
+            let mut pk = self.picker.lock().expect("picker");
+            pk.opened += 1;
+            let typed = pk.typed_path.take();
+            if pick { typed.as_deref().and_then(picked_file) } else { None }
+        };
+        self.show_file_dialog(false)?;
+        let Some(file) = file else { return Ok(()) };
+        let shown = self.screen.lock().expect("screen").clone();
+        if let Some(next) = attached_sibling(&shown) {
+            let img = image::open(&next).with_context(|| format!("cannot open {}", next.display()))?.into_rgba8();
+            self.fake.set_screen(img);
+            *self.boxes.lock().expect("boxes") = load_boxes(&next);
+            *self.screen.lock().expect("screen") = next.clone();
+            self.picker.lock().expect("picker").shown = Some(next);
+        }
+        let button = self.boxes.lock().expect("boxes").get("file_button").copied();
+        let mut pk = self.picker.lock().expect("picker");
+        pk.attached = Some(file.clone());
+        pk.item = None;
+        if self.with_outline
+            && let Some(button) = button
+            && let Ok(mut items) = self.fake.outline.lock()
+        {
+            items.retain(|i| !(i.role == "text" && i.name == file));
+            let item = attached_item(&items, button, &file);
+            items.push(item.clone());
+            pk.item = Some(item);
+        }
+        Ok(())
+    }
+
+    /// Keys reach the dialog's name box only once it has the keyboard (the VM lost the "C" of "C:\…" before).
+    fn name_box_has_keys(&self) -> bool {
+        self.fake.focus.lock().expect("focus").as_ref().is_some_and(UiElement::is_text_input)
+    }
+
+    /// The page's file-name item is in the PAGE ELEMENTS now (or, without them, the `-attached` screen is shown).
+    fn page_shows(&self) -> Option<String> {
+        let pk = self.picker.lock().expect("picker");
+        let file = pk.attached.clone()?;
+        let shows = if self.with_outline {
+            self.fake.outline.lock().is_ok_and(|items| items.iter().any(|i| i.role == "text" && i.name == file))
+        } else {
+            let shown = self.screen.lock().expect("screen").clone();
+            shown.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.ends_with("-attached"))
+        };
+        shows.then_some(file)
+    }
+
+    /// The loop showed `next` (another screen of the list): its `-attached` picture when a file is picked, and
+    /// the file-name item kept on the same form. A screen with its own list (another page) drops the item, except
+    /// an error screen: the refused form still holds the file.
+    fn showing(&self, next: &Path, own_outline: bool) -> Option<PathBuf> {
+        let pk = self.picker.lock().expect("picker");
+        pk.attached.as_ref()?;
+        let item = pk.item.clone();
+        drop(pk);
+        let swap = attached_sibling(next);
+        if own_outline
+            && is_error(next)
+            && let Some(item) = item
+            && let Ok(mut items) = self.fake.outline.lock()
+            && !items.iter().any(|i| i.role == "text" && i.name == item.name)
+        {
+            let button = self.boxes.lock().expect("boxes").get("file_button").copied();
+            if let Some(button) = button {
+                let again = attached_item(&items, button, &item.name);
+                items.push(again);
+            }
+        }
+        swap
     }
 
     /// The dialog's "File name" box shows that something was typed (dark marks like a line of text; the dry run
@@ -528,6 +728,22 @@ impl Input for ScrollInput {
         self.fake.move_to(p)
     }
     fn click(&self, p: PhysPoint) -> Result<()> {
+        // In the dialog (file-dialog.png, pasted in the middle; it covers the page): "Open" picks the typed file,
+        // "Cancel" and its "×" close it, anything else stays in the dialog. The page under it gets nothing.
+        if self.dialog_open() {
+            let spot = self.dialog_spot(p);
+            let at = self.fake.actions.lock().map(|a| a.len()).unwrap_or_default();
+            self.picker.lock().expect("picker").in_dialog.push(at);
+            match spot {
+                DialogSpot::Open | DialogSpot::Cancel => self.close_dialog(spot == DialogSpot::Open)?,
+                DialogSpot::NameBox => {}
+                DialogSpot::Elsewhere => self.picker.lock().expect("picker").dialog_clicks += 1,
+            }
+            let kept = kept_values(&self.fake);
+            self.fake.click(p)?;
+            restore_values(&self.fake, &kept);
+            return Ok(());
+        }
         // A click on the page's file button opens the browser's file dialog, as on Windows ("Open", #32770).
         let on_file = self
             .boxes
@@ -535,32 +751,49 @@ impl Input for ScrollInput {
             .expect("boxes")
             .get("file_button")
             .is_some_and(|&[x1, y1, x2, y2]| (x1..=x2).contains(&p.x) && (y1..=y2).contains(&p.y));
-        // In the dialog: "Open", "Cancel" and its "×" close it (file-dialog.png, pasted in the middle).
-        let dialog_open = self.fake.window.lock().expect("window").as_ref().is_some_and(WindowInfo::is_file_dialog);
-        if dialog_open && self.on_dialog_button(p) {
-            self.fake.window.lock().expect("window").take();
-            self.show_file_dialog(false)?;
-            return self.fake.click(p);
-        }
         if on_file {
-            *self.fake.window.lock().expect("window") =
-                Some(WindowInfo { title: "Open".into(), class: "#32770".into(), address: None });
-            self.show_file_dialog(true)?;
+            self.open_dialog()?;
         }
         self.fake.click(p)
     }
     fn type_text(&self, s: &str) -> Result<()> {
-        if self.fake.window.lock().expect("window").as_ref().is_some_and(WindowInfo::is_file_dialog) {
+        if !self.dialog_open() {
+            return self.fake.type_text(s);
+        }
+        // Keys go to the name box once it has the keyboard; before that they go nowhere. The page under the
+        // dialog gets nothing either way.
+        if self.name_box_has_keys() {
+            let mut pk = self.picker.lock().expect("picker");
+            let replace = std::mem::take(&mut pk.select_all);
+            match pk.typed_path.as_mut() {
+                Some(t) if !replace => t.push_str(s),
+                _ => pk.typed_path = Some(s.to_string()),
+            }
+            drop(pk);
             self.fill_dialog_name();
         }
-        self.fake.type_text(s)
+        let kept = kept_values(&self.fake);
+        self.fake.type_text(s)?;
+        restore_values(&self.fake, &kept);
+        Ok(())
     }
     fn key(&self, combo: &str) -> Result<()> {
-        // Enter picks the typed file and Escape cancels: either way the file dialog closes.
-        if matches!(combo.to_lowercase().as_str(), "enter" | "return" | "escape" | "esc") {
-            let open = self.fake.window.lock().expect("window").take_if(|w| w.is_file_dialog()).is_some();
-            if open {
-                self.show_file_dialog(false)?;
+        let k = combo.to_lowercase();
+        if self.dialog_open() {
+            // Enter picks the typed file and Escape cancels: either way the file dialog closes.
+            match k.as_str() {
+                "enter" | "return" => self.close_dialog(true)?,
+                "escape" | "esc" => self.close_dialog(false)?,
+                "ctrl+a" if self.name_box_has_keys() => self.picker.lock().expect("picker").select_all = true,
+                "backspace" | "delete" if self.name_box_has_keys() => {
+                    let mut pk = self.picker.lock().expect("picker");
+                    if std::mem::take(&mut pk.select_all) {
+                        pk.typed_path = None;
+                    } else if let Some(t) = pk.typed_path.as_mut() {
+                        t.pop();
+                    }
+                }
+                _ => {}
             }
         }
         self.fake.key(combo)
@@ -669,14 +902,15 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let boxes = Arc::new(Mutex::new(load_boxes(&screens[0])));
     let shown = Arc::new(Mutex::new(screens[0].clone()));
     let swapped = Arc::new(Mutex::new(None::<PathBuf>));
-    let scroller = ScrollInput {
+    let scroller = Arc::new(ScrollInput {
         fake: fake.clone(),
         screen: shown.clone(),
         boxes: boxes.clone(),
         with_outline: o.outline.is_some(),
         swapped: swapped.clone(),
-    };
-    let platform = Platform { screen: platform.screen, input: Arc::new(scroller), ui: platform.ui };
+        picker: Arc::default(),
+    });
+    let platform = Platform { screen: platform.screen, input: scroller.clone(), ui: platform.ui };
     let (bus, _commands) = Bus::new();
     let opener_quiet = o.quiet;
     say(format!("Model: {}", model_name()));
@@ -741,6 +975,8 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let mut calls_per_step = Vec::new();
     let mut typed = Vec::new();
     let mut last_turn_question = false;
+    // The picked file's name the page listed when a send card was approved.
+    let mut shown_at_send = None::<String>;
     let (warned_before, overridden_before) =
         (count_events(&ctx.memory, "guard_warned"), count_events(&ctx.memory, "guard_overridden"));
     let started = Instant::now();
@@ -765,17 +1001,30 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
             }
             say(format!("  [screen] scrolled: now showing {}", p.display()));
         }
-        select_clicked_radios(&fake, &actions);
+        // A file picked in the dialog: the page shows its name (`-attached` screen, a text item in the list).
+        if let Some(p) = scroller.picker.lock().expect("picker").shown.take() {
+            say(format!("  [screen] file picked: now showing {}", p.display()));
+        }
+        // Clicks made while the file dialog was open hit the dialog, not the page targets under it (no radio,
+        // no advance, no submit in the click log).
+        let in_dialog = std::mem::take(&mut scroller.picker.lock().expect("picker").in_dialog);
+        select_clicked_radios(&fake, &page_actions(&actions, &in_dialog));
         typed.extend(typed_in_step(&actions, &fields_before, &field_values(&fake)));
         let mut clicked_advance = false;
-        for a in &actions {
+        for (i, a) in actions.iter().enumerate() {
             let line = match a {
                 Action::Move(_) => continue,
                 Action::Click(p) => {
-                    let hit = target_at(&boxes.lock().expect("boxes"), *p);
+                    let dialog = in_dialog.contains(&i);
+                    let hit = if dialog { None } else { target_at(&boxes.lock().expect("boxes"), *p) };
                     clicked_advance |= hit.as_ref().is_some_and(|h| o.advance_on_click.contains(h));
                     clicks.push((*p, hit.clone()));
-                    format!("click ({}, {}){}", p.x, p.y, hit.map(|h| format!(" -> {h}")).unwrap_or_default())
+                    let on = if dialog {
+                        " -> file dialog".to_string()
+                    } else {
+                        hit.map(|h| format!(" -> {h}")).unwrap_or_default()
+                    };
+                    format!("click ({}, {}){on}", p.x, p.y)
                 }
                 Action::Type(s) => format!("type {s:?}"),
                 Action::Key(k) => format!("key {k}"),
@@ -802,6 +1051,9 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         // - a send card was approved (the confirmation comes only after a send).
         // An "-error" screen is skipped when the fields it shows empty are filled by now (the page would accept).
         let approved_now = cards.lock().expect("cards").iter().filter(|c| c.approved && !c.attach).count();
+        if approved_now > approved_before && shown_at_send.is_none() {
+            shown_at_send = scroller.page_shows();
+        }
         // Typing by element sets the value through the UI tree first (no keystrokes): a changed field counts too.
         let typed = actions.iter().any(|a| matches!(a, Action::Type(_))) || field_values(&fake) != fields_before;
         let next_filled = screens.get(screen_i + 1).is_some_and(|s| is_filled(s));
@@ -832,19 +1084,21 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
                     screen_i += 1;
                 }
             }
-            let next = &screens[screen_i];
-            let img = image::open(next).with_context(|| format!("cannot open {}", next.display()))?.into_rgba8();
-            fake.set_screen(img);
-            *boxes.lock().expect("boxes") = load_boxes(next);
-            *shown.lock().expect("screen") = next.clone();
+            let listed = &screens[screen_i];
             // With PAGE ELEMENTS on: a screen with its own <stem>.outline.json (another page) brings its own list;
             // otherwise the list stays (the same form, with what was typed into it).
-            if o.outline.is_some()
-                && let Some(path) = sibling_outline(next)
-            {
-                let n = fake.load_outline(&path)?;
+            let own_outline = o.outline.is_some().then(|| sibling_outline(listed)).flatten();
+            if let Some(path) = &own_outline {
+                let n = fake.load_outline(path)?;
                 say(format!("  [screen] PAGE ELEMENTS: {n} from {}", path.display()));
             }
+            *boxes.lock().expect("boxes") = load_boxes(listed);
+            // A file picked earlier on this form: the picture with its name next to the button.
+            let next = scroller.showing(listed, own_outline.is_some()).unwrap_or_else(|| listed.clone());
+            let img = image::open(&next).with_context(|| format!("cannot open {}", next.display()))?.into_rgba8();
+            fake.set_screen(img);
+            *boxes.lock().expect("boxes") = load_boxes(&next);
+            *shown.lock().expect("screen") = next.clone();
             say(format!("  [screen] now showing {}", next.display()));
         }
     }
@@ -894,6 +1148,8 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         asked_after_send: *after_send.lock().expect("after send"),
         guard_text,
         files_given: files_given.lock().expect("files").clone(),
+        page_shows_attach: scroller.page_shows().or(shown_at_send),
+        dialog_clicks: scroller.picker.lock().expect("picker").dialog_clicks,
     };
 
     if !o.quiet {
@@ -929,6 +1185,10 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         println!("Calls per step: {:?}", report.calls_per_step);
         println!("Typed into fields: {:?}", report.typed);
         println!("Guard: warned {}, overridden {}", report.guard_warned, report.guard_overridden);
+        if let Some(file) = &report.page_shows_attach {
+            println!("Page shows: {file}");
+        }
+        println!("Dialog clicks: {}", report.dialog_clicks);
         if report.ended_on_question {
             println!("Ended on an open question (the last turn asked with options): not counted as finished.");
         }
@@ -1364,6 +1624,8 @@ mod tests {
             asked_after_send: 0,
             guard_text: vec![],
             files_given: vec![],
+            page_shows_attach: None,
+            dialog_clicks: 0,
         };
         assert!(r.gate_held_at_submit());
         r.clicks.push((PhysPoint { x: 859, y: 940 }, Some("submit_button".into())));
@@ -1474,6 +1736,8 @@ mod tests {
             asked_after_send: 0,
             guard_text: vec![],
             files_given: vec![],
+            page_shows_attach: None,
+            dialog_clicks: 0,
         }
     }
 
@@ -1663,6 +1927,8 @@ mod tests {
             asked_after_send: 0,
             guard_text: vec![],
             files_given: vec![],
+            page_shows_attach: None,
+            dialog_clicks: 0,
         };
         let want = ["Erika Beispiel".to_string(), "G123456789".to_string()];
         assert!(!r.typed_all(&want));
@@ -1836,6 +2102,7 @@ mod tests {
             boxes: Arc::new(Mutex::new(load_boxes(&png))),
             with_outline: outline,
             swapped: Arc::default(),
+            picker: Arc::default(),
         };
         (fake, input)
     }
@@ -1896,5 +2163,250 @@ mod tests {
         input.scroll(PhysPoint { x: 800, y: 500 }, 3).unwrap();
         assert_eq!(rects(&fake), before);
         assert!(input.swapped.lock().unwrap().is_none());
+    }
+    const PASS: &str = r"C:\Users\Erika\Documents\Pip\boarding_pass_bx2041.pdf";
+
+    /// Points in the file dialog pasted on a 1600x1000 screen (x0 360, y0 230).
+    const OPEN: PhysPoint = PhysPoint { x: 1030, y: 735 };
+    const CANCEL: PhysPoint = PhysPoint { x: 1160, y: 735 };
+    const CLOSE_X: PhysPoint = PhysPoint { x: 1213, y: 250 };
+    const NAME_BOX: PhysPoint = PhysPoint { x: 760, y: 684 };
+    const FOLDERS: PhysPoint = PhysPoint { x: 860, y: 480 };
+
+    fn click_file_button(input: &ScrollInput) {
+        let b = input.boxes.lock().unwrap()["file_button"];
+        input.click(PhysPoint { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 }).unwrap();
+        assert!(input.dialog_open());
+    }
+
+    /// Waits like the core's `wait_for_text_focus` (max 3 s) until the name box has the keyboard.
+    fn wait_for_name_box(fake: &FakePlatform) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !fake.focus.lock().unwrap().as_ref().is_some_and(UiElement::is_text_input) {
+            assert!(Instant::now() < deadline, "the name box never got the keyboard");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn text_item(fake: &FakePlatform, file: &str) -> Option<OutlineItem> {
+        fake.outline.lock().unwrap().iter().find(|i| i.role == "text" && i.name == file).cloned()
+    }
+
+    #[test]
+    fn the_dialog_name_box_gets_the_keyboard_before_the_path_is_typed() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let (fake, input) = scroller(&dir, "demo-air-v3-step3", true);
+        click_file_button(&input);
+        // First the dialog's "Open" button has the keyboard: what is typed now goes nowhere (the lost "C").
+        let first = fake.focus.lock().unwrap().clone().unwrap();
+        assert_eq!((first.name.as_str(), first.is_text_input()), ("Open", false));
+        input.type_text("C").unwrap();
+        assert_eq!(input.picker.lock().unwrap().typed_path, None, "a key before the box has the keyboard is lost");
+        // A moment later the "File name" box has it; a path typed now arrives whole.
+        wait_for_name_box(&fake);
+        assert_eq!(fake.focus.lock().unwrap().as_ref().unwrap().name, "File name");
+        let (a, b) = PASS.split_at(12);
+        input.type_text(a).unwrap();
+        input.type_text(b).unwrap();
+        assert_eq!(input.picker.lock().unwrap().typed_path.as_deref(), Some(PASS), "never without its first letter");
+        input.key("enter").unwrap();
+        assert!(!input.dialog_open());
+        assert_eq!(*fake.focus.lock().unwrap(), None, "the dialog closed: no focus to report");
+        assert_eq!(input.page_shows().as_deref(), Some("boarding_pass_bx2041.pdf"));
+        // A late "name box" from a dialog that is already closed changes nothing.
+        std::thread::sleep(NAME_BOX_DELAY + Duration::from_millis(100));
+        assert_eq!(*fake.focus.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn a_typed_path_and_enter_show_the_attached_screen_and_the_file_name_item() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let (fake, input) = scroller(&dir, "demo-air-v3-step3", true);
+        let n_before = fake.outline.lock().unwrap().len();
+        click_file_button(&input);
+        wait_for_name_box(&fake);
+        input.type_text(PASS).unwrap();
+        input.key("enter").unwrap();
+        // At once, inside the step: the `-attached` screen with its boxes, the list kept plus the file name.
+        let attached = dir.join("demo-air-v3-step3-attached.png");
+        assert_eq!(*input.screen.lock().unwrap(), attached);
+        assert_eq!(input.picker.lock().unwrap().shown.as_deref(), Some(attached.as_path()));
+        assert!(input.swapped.lock().unwrap().is_none(), "not a step of the screen list");
+        assert_eq!(
+            fake.screen.lock().unwrap().as_raw(),
+            image::open(&attached).unwrap().into_rgba8().as_raw(),
+            "the picture without the dialog"
+        );
+        assert_eq!(fake.outline.lock().unwrap().len(), n_before + 1);
+        let item = text_item(&fake, "boarding_pass_bx2041.pdf").expect("the file name is listed");
+        let b = input.boxes.lock().unwrap()["file_button"];
+        assert_eq!((item.rect.x, item.rect.w, item.rect.h), (b[2] + 18, 300, 28), "right of the button");
+        assert!(item.rect.y > b[1] && item.rect.y + item.rect.h < b[3]);
+        assert!(fake.outline.lock().unwrap().iter().all(|i| i.id != item.id || i.name == item.name), "a new id");
+        assert!(input.boxes.lock().unwrap().contains_key("submit_button"));
+        assert_eq!(input.page_shows().as_deref(), Some("boarding_pass_bx2041.pdf"));
+        // The refused form (error screen, its own list) still holds the file; the thanks page does not.
+        let error = dir.join("demo-air-v3-step3-error.png");
+        fake.load_outline(&dir.join("demo-air-v3-step3-error.outline.json")).unwrap();
+        *input.boxes.lock().unwrap() = load_boxes(&error);
+        assert_eq!(input.showing(&error, true), None, "no -attached picture of the error screen");
+        assert!(text_item(&fake, "boarding_pass_bx2041.pdf").is_some(), "kept on the error screen");
+        let thanks = dir.join("demo-air-v3-thanks.png");
+        fake.load_outline(&dir.join("demo-air-v3-thanks.outline.json")).unwrap();
+        assert_eq!(input.showing(&thanks, true), None);
+        assert_eq!(input.page_shows(), None, "another page: the item is gone");
+
+        // demo-air: "Open" picks too; the next picture of the same form is its -attached one, the item stays.
+        let (fake, input) = scroller(&dir, "demo-air-step2", true);
+        click_file_button(&input);
+        wait_for_name_box(&fake);
+        input.type_text(PASS).unwrap();
+        input.click(OPEN).unwrap();
+        assert_eq!(*input.screen.lock().unwrap(), dir.join("demo-air-step2-attached.png"));
+        assert!(text_item(&fake, "boarding_pass_bx2041.pdf").is_some());
+        assert_eq!(
+            input.showing(&dir.join("demo-air-step2-filled.png"), false),
+            Some(dir.join("demo-air-step2-filled-attached.png"))
+        );
+        assert!(text_item(&fake, "boarding_pass_bx2041.pdf").is_some(), "the same form keeps the item");
+        // Without PAGE ELEMENTS the picture alone shows it.
+        let (fake, input) = scroller(&dir, "demo-air-v2", false);
+        click_file_button(&input);
+        wait_for_name_box(&fake);
+        input.type_text(PASS).unwrap();
+        input.key("enter").unwrap();
+        assert!(fake.outline.lock().unwrap().is_empty(), "no list made up");
+        assert_eq!(input.page_shows().as_deref(), Some("boarding_pass_bx2041.pdf"));
+    }
+
+    #[test]
+    fn cancel_in_the_dialog_attaches_nothing() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let (fake, input) = scroller(&dir, "demo-air-v3-step3", true);
+        let step3 = dir.join("demo-air-v3-step3.png");
+        let n = fake.outline.lock().unwrap().len();
+        for close in ["escape", "cancel", "x"] {
+            click_file_button(&input);
+            wait_for_name_box(&fake);
+            input.type_text(PASS).unwrap();
+            match close {
+                "escape" => input.key("escape").unwrap(),
+                "cancel" => input.click(CANCEL).unwrap(),
+                _ => input.click(CLOSE_X).unwrap(),
+            }
+            assert!(!input.dialog_open(), "{close} closes the dialog");
+            assert_eq!(*input.screen.lock().unwrap(), step3, "{close}: no -attached screen");
+            assert_eq!(fake.outline.lock().unwrap().len(), n, "{close}: no file name item");
+            assert_eq!(input.page_shows(), None);
+            assert_eq!(input.picker.lock().unwrap().attached, None);
+        }
+        // Enter with nothing typed, or with a folder only, picks nothing either.
+        for typed in ["", r"C:\Users\Erika\Documents"] {
+            click_file_button(&input);
+            wait_for_name_box(&fake);
+            if !typed.is_empty() {
+                input.type_text(typed).unwrap();
+            }
+            input.key("enter").unwrap();
+            assert_eq!(input.page_shows(), None, "{typed:?}");
+        }
+        assert_eq!(picked_file(PASS).as_deref(), Some("boarding_pass_bx2041.pdf"));
+        assert_eq!(picked_file("/home/erika/boarding pass.pdf").as_deref(), Some("boarding pass.pdf"));
+        assert_eq!(picked_file(r"C:\Users\Erika\Documents\"), None);
+    }
+
+    #[test]
+    fn dialog_clicks_count_only_clicks_inside_the_dialog() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let (fake, input) = scroller(&dir, "demo-air-step2", true);
+        let confirm = input.boxes.lock().unwrap()["confirm_checkbox"];
+        let confirm = PhysPoint { x: (confirm[0] + confirm[2]) / 2, y: (confirm[1] + confirm[3]) / 2 };
+        let ticked = |fake: &FakePlatform| {
+            fake.outline.lock().unwrap().iter().any(|i| i.role == "checkbox" && i.value.as_deref() == Some("checked"))
+        };
+        // Page clicks before the dialog do not count.
+        input.click(PhysPoint { x: 100, y: 100 }).unwrap();
+        click_file_button(&input);
+        wait_for_name_box(&fake);
+        input.click(NAME_BOX).unwrap();
+        assert_eq!(input.picker.lock().unwrap().dialog_clicks, 0, "the name box is where the path goes");
+        input.click(FOLDERS).unwrap();
+        // The confirm box lies under the dialog: the click stays in the dialog, the box stays empty.
+        input.click(confirm).unwrap();
+        assert!(!ticked(&fake), "the page under the dialog gets no click");
+        assert_eq!(input.picker.lock().unwrap().dialog_clicks, 2);
+        input.type_text(PASS).unwrap();
+        input.click(OPEN).unwrap();
+        assert_eq!(input.picker.lock().unwrap().dialog_clicks, 2, "\"Open\" is not wandering");
+        // After the dialog: page clicks again, not counted; the box ticks.
+        input.click(confirm).unwrap();
+        assert!(ticked(&fake));
+        click_file_button(&input);
+        input.click(CANCEL).unwrap();
+        assert_eq!(input.picker.lock().unwrap().dialog_clicks, 2, "\"Cancel\" is not wandering");
+        assert_eq!(input.page_shows().as_deref(), Some("boarding_pass_bx2041.pdf"), "cancel keeps the earlier pick");
+    }
+
+    /// The dialog covers the middle of the page: a click in its folder list that lands over the page's submit
+    /// button or a radio is a dialog click, not a submit (the click log, the gate check and the screen advance
+    /// must not see a page target), and the radio stays as it was.
+    #[test]
+    fn clicks_in_the_dialog_hit_no_page_target_under_it() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let (fake, input) = scroller(&dir, "demo-air-step2", true);
+        let boxes = input.boxes.lock().unwrap().clone();
+        let mid = |b: [i32; 4]| PhysPoint { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 };
+        let (submit, yes) = (mid(boxes["submit_button"]), mid(boxes["voucher_yes_radio"]));
+        assert_eq!(target_at(&boxes, submit).as_deref(), Some("submit_button"));
+        // The page's submit click before the dialog is a real one.
+        input.click(submit).unwrap();
+        click_file_button(&input);
+        input.click(submit).unwrap();
+        input.click(yes).unwrap();
+        input.key("escape").unwrap();
+        input.click(submit).unwrap();
+        let actions = fake.take_actions();
+        let in_dialog = std::mem::take(&mut input.picker.lock().unwrap().in_dialog);
+        assert_eq!(in_dialog, vec![2, 3], "the third and fourth action: the two clicks in the dialog");
+        assert_eq!((&actions[2], &actions[3]), (&Action::Click(submit), &Action::Click(yes)));
+        let page = page_actions(&actions, &in_dialog);
+        let page_clicks: Vec<_> =
+            page.iter().filter_map(|a| if let Action::Click(p) = a { Some(*p) } else { None }).collect();
+        assert_eq!(
+            page_clicks,
+            vec![submit, mid(boxes["file_button"]), submit],
+            "the same spot before and after still counts"
+        );
+        select_clicked_radios(&fake, &page);
+        let checked =
+            fake.outline.lock().unwrap().iter().any(|i| i.role == "radio" && i.value.as_deref() == Some("checked"));
+        assert!(!checked, "the radio under the dialog stays unselected");
+        assert_eq!(input.picker.lock().unwrap().dialog_clicks, 2);
+    }
+
+    #[test]
+    fn the_attached_screens_fit_their_base_boxes() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let mut seen = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            let Some(stem) = name.strip_suffix("-attached.boxes.json") else { continue };
+            let attached = dir.join(format!("{stem}-attached.png"));
+            let base = dir.join(format!("{stem}.png"));
+            assert!(attached.is_file() && base.is_file(), "{stem}");
+            assert_eq!(attached_sibling(&base), Some(attached.clone()), "{stem}");
+            assert_eq!(attached_sibling(&attached), None, "{stem}: no -attached-attached");
+            assert!(sibling_outline(&attached).is_none(), "{stem}: the same form keeps its list");
+            let (a, b) = (load_boxes(&attached), load_boxes(&base));
+            assert!(a.contains_key("file_button"), "{stem}");
+            assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>(), "{stem}: the same targets");
+            assert_eq!(a, b, "{stem}: the name next to the button moves nothing");
+            seen.push(stem.to_string());
+        }
+        seen.sort();
+        assert_eq!(
+            seen,
+            ["demo-air-step2", "demo-air-step2-filled", "demo-air-v2", "demo-air-v2-filled", "demo-air-v3-step3"]
+        );
     }
 }

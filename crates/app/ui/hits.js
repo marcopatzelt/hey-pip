@@ -70,12 +70,34 @@
     return !(now - last < FLIGHT_EVERY);
   }
 
+  /**
+   * Where Stop sits while a run acts: a fixed place at Pip's home corner (bottom right of the work area, above the
+   * taskbar), left of where Pip stands at home, its bottom on his feet. It never moves with Pip while he flies to
+   * a field (VM 27.10. 14:54: a Stop click landed on Edge because the pill had moved on with him).
+   * home: Peek.geometry("up") ({ x, y }), pip: Pip's size, size: { w, h } of the button, viewport: { w, h }.
+   * avoid (optional): the field Pip is about to click. Stop must never sit on it: the hook lets the agent's own
+   * press through to the window on a hit rect, so that press would stop the run. Then Stop lifts above the field.
+   */
+  function stopPlace(home, pip, size, viewport, gap, avoid) {
+    const edge = 8, g = Number.isFinite(gap) ? gap : 12;
+    const w = size && size.w, h = size && size.h;
+    if (!home || ![home.x, home.y, pip, w, h].every(Number.isFinite) || w < 1 || h < 1) return null;
+    const vw = viewport && Number.isFinite(viewport.w) ? viewport.w : home.x + pip;
+    const x = Math.max(edge, Math.min(home.x - g - w, vw - edge - w));
+    let y = Math.max(edge, home.y + pip - h);
+    const a = avoid;
+    const onField = a && [a.x, a.y, a.w, a.h].every(Number.isFinite)
+      && x < a.x + a.w && a.x < x + w && y < a.y + a.h && a.y < y + h;
+    if (onField) y = Math.max(edge, a.y - g - h);
+    return { x, y, w, h };
+  }
+
   /** True if the point (same units as the rects) is inside one of them. */
   function inside(rects, x, y) {
     return rects.some((r) => x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h);
   }
 
-  const Hits = { MARGIN, FLIGHT_EVERY, anyOpen, cssRects, toPhys, inside, flightDue };
+  const Hits = { MARGIN, FLIGHT_EVERY, anyOpen, cssRects, toPhys, inside, flightDue, stopPlace };
   root.Hits = Hits;
   if (typeof module !== "undefined" && module.exports) module.exports = Hits;
 })(typeof window !== "undefined" ? window : globalThis);

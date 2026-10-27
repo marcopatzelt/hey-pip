@@ -230,6 +230,11 @@
     fileName.textContent = "boarding_pass_bx2041.pdf";
     fileName.classList.add("chosen");
   }
+  // ?attached: the boarding pass picked in the file dialog (what the page shows once a file is chosen).
+  if (params.has("attached")) {
+    fileName.textContent = "boarding_pass_bx2041.pdf";
+    fileName.classList.add("chosen");
+  }
   if (params.has("error")) $("submit").click();
   if (params.has("thanks")) {
     $("t-when").textContent = "29.10.2026 um 18:06";

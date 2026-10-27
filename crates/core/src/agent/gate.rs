@@ -247,6 +247,27 @@ pub(crate) fn is_taskbar_target(target: &str) -> bool {
         .any(|w| low.contains(w))
 }
 
+/// The whole name of a box's plain answer button (an error or info box: "OK", "Schließen", "Erneut versuchen").
+/// Pressing it sends nothing, whatever window it sits in.
+pub fn is_dialog_plain_button(name: &str) -> bool {
+    let low = name.trim().trim_end_matches(['!', '.', ':']).trim().to_lowercase();
+    let low = low.split_whitespace().collect::<Vec<_>>().join(" ");
+    matches!(
+        low.as_str(),
+        "ok" | "okay" | "close" | "schließen" | "schliessen" | "cancel" | "abbrechen" | "retry" | "erneut versuchen"
+    )
+}
+
+/// The buttons of a file dialog Pip may press: Open, Cancel, its ×, the name box, or a plain answer button of the
+/// box it raised ("OK"). A folder, a file or a side panel entry is none of them.
+pub fn is_dialog_button(name: &str) -> bool {
+    if is_dialog_plain_button(name) {
+        return true;
+    }
+    let low = name.trim().trim_end_matches(['!', '.', ':']).trim().to_lowercase();
+    matches!(low.as_str(), "open" | "öffnen" | "oeffnen" | "x" | "×" | "✕" | "file name" | "dateiname")
+}
+
 /// True if the target deletes something (card title "löschen").
 pub(crate) fn is_delete_target(target: &str) -> bool {
     let low = target.to_lowercase();
@@ -497,6 +518,23 @@ mod tests {
             commit_what: None,
             commit_to: None,
             element: None,
+        }
+    }
+
+    #[test]
+    fn plain_box_buttons_and_file_dialog_buttons() {
+        for n in ["OK", "ok.", "Schließen", "Erneut  versuchen", "Cancel", "Abbrechen", "Retry"] {
+            assert!(is_dialog_plain_button(n), "{n}");
+            assert!(is_dialog_button(n), "{n}");
+        }
+        for n in ["Send claim", "Look", "Close account", "Okay, send it", "Downloads"] {
+            assert!(!is_dialog_plain_button(n), "{n}");
+        }
+        for n in ["Öffnen", "Open", "Dateiname:", "File name", "×"] {
+            assert!(is_dialog_button(n), "{n}");
+        }
+        for n in ["Downloads", "Desktop", "boarding_pass_bx2041.pdf", "Open folder"] {
+            assert!(!is_dialog_button(n), "{n}");
         }
     }
 
