@@ -48,6 +48,52 @@ struct MockPlatform {
     set_values: Mutex<Vec<(PhysPoint, String)>>,
     /// `set_value_at` works (else it answers false, like a field without ValuePattern).
     allow_set_value: Mutex<bool>,
+    /// A Chromium date input (Edge, German): see `DateInput`.
+    date_input: Mutex<Option<DateInput>>,
+}
+
+/// A Chromium `<input type=date>` as Edge shows it in German: "TT.mm.jjjj". Its value through the UI tree is
+/// accepted and ignored; typing fills the parts (2, 2, 4 digits) from the part the click landed on and moves on
+/// by itself (or never, `stuck`); Left goes one part back; separators are ignored. Ctrl+A selects the whole page.
+#[derive(Default)]
+struct DateInput {
+    id: u32,
+    parts: [String; 3],
+    at: usize,
+    stuck: bool,
+}
+
+impl DateInput {
+    const EMPTY: [&'static str; 3] = ["TT", "mm", "jjjj"];
+    const LEN: [usize; 3] = [2, 2, 4];
+    fn shown(&self) -> String {
+        let p =
+            |i: usize| if self.parts[i].len() == Self::LEN[i] { self.parts[i].clone() } else { Self::EMPTY[i].into() };
+        format!("{}.{}.{}", p(0), p(1), p(2))
+    }
+    /// The part under a click: TT at 0-30 px from the left edge, mm at 30-60, the rest is the year.
+    fn click(&mut self, rect: PhysRect, p: PhysPoint) {
+        let dx = p.x - rect.x;
+        self.at = if dx < 30 {
+            0
+        } else if dx < 60 {
+            1
+        } else {
+            2
+        };
+        self.parts[self.at].clear();
+    }
+    fn digit(&mut self, c: char) {
+        let i = self.at;
+        if self.parts[i].len() >= Self::LEN[i] {
+            self.parts[i].clear();
+        }
+        self.parts[i].push(c);
+        if self.parts[i].len() == Self::LEN[i] && i < 2 && !self.stuck {
+            self.at += 1;
+            self.parts[self.at].clear();
+        }
+    }
 }
 
 impl MockPlatform {
@@ -101,6 +147,12 @@ impl Input for MockPlatform {
     fn click(&self, p: PhysPoint) -> anyhow::Result<()> {
         self.actions.lock().unwrap().push(format!("click {},{}", p.x, p.y));
         *self.caret.lock().unwrap() = (Some(p), false);
+        if let Some(d) = self.date_input.lock().unwrap().as_mut()
+            && let Some(it) = self.outline.lock().unwrap().iter_mut().find(|i| i.id == d.id && i.rect.contains(p))
+        {
+            d.click(it.rect, p);
+            it.value = Some(d.shown());
+        }
         if let Some(w) = self.on_click_window.lock().unwrap().take() {
             *self.foreground.lock().unwrap() = Some(w);
         }
@@ -112,6 +164,14 @@ impl Input for MockPlatform {
     fn type_text(&self, s: &str) -> anyhow::Result<()> {
         self.actions.lock().unwrap().push(format!("type {s}"));
         let mut caret = self.caret.lock().unwrap();
+        if let Some(d) = self.date_input.lock().unwrap().as_mut()
+            && let Some(p) = caret.0
+            && let Some(it) = self.outline.lock().unwrap().iter_mut().find(|i| i.id == d.id && i.rect.contains(p))
+        {
+            s.chars().filter(char::is_ascii_digit).for_each(|c| d.digit(c));
+            it.value = Some(d.shown());
+            return Ok(());
+        }
         if !*self.frozen_fields.lock().unwrap()
             && let Some(p) = caret.0
             && let Some(it) = self.outline.lock().unwrap().iter_mut().find(|i| i.rect.contains(p) && i.role == "edit")
@@ -124,8 +184,14 @@ impl Input for MockPlatform {
     }
     fn key(&self, combo: &str) -> anyhow::Result<()> {
         self.actions.lock().unwrap().push(format!("key {combo}"));
-        if combo == "ctrl+a" && !*self.appends.lock().unwrap() {
+        // Shift+Home after End selects the line of a one-line field.
+        if (combo == "ctrl+a" || combo == "shift+home") && !*self.appends.lock().unwrap() {
             self.caret.lock().unwrap().1 = true;
+        }
+        if combo == "left"
+            && let Some(d) = self.date_input.lock().unwrap().as_mut()
+        {
+            d.at = d.at.saturating_sub(1);
         }
         Ok(())
     }
@@ -172,6 +238,12 @@ impl UiTree for MockPlatform {
         self.set_values.lock().unwrap().push((p, text.to_string()));
         if !*self.allow_set_value.lock().unwrap() {
             return false;
+        }
+        // Edge's date input says yes and keeps showing its mask.
+        if let Some(d) = self.date_input.lock().unwrap().as_ref()
+            && self.outline.lock().unwrap().iter().any(|i| i.id == d.id && i.rect.contains(p))
+        {
+            return true;
         }
         let mut items = self.outline.lock().unwrap();
         match items.iter_mut().find(|i| i.rect.contains(p) && i.role == "edit") {
@@ -2781,6 +2853,9 @@ async fn sick_since(allow_set_value: bool) -> (Harness, Vec<String>) {
     item.value = Some("dd.mm.yyyy".into());
     h.platform.set_outline(vec![item]);
     *h.platform.allow_set_value.lock().unwrap() = allow_set_value;
+    if !allow_set_value {
+        *h.platform.date_input.lock().unwrap() = Some(DateInput { id: 1, ..Default::default() });
+    }
     h.agent_turns(vec![calls("r1", &[type_el("2026-10-18", "the day you got sick", 1)]), calls("r2", &[done("ok")])]);
     h.run("Fill in the date").await;
     let _ = h.drain();
@@ -2793,7 +2868,7 @@ async fn date_field_gets_digits_in_the_fields_order() {
     let (h, outs) = sick_since(false).await;
     let acts: Vec<String> = h.platform.actions().into_iter().filter(|a| a.starts_with("type ")).collect();
     assert_eq!(acts, ["type 18102026"]);
-    assert!(outs[0].contains("the field now shows"), "{outs:?}");
+    assert!(outs[0].contains(r#"the field now shows "18.10.2026""#), "{outs:?}");
     assert!(!outs[0].contains("instead of"), "{outs:?}");
 
     let (h, outs) = sick_since(true).await;
@@ -2801,6 +2876,66 @@ async fn date_field_gets_digits_in_the_fields_order() {
     assert_eq!(set, ["2026-10-18"], "ISO through the value");
     assert!(!h.platform.actions().iter().any(|a| a.starts_with("type ")));
     assert!(outs[0].contains(r#"the field now shows "2026-10-18""#), "{outs:?}");
+}
+
+/// Live run 27.10. (Edge, German): "Sick since" is an <input type=date> showing "TT.mm.jjjj". Its value takes
+/// nothing, a click in the middle lands on the year, and Ctrl+A there selected the whole page.
+async fn edge_sick_since(shown_before: &str, stuck: bool) -> (Harness, Vec<String>) {
+    let mut h = Harness::new(false).await;
+    let mut item = el(8, "edit", "Sick since", (100, 100, 300, 40));
+    item.value = Some(shown_before.into());
+    h.platform.set_outline(vec![item]);
+    *h.platform.allow_set_value.lock().unwrap() = true;
+    *h.platform.date_input.lock().unwrap() = Some(DateInput { id: 8, stuck, ..Default::default() });
+    h.agent_turns(vec![calls("r1", &[type_el("19.10.2026", "the day you got sick", 8)]), calls("r2", &[done("ok")])]);
+    h.run("Fill in the date").await;
+    let _ = h.drain();
+    let outs = outputs(&h.requests()[1]);
+    (h, outs)
+}
+
+#[tokio::test]
+async fn edge_date_input_gets_its_digits_from_the_first_part() {
+    // The outline shows the mask (a known date input) or nothing yet (only the name says "since").
+    for before in ["TT.mm.jjjj", ""] {
+        let (h, outs) = edge_sick_since(before, false).await;
+        let set: Vec<String> = h.platform.set_values.lock().unwrap().iter().map(|(_, t)| t.clone()).collect();
+        assert!(set.contains(&"2026-10-19".to_string()), "ISO through the value first ({before:?}): {set:?}");
+        let acts: Vec<String> = h.platform.actions().into_iter().filter(|a| !a.starts_with("move")).collect();
+        assert!(!acts.iter().any(|a| a == "key ctrl+a"), "never Ctrl+A in a date input: {acts:?}");
+        // The value did not take: the left edge (first part, 12 px in), then only digits in the mask's order.
+        let left =
+            acts.iter().position(|a| a == "click 112,120").unwrap_or_else(|| panic!("no left-edge click: {acts:?}"));
+        assert_eq!(acts[0], "click 250,120", "{acts:?}");
+        let after: Vec<&String> = acts[left + 1..].iter().filter(|a| !a.starts_with("key left")).collect();
+        assert_eq!(after, ["type 19102026"], "{acts:?}");
+        assert_eq!(h.platform.outline.lock().unwrap()[0].value.as_deref(), Some("19.10.2026"));
+        assert!(outs[0].contains(r#"the field now shows "19.10.2026""#), "{outs:?}");
+        assert!(!outs[0].contains("instead of"), "{outs:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_date_that_did_not_take_is_never_reported_as_typed() {
+    // The input does not move on from the day (each pair of digits replaces the last): "26.mm.jjjj" is no date,
+    // and the model hears so.
+    let (h, outs) = edge_sick_since("TT.mm.jjjj", true).await;
+    assert_eq!(h.platform.outline.lock().unwrap()[0].value.as_deref(), Some("26.mm.jjjj"));
+    assert!(outs[0].contains(r#"but the field now shows "26.mm.jjjj" instead of "19.10.2026""#), "{outs:?}");
+    assert!(!outs[0].contains("; the field now shows"), "{outs:?}");
+    assert!(!h.platform.actions().iter().any(|a| a == "key ctrl+a"), "{:?}", h.platform.actions());
+}
+
+#[tokio::test]
+async fn no_select_all_when_the_keyboard_is_not_in_a_text_field() {
+    let h = Harness::new(false).await;
+    h.platform.set_outline(form_outline());
+    *h.platform.allow_set_value.lock().unwrap() = false;
+    *h.platform.focus.lock().unwrap() =
+        Some(UiElement { name: "Form".into(), control: "Group".into(), is_password: false });
+    h.agent_turns(vec![calls("r1", &[type_el("Erika Beispiel", "your name", 1)]), calls("r2", &[done("ok")])]);
+    h.run("Fill in my name").await;
+    assert!(!h.platform.actions().iter().any(|a| a == "key ctrl+a"), "{:?}", h.platform.actions());
 }
 
 #[tokio::test]

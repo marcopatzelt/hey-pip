@@ -127,6 +127,7 @@ function flyTo(x, y, ms) {
       if (t < 1) { st.flight = requestAnimationFrame(frame); return; }
       el.pip.classList.remove("flying");
       el.pip.style.rotate = "";
+      scheduleHits(); // where he landed (the column moved with him)
       done();
     };
     st.flight = requestAnimationFrame(frame);
@@ -430,45 +431,48 @@ function layout() {
 }
 
 // ---------- hit rects (click-through + screenshot masking) ----------
+// The app lets clicks through everywhere outside these rects (ui/hits.js has the rules). They are sent after
+// every layout, flight, slide and animation end, and again every second while anything is open: a lost or
+// stale report must never leave a bubble's buttons click-through.
+const Hits = window.Hits;
 let hitsQueued = false;
 let lastHits = "";
+let lastHitsSent = 0;
 let micDown = false;   // the mic button is held
 function scheduleHits() {
   if (hitsQueued) return;
   hitsQueued = true;
   setTimeout(() => { hitsQueued = false; reportHits(); }, 40);
 }
-function reportHits() {
-  const k = dpr();
-  const nodes = [el.pip, el.bubble, el.card, el.ask, el.panel, el.progress, el.stop, el.note];
-  const rects = [];
-  // Holding the mic button: keep every mouse event (the release may happen off the button).
-  if (micDown) rects.push({ x: info.x, y: info.y, w: Math.round(innerWidth * k), h: Math.round(innerHeight * k) });
-  for (const n of nodes) {
-    if (n.hidden) continue;
-    if (n === el.pip && st.home && st.peek !== "up") {
-      // Resting: only the head is clickable (a wider margin while hovering, so the leave reaches us).
-      const g = peekGeo(st.peek), m = st.peek === "hover" ? 24 : 6;
-      const top = g.y - m, bottom = Math.min(g.bottom, g.y + g.visibleH + m);
-      rects.push({
-        x: Math.round(info.x + (g.x - m) * k), y: Math.round(info.y + top * k),
-        w: Math.round((P + 2 * m) * k), h: Math.round((bottom - top) * k),
-      });
-      continue;
-    }
-    const r = n.getBoundingClientRect();
-    if (r.width < 1 || r.height < 1) continue;
-    const m = 6;
-    rects.push({
-      x: Math.round(info.x + (r.left - m) * k), y: Math.round(info.y + (r.top - m) * k),
-      w: Math.round((r.width + 2 * m) * k), h: Math.round((r.height + 2 * m) * k),
-    });
-  }
-  const json = JSON.stringify(rects);
-  if (json === lastHits) return;
-  lastHits = json;
-  send({ type: "hit_rects", rects });
+function hitScene() {
+  const g = peekGeo(st.peek);
+  return {
+    pip: el.pip.hidden ? null : { box: rectOf(el.pip), home: st.home, peek: st.peek, head: { x: g.x, y: g.y, w: P, h: g.visibleH, bottom: g.bottom } },
+    boxes: [el.bubble, el.card, el.ask, el.panel, el.progress, el.stop, el.note].map(rectOf),
+    micDown,
+    viewport: { w: innerWidth, h: innerHeight },
+  };
 }
+/** again: send even if nothing changed (at most once a second). */
+function reportHits(again) {
+  const k = dpr();
+  const css = Hits.cssRects(hitScene());
+  const rects = Hits.toPhys(css, info, k);
+  const json = JSON.stringify(rects);
+  const now = performance.now();
+  if (json === lastHits && !(again && now - lastHitsSent >= 1000)) return;
+  lastHits = json;
+  lastHitsSent = now;
+  invoke("set_hit_rects", { css, dpr: k, rects })
+    .catch((e) => { lastHits = ""; jsLog("warn", `set_hit_rects: ${e}`); send({ type: "hit_rects", rects }); });
+}
+// Animations move and scale boxes (the bubble pops in from 8 px lower): measure again once they end.
+for (const ev of ["animationend", "animationcancel", "transitionend"]) document.addEventListener(ev, scheduleHits, true);
+// Safety net: while anything is open or Pip is away, report every half second (sent when changed, else 1/s).
+setInterval(() => {
+  const open = Hits.anyOpen(hitScene().boxes);
+  if (open || !st.home || micDown) reportHits(true); else reportHits(false);
+}, 500);
 const ro = new ResizeObserver(() => layout());
 ro.observe(el.col);
 ro.observe(el.dock);

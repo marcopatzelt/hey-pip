@@ -21,7 +21,7 @@ use super::gate::{
     is_send_target, label_hit, normalize_address, quoted_label, url_host, word_hit,
 };
 use super::tools::{DISCOVER_TOOLS, ScrollDir, Tool, bad_call, normalize_combo, tool_defs, truncate};
-use super::typing::{Mask, date_field, parse_date_in};
+use super::typing::{DateField, date_field, date_keys, date_shown, iso, parse_date_in, shows_mask};
 use super::{APPROVAL_TIMEOUT, MAX_RUN, MAX_STEPS, prompt};
 use crate::clock::Clock;
 use crate::docs::DocType;
@@ -62,6 +62,8 @@ const WIDE_RATIO: u32 = 4;
 const WIDE_MIN_W: u32 = 240;
 /// Characters typed per chunk (cancel is checked between chunks).
 const TYPE_CHUNK: usize = 16;
+/// A date input's first part (day in TT.mm.jjjj): this far (physical px) inside the field's left edge.
+const DATE_FIRST_PART_X: i32 = 12;
 /// An open card or question that nobody answers gets a Windows notification after this long.
 const NUDGE_AFTER: Duration = Duration::from_secs(30);
 /// Mean colour change inside the target box (0..255) that counts as "the page changed under the button".
@@ -1925,60 +1927,20 @@ without say.",
         state.last_point = Some(p);
         state.focus_by_key = false;
         self.progress(tf("progress_type", lang, &[("what", a.what)]));
-        // A date field: a date input takes ISO through the value and digits in its order as keys, a text field
-        // with a date name takes the written date (18.10.2026). Any other field: the text as it is.
-        let date = date_field(item).and_then(|f| parse_date_in(a.text, f.mask).map(|d| (f, d)));
-        let (direct, keys) = match date {
-            Some((f, d)) => (f.value(d), f.keys(d)),
-            None => (a.text.to_string(), a.text.to_string()),
-        };
         let fits = |v: &str| value_fits(item, a.text, v);
-        // First through the UI tree (ValuePattern): exact and instant, nothing lands behind an old value
-        // (Edge kept "…GmbHnschein GmbH" after select-all and typing).
-        let ui = self.platform.ui.clone();
-        let value = direct.clone();
-        let set = tokio::task::spawn_blocking(move || ui.set_value_at(p, &value)).await.unwrap_or(false);
-        let mut shows = None;
-        if set {
-            let ui = self.platform.ui.clone();
-            shows = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
-        }
-        // Set and read back right (or set and unreadable): done. Else keystrokes.
-        let by_value = set && shows.as_deref().is_none_or(fits);
-        tracing::debug!(
-            element = id,
-            by_value,
-            date = date.is_some(),
-            date_input = date.is_some_and(|(f, _)| f.input),
-            "typing by element"
-        );
-        if !by_value {
-            // Replace what the field holds (a remembered old value, a half-typed try): select all and delete,
-            // so the new text never lands behind the old one even if the selection is lost.
-            self.blocking(|pl| pl.input.key("ctrl+a")).await?;
-            self.blocking(|pl| pl.input.key("backspace")).await?;
-            let chars: Vec<char> = keys.chars().collect();
-            for chunk in chars.chunks(TYPE_CHUNK) {
-                if cancel.is_cancelled() {
-                    return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped));
-                }
-                let s: String = chunk.iter().collect();
-                self.blocking(move |pl| pl.input.type_text(&s)).await?;
-            }
-            let ui = self.platform.ui.clone();
-            shows = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
-            // Typed text came out wrong (appended, cut, autocorrected) and the tree can set values: once more.
-            if set && shows.as_deref().is_some_and(|v| !fits(v)) {
-                let ui = self.platform.ui.clone();
-                let value = direct.clone();
-                let fixed = tokio::task::spawn_blocking(move || ui.set_value_at(p, &value)).await.unwrap_or(false);
-                if fixed {
-                    tracing::info!(element = id, "field value repaired directly");
-                    let ui = self.platform.ui.clone();
-                    shows = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
-                }
-            }
-        }
+        // A date field has its own way in (ISO through the value, else digits from the first part) and counts as
+        // typed only when the field reads back that very day.
+        let date = date_field(item).and_then(|f| parse_date_in(a.text, f.mask).map(|d| (f, d)));
+        let shows = match date {
+            Some((f, day)) => match self.fill_date(item, f, day, p, cancel).await? {
+                Some(shows) => shows,
+                None => return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped)),
+            },
+            None => match self.fill_text(item, a.text, p, cancel).await? {
+                Some(shows) => shows,
+                None => return Ok(ToolRun::finish(Risk::Act, AgentOutcome::Stopped)),
+            },
+        };
         let label = a.field_label.map(str::trim).filter(|l| !l.is_empty() && *l != "null");
         let label = label.map(str::to_string).unwrap_or_else(|| {
             if item.name.trim().is_empty() { field_label(a.what) } else { truncate(item.name.trim(), 60) }
@@ -1999,9 +1961,164 @@ without say.",
                 truncate(&v, 60),
                 truncate(a.text, 60)
             ),
+            // A date never counts as done unread: the picture has to show it.
+            None if date.is_some() => format!(
+                "typed {} into #{id}, but I cannot read the field back. Check on the screen that it shows {}.",
+                a.what,
+                truncate(a.text, 60)
+            ),
             None => format!("typed {} into #{id}", a.what),
         };
         Ok(ToolRun::out(Risk::Act, out))
+    }
+
+    /// What the field under `p` shows (UI tree), None if unreadable.
+    async fn read_value(&self, p: PhysPoint) -> Option<String> {
+        let ui = self.platform.ui.clone();
+        tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten()
+    }
+
+    /// Set the value of the field under `p` through the UI tree (ValuePattern); false if it has none.
+    async fn set_value(&self, p: PhysPoint, value: &str) -> bool {
+        let ui = self.platform.ui.clone();
+        let value = value.to_string();
+        tokio::task::spawn_blocking(move || ui.set_value_at(p, &value)).await.unwrap_or(false)
+    }
+
+    /// Type in chunks, checking the stop between them; false = stopped.
+    async fn type_chunks(&self, text: &str, cancel: &CancellationToken) -> Result<bool> {
+        let chars: Vec<char> = text.chars().collect();
+        for chunk in chars.chunks(TYPE_CHUNK) {
+            if cancel.is_cancelled() {
+                return Ok(false);
+            }
+            let s: String = chunk.iter().collect();
+            self.blocking(move |pl| pl.input.type_text(&s)).await?;
+        }
+        Ok(true)
+    }
+
+    /// A plain field (clicked at `p`): the value through the UI tree, else select its text and type. Ctrl+A only
+    /// when the keyboard is in a text field (on anything else it selects the whole page). Returns what the field
+    /// shows (None = unreadable); Ok(None) = stopped.
+    async fn fill_text(
+        &self,
+        item: &OutlineItem,
+        text: &str,
+        p: PhysPoint,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Option<String>>> {
+        let id = item.id;
+        let fits = |v: &str| value_fits(item, text, v);
+        // First through the UI tree (ValuePattern): exact and instant, nothing lands behind an old value
+        // (Edge kept "…GmbHnschein GmbH" after select-all and typing).
+        let set = self.set_value(p, text).await;
+        let mut shows = if set { self.read_value(p).await } else { None };
+        // Set and read back right (or set and unreadable): done. Else keystrokes.
+        let by_value = set && shows.as_deref().is_none_or(fits);
+        tracing::debug!(element = id, by_value, "typing by element");
+        if by_value {
+            return Ok(Some(shows));
+        }
+        // Replace what the field holds (a remembered old value, a half-typed try): select all and delete, so the
+        // new text never lands behind the old one even if the selection is lost.
+        match self.focused().await {
+            Some(f) if !f.is_text_input() => {
+                tracing::info!(element = id, focus = %f.control, "no select-all: the keyboard is not in a text field");
+            }
+            _ => {
+                self.blocking(|pl| pl.input.key("ctrl+a")).await?;
+                self.blocking(|pl| pl.input.key("backspace")).await?;
+            }
+        }
+        if !self.type_chunks(text, cancel).await? {
+            return Ok(None);
+        }
+        shows = self.read_value(p).await;
+        // Typed text came out wrong (appended, cut, autocorrected) and the tree can set values: once more.
+        if set && shows.as_deref().is_some_and(|v| !fits(v)) && self.set_value(p, text).await {
+            shows = self.read_value(p).await;
+            if shows.as_deref().is_none_or(fits) {
+                tracing::info!(element = id, "field value repaired directly");
+            } else {
+                tracing::info!(element = id, "direct repair did not take");
+            }
+        }
+        Ok(Some(shows))
+    }
+
+    /// A date field (clicked at `p`). (a) The value through the UI tree: ISO for a date input, the written date
+    /// (then ISO) for a field only named like a date. (b) A date input (its mask shows: "TT.mm.jjjj") takes keys
+    /// only from its first part: click its left edge and type the digits in the mask's order; it moves from day
+    /// to month to year by itself. A text field gets its text replaced by the written date. Never Ctrl+A (in a
+    /// Chromium date input it selects the whole page). Returns what the field shows at the end (None =
+    /// unreadable); the caller counts it as typed only if that is the same day. Ok(None) = stopped.
+    async fn fill_date(
+        &self,
+        item: &OutlineItem,
+        f: DateField,
+        day: chrono::NaiveDate,
+        p: PhysPoint,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Option<String>>> {
+        let id = item.id;
+        let iso = iso(day);
+        let written = f.text(day);
+        let is_day = |s: &Option<String>| s.as_deref().and_then(|v| date_shown(v, f.mask)) == Some(day);
+        let masked = |s: &Option<String>| s.as_deref().and_then(shows_mask);
+        let mut input = f.input;
+        let mut mask = f.mask;
+        let tries = if f.input { vec![iso.clone()] } else { vec![written.clone(), iso.clone()] };
+        for v in tries {
+            if !self.set_value(p, &v).await {
+                break; // no ValuePattern: keys only
+            }
+            let shows = self.read_value(p).await;
+            // A text field keeps ISO as it was set: not the form it asks for. A date input shows the day its way.
+            let kept_iso = !input && v == iso && shows.as_deref().map(str::trim) == Some(iso.as_str());
+            if is_day(&shows) && !kept_iso {
+                tracing::info!(element = id, "date set through the value");
+                return Ok(Some(shows));
+            }
+            if let Some(m) = masked(&shows) {
+                input = true;
+                mask = m;
+            }
+        }
+        if !input {
+            // A text field named like a date: replace this field's line (End, Shift+Home) with the written date.
+            for k in ["end", "shift+home", "backspace"] {
+                self.blocking(move |pl| pl.input.key(k)).await?;
+            }
+            if !self.type_chunks(&written, cancel).await? {
+                return Ok(None);
+            }
+            let shows = self.read_value(p).await;
+            match masked(&shows) {
+                // It shows a mask after all ("TT.mm.2026"): a date input; type its digits below.
+                Some(m) if !is_day(&shows) => mask = m,
+                _ => return Ok(Some(shows)),
+            }
+        }
+        // A date input: its first part, then the digits only. A click in the middle lands on the month or the
+        // year and the digits fill only from there ("TT.mm.102026" on 27.10.).
+        let r = item.rect;
+        let first = PhysPoint { x: r.x + DATE_FIRST_PART_X.min(r.w / 4).max(1), y: r.y + r.h / 2 };
+        self.blocking(move |pl| pl.input.click(first)).await?;
+        // Already in the first part after the click; Left keeps it there if the click hit the second.
+        for _ in 0..2 {
+            self.blocking(|pl| pl.input.key("left")).await?;
+        }
+        if !self.type_chunks(&date_keys(mask, day), cancel).await? {
+            return Ok(None);
+        }
+        let shows = self.read_value(p).await;
+        if is_day(&shows) {
+            tracing::info!(element = id, "date typed part by part");
+        } else {
+            tracing::info!(element = id, shows = ?shows, "date field does not show the day");
+        }
+        Ok(Some(shows))
     }
 
     /// Site key of the page in front (see Gate::site_key).
@@ -2057,9 +2174,12 @@ without say.",
             self.blocking(move |pl| pl.input.click(p)).await?;
             state.last_point = Some(p);
             state.focus_by_key = false;
-            // Replace what the field holds, as in type_into_element: new text never lands behind old text.
-            self.blocking(|pl| pl.input.key("ctrl+a")).await?;
-            self.blocking(|pl| pl.input.key("backspace")).await?;
+            // Replace what the field holds, as in type_into_element: new text never lands behind old text. Not
+            // when the keyboard is somewhere else (Ctrl+A there selects the whole page).
+            if self.focused().await.is_none_or(|f| f.is_text_input()) {
+                self.blocking(|pl| pl.input.key("ctrl+a")).await?;
+                self.blocking(|pl| pl.input.key("backspace")).await?;
+            }
         } else if state.enter_after_attach {
             // The file dialog of an approved attach: only the approved letter goes in.
             if self.foreground().await.is_some_and(|w| !w.is_file_dialog()) {
@@ -3452,7 +3572,7 @@ fn clean_quote(q: &str) -> String {
 /// The field shows what was meant: the same text (spaces aside), or for a date field the same day in any form.
 fn value_fits(item: &OutlineItem, text: &str, shown: &str) -> bool {
     match date_field(item).and_then(|f| parse_date_in(text, f.mask).map(|d| (f.mask, d))) {
-        Some((m, d)) => parse_date_in(shown, m).or_else(|| parse_date_in(shown, Mask::Ymd)) == Some(d),
+        Some((m, d)) => date_shown(shown, m) == Some(d),
         None => squash(shown) == squash(text),
     }
 }

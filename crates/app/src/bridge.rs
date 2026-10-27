@@ -16,6 +16,7 @@ use pip_core::events::{Bus, Button, ForgetKind, OnboardingStep, PipState, UiEven
 use pip_core::i18n::{Lang, t, tf};
 use pip_core::memory::{DeadlineStatus, Knowledge, untrust_site};
 use pip_core::meta::MetaError;
+use pip_core::platform::{PhysPoint, PhysRect};
 use pip_core::rules::daily::{EV_ACCEPTED, EV_DECLINED, EV_SUGGESTED};
 use pip_core::rules::text::fmt_date;
 use pip_core::rules::{AfterTask, AfterTaskOffer};
@@ -380,6 +381,30 @@ async fn ui_command(ctx: tauri::State<'_, Shared>, cmd: UserCommand) -> Result<(
     ctx.bus.from_ui.send(cmd).await.map_err(|e| e.to_string())
 }
 
+/// Where Pip, his bubble, card and buttons are, in the page's CSS px (with its devicePixelRatio), plus the page's
+/// own screen-pixel copy as a fallback. Turned into screen pixels with the window's live position: the cursor
+/// poll lets clicks through everywhere else, the screenshots mask these.
+#[tauri::command]
+async fn set_hit_rects(
+    ctx: tauri::State<'_, Shared>,
+    css: Vec<overlay::CssRect>,
+    dpr: f64,
+    rects: Vec<PhysRect>,
+) -> Result<(), String> {
+    let origin = ctx.window().and_then(|w| w.inner_position().ok()).map(|p| PhysPoint { x: p.x, y: p.y });
+    let resolved = overlay::resolve_hit_rects(&css, dpr, origin, rects.clone());
+    let off = resolved.len() != rects.len()
+        || resolved.iter().zip(&rects).any(|(a, b)| (a.x - b.x).abs() > 2 || (a.y - b.y).abs() > 2);
+    if off && !STALE_ORIGIN_LOGGED.swap(true, Ordering::SeqCst) {
+        tracing::warn!(?origin, dpr, "the page's screen rects were off; using the window's live position");
+    }
+    *ctx.bus.hit_rects.write().expect("hit_rects lock") = overlay::sanitize(resolved);
+    Ok(())
+}
+
+/// The page's own screen rects disagreed with the live window once (logged once per start).
+static STALE_ORIGIN_LOGGED: AtomicBool = AtomicBool::new(false);
+
 /// Page errors and warnings go to the log file (the Windows build has no dev tools).
 #[tauri::command]
 fn js_log(level: String, msg: String) {
@@ -490,6 +515,7 @@ pub fn run() -> Result<()> {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             ui_command,
+            set_hit_rects,
             overlay_info,
             ui_strings,
             open_knowledge,

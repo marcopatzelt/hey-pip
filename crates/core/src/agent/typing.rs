@@ -230,6 +230,57 @@ pub fn date_keys(mask: Mask, date: NaiveDate) -> String {
     date.format(f).to_string()
 }
 
+/// The day a field shows, read in its mask's order or as ISO; None for a mask, a half-filled date
+/// ("TT.mm.102026") or anything else.
+pub fn date_shown(shown: &str, mask: Mask) -> Option<NaiveDate> {
+    parse_date_in(shown, mask).or_else(|| parse_date_in(shown, Mask::Ymd))
+}
+
+/// A Chromium date input shows its mask while a part is still empty: "TT.MM.JJJJ", "dd.mm.yyyy", also half
+/// filled ("TT.mm.102026", "19.mm.jjjj"). Its order, when at least one part is still letters; None for a full
+/// date or plain text.
+pub fn shows_mask(value: &str) -> Option<Mask> {
+    #[derive(PartialEq)]
+    enum Part {
+        Day,
+        Month,
+        Year,
+        Digits,
+    }
+    let parts: Vec<Part> = value
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .map(|t| {
+            let l = t.to_lowercase();
+            if l.len() == 4 && l.chars().all(|c| c.is_ascii_digit()) {
+                Some(Part::Year) // a filled year part
+            } else if l.chars().all(|c| c.is_ascii_digit()) {
+                Some(Part::Digits)
+            } else if l == "tt" || l == "dd" {
+                Some(Part::Day)
+            } else if l == "mm" {
+                Some(Part::Month)
+            } else if l == "jjjj" || l == "yyyy" || l == "jj" || l == "yy" {
+                Some(Part::Year)
+            } else {
+                None
+            }
+        })
+        .collect::<Option<_>>()?;
+    let letters = value.chars().any(|c| c.is_alphabetic());
+    if parts.len() != 3 || !letters {
+        return None;
+    }
+    let at = |want: Part| parts.iter().position(|p| *p == want);
+    Some(match (at(Part::Day), at(Part::Month), at(Part::Year)) {
+        (_, _, Some(0)) => Mask::Ymd,
+        (Some(d), Some(m), _) if m < d => Mask::Mdy,
+        (_, Some(0), _) => Mask::Mdy,
+        (Some(1), _, _) => Mask::Mdy,
+        _ => Mask::Dmy,
+    })
+}
+
 /// yyyy-mm-dd: the only form Chromium date inputs take through their value.
 pub fn iso(date: NaiveDate) -> String {
     date.format("%Y-%m-%d").to_string()
@@ -348,6 +399,25 @@ mod tests {
         for t in ["", "Erika Beispiel", "G123456789", "dd.mm.yyyy", "31.02.2026", "18.10.26", "Bäckerei 12 GmbH"] {
             assert_eq!(parse_any_date(t), None, "{t}");
         }
+    }
+
+    #[test]
+    fn masks_shown_by_a_date_input() {
+        for v in ["TT.MM.JJJJ", "TT.mm.jjjj", "dd.mm.yyyy", "TT.mm.102026", "19.mm.jjjj", "19.10.jjjj"] {
+            assert_eq!(shows_mask(v), Some(Mask::Dmy), "{v}");
+        }
+        assert_eq!(shows_mask("mm/dd/yyyy"), Some(Mask::Mdy));
+        assert_eq!(shows_mask("10/dd/yyyy"), Some(Mask::Mdy));
+        assert_eq!(shows_mask("yyyy-mm-dd"), Some(Mask::Ymd));
+        assert_eq!(shows_mask("2026-mm-dd"), Some(Mask::Ymd));
+        for v in ["19.10.2026", "", "Erika Beispiel", "Hauptstr. 12", "Sick since"] {
+            assert_eq!(shows_mask(v), None, "{v}");
+        }
+        let x = d(2026, 10, 19);
+        assert_eq!(date_shown("19.10.2026", Mask::Dmy), Some(x));
+        assert_eq!(date_shown("2026-10-19", Mask::Dmy), Some(x));
+        assert_eq!(date_shown("TT.mm.102026", Mask::Dmy), None, "half filled is no date");
+        assert_eq!(date_shown("19.mm.jjjj", Mask::Dmy), None);
     }
 
     #[test]
