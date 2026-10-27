@@ -122,3 +122,36 @@ test("during a flight the rects go out every 100 ms (a bubble shown mid-flight t
   for (let i = 1; i < sent.length; i++) assert.ok(sent[i] - sent[i - 1] >= Hits.FLIGHT_EVERY && sent[i] - sent[i - 1] < 120);
   assert.equal(Hits.flightDue(100, NaN), true, "a broken clock never stops the reports");
 });
+
+// VM 27.10. 10:32:59: the agent's own click on "Open form" landed inside Pip's rect (he flies right next to the
+// target) and the hook rescued it onto Pip. While a run acts only the bubble, card, Stop and the pill take clicks.
+test("acting: Pip beside the target never covers it; bubble, card, Stop and the pill still take clicks", () => {
+  const target = { x: 820, y: 400, w: 160, h: 44 };          // "Open form"
+  const pipBeside = { x: 700, y: 372, w: P, h: P };          // besideTarget: 24 px left of it
+  const near = { x: target.x + 2, y: target.y + target.h / 2 }; // the target's left edge: inside Pip's 6 px margin
+  for (const { k, origin } of SCALES) {
+    const scene = (acting) => ({
+      pip: { box: pipBeside, home: false, peek: "up", head: head("up") },
+      boxes: [bubble, null, null, null, progress, stop, null],
+      acting,
+    });
+    // without the acting state Pip's margin reaches over the target's edge (the bug)
+    const idle = Hits.toPhys(Hits.cssRects(scene(false)), origin, k);
+    assert.ok(Hits.inside(idle, origin.x + (pipBeside.x + P + 3) * k, origin.y + near.y * k));
+    const rects = Hits.toPhys(Hits.cssRects(scene(true)), origin, k);
+    for (const [x, y] of [mid(target), [near.x, near.y], ...corners(target)]) {
+      assert.ok(!Hits.inside(rects, origin.x + x * k, origin.y + y * k), `target point ${x},${y} is inside ${JSON.stringify(rects)}`);
+    }
+    assert.ok(!Hits.inside(rects, origin.x + (pipBeside.x + P / 2) * k, origin.y + (pipBeside.y + P / 2) * k), "Pip's body takes clicks");
+    for (const r of [bubble, progress, stop]) assert.ok(covered(rects, r, origin, k), JSON.stringify(r));
+    // the card (it hides the dock) still takes "Not yet"
+    const withCard = Hits.toPhys(Hits.cssRects({ ...scene(true), boxes: [null, card, null, null, null, null, null] }), origin, k);
+    assert.ok(covered(withCard, notYet, origin, k));
+    assert.ok(!Hits.inside(withCard, origin.x + mid(target)[0] * k, origin.y + mid(target)[1] * k));
+  }
+});
+
+test("acting with nothing open: no rect at all (every click goes to the page)", () => {
+  const css = Hits.cssRects({ pip: { box: pipAway, home: false, peek: "up", head: head("up") }, boxes: [null, null, null, null, null, null, null], acting: true });
+  assert.deepEqual(css, []);
+});

@@ -56,6 +56,8 @@ struct MockPlatform {
     stale: Mutex<Vec<PhysRect>>,
     /// The browser's "Restore pages" popup: its close button (None = not shown). Invoking it closes it.
     restore_popup: Mutex<Option<OutlineItem>>,
+    /// Enter in an open file dialog closes it: this window is in front again.
+    after_dialog: Mutex<Option<WindowInfo>>,
 }
 
 /// A Chromium `<input type=date>` as Edge shows it in German: "TT.mm.jjjj". Its value through the UI tree is
@@ -232,6 +234,11 @@ impl Input for MockPlatform {
     }
     fn key(&self, combo: &str) -> anyhow::Result<()> {
         self.actions.lock().unwrap().push(format!("key {combo}"));
+        if combo == "enter" && self.foreground.lock().unwrap().as_ref().is_some_and(WindowInfo::is_file_dialog) {
+            if let Some(w) = self.after_dialog.lock().unwrap().take() {
+                *self.foreground.lock().unwrap() = Some(w);
+            }
+        }
         // Shift+Home after End selects the line of a one-line field.
         if (combo == "ctrl+a" || combo == "shift+home") && !*self.appends.lock().unwrap() {
             self.caret.lock().unwrap().1 = true;
@@ -3322,7 +3329,7 @@ async fn guard_stops_the_lookalike_page_before_the_model_and_opens_the_real_site
     );
     assert!(text.contains("It asks for a SMS code."), "{text}");
     assert!(text.contains("It tries to rush you: \"within 24 hours\"."), "{text}");
-    assert!(text.ends_with("I am not sure it is a scam, but I would not type anything here."), "{text}");
+    assert!(text.ends_with("I can't be sure, but I would not type anything here."), "{text}");
     let ids: Vec<&str> = buttons.iter().map(|b| b.id.as_str()).collect();
     assert_eq!(ids, ["guard:real", "guard:continue"], "the safe button first");
     assert_eq!(buttons[0].label, "Take me to the real Evergreen Health");
@@ -3415,11 +3422,13 @@ async fn a_second_offer_with_nothing_done_in_between_ends_the_run() {
     ]);
     h.auto_answer(ApprovalAnswer::No, "Nein");
     let out = h.run("Look at my screen").await;
-    assert_eq!(out, AgentOutcome::NeedsUser("Soll ich dir bei etwas anderem helfen?".into()));
+    // Nothing to do here and the user said no: the second question ends the run as done, without a bubble that
+    // asks again.
+    assert_eq!(out, AgentOutcome::Done("Hier gibt es nichts zu tun.".into()));
     assert_eq!(h.requests().len(), 2, "the run ends at the second offer");
     let ev = h.drain();
     assert_eq!(questions(&ev).len(), 1, "asked once, not twice");
-    assert!(bubbles(&ev).contains(&"Soll ich dir bei etwas anderem helfen?".to_string()), "closing bubble");
+    assert!(!bubbles(&ev).contains(&"Soll ich dir bei etwas anderem helfen?".to_string()), "no second question");
     assert!(h.platform.typed().is_empty());
 }
 
@@ -3762,4 +3771,297 @@ async fn new_elements_are_starred_and_unchanged_clicks_get_a_nudge() {
     // Click 2 and 3 changed nothing in PAGE ELEMENTS: the model hears so once.
     assert!(!look(&reqs[2]).contains("changed nothing"), "{}", look(&reqs[2]));
     assert!(look(&reqs[3]).contains("your last clicks changed nothing in PAGE ELEMENTS"), "{}", look(&reqs[3]));
+}
+
+// ---------- run 4: right file, Next held back, done after the send, no-action ends, no taskbar click ----------
+
+fn store_doc(h: &Harness, path: &str, doc_type: &str, summary: &str) -> i64 {
+    let x: pip_core::docs::DocumentExtract = serde_json::from_value(json!({
+        "doc_type": doc_type, "sender": "Beispiel Air", "recipient": "Erika Beispiel",
+        "date": "2026-10-03", "reference": "BX7Q2K", "summary_simple": summary, "requests": [], "deadlines": [],
+        "consequences_if_ignored": null, "confidence": 0.95}))
+    .unwrap();
+    h.memory.insert_document(std::path::Path::new(path), &format!("sha-{path}"), &x, summary).unwrap()
+}
+
+fn browser(address: &str) -> WindowInfo {
+    WindowInfo { title: "Claim - Edge".into(), class: "Chrome_WidgetWin_1".into(), address: Some(address.into()) }
+}
+
+#[tokio::test]
+async fn upload_boarding_pass_picks_the_pass_not_the_notice() {
+    let mut h = Harness::new(false).await;
+    store_doc(
+        &h,
+        "C:\\Briefe\\boarding_pass_bx2041.pdf",
+        "sonstiges",
+        "Boarding pass for flight BX 2041, Erika Beispiel",
+    );
+    // The notice is newer and even talks about the boarding pass: only the file's own name and type may win,
+    // not what a letter mentions.
+    store_doc(
+        &h,
+        "C:\\Briefe\\flight_delay_bx2041.pdf",
+        "brief",
+        "Beispiel Air says sorry: your flight BX 2041 arrived 4 hours late. Attach your boarding pass to the claim.",
+    );
+    h.platform.set_outline(vec![
+        el(1, "button", "Upload boarding pass", (100, 500, 250, 40)),
+        el(2, "button", "Send claim", (700, 600, 200, 50)),
+    ]);
+    let page = browser("https://www.beispiel-air.example/claim");
+    *h.platform.foreground.lock().unwrap() = Some(page.clone());
+    *h.platform.on_click_window.lock().unwrap() = Some(file_dialog());
+    *h.platform.after_dialog.lock().unwrap() = Some(page);
+    h.agent_turns(vec![
+        calls("r1", &[click_el("the button „Upload boarding pass“", 1, false)]),
+        calls(
+            "r2",
+            &[
+                ("key", json!({"combo": "enter", "is_commit": false, "commit_what": null, "commit_to": null})),
+                ("search_memory", json!({"query": "flight BX 2041"})),
+            ],
+        ),
+        calls("r3", &[done("Attached.")]),
+    ]);
+    h.auto_answer(ApprovalAnswer::Yes, "");
+    let out = h.run("Fill in my claim").await;
+    assert_eq!(out, AgentOutcome::Done("Attached.".into()));
+    // The core typed the pass's path and pressed Enter in the same tool run: no extra model turn for it.
+    assert_eq!(h.platform.typed(), "C:\\Briefe\\boarding_pass_bx2041.pdf");
+    assert_eq!(h.platform.actions().iter().filter(|a| *a == "key enter").count(), 1);
+    let reqs = h.requests();
+    let outs = outputs(&reqs[1]);
+    assert!(outs[0].contains("picked boarding_pass_bx2041.pdf from memory"), "{outs:?}");
+    assert!(outs[0].contains("it is attached"), "{outs:?}");
+    assert!(cards(&h.drain()).is_empty(), "opening the picker and picking a stored letter ask nothing");
+    // The model's own Enter right after Pip's pick is not pressed (it would land on the form as a send).
+    let after = outputs(&reqs[2]);
+    assert!(after[0].starts_with("not pressed: the file is already attached"), "{after:?}");
+    assert_eq!(after[1].lines().count(), 2, "{after:?}");
+}
+
+#[tokio::test]
+async fn search_memory_ranks_by_the_file_buttons_label_while_the_dialog_is_open() {
+    let h = Harness::new(false).await;
+    store_doc(&h, "C:\\Briefe\\boarding_pass_bx2041.pdf", "sonstiges", "Boarding pass for flight BX 2041");
+    store_doc(&h, "C:\\Briefe\\flight_delay_bx2041.pdf", "brief", "Your flight BX 2041 arrived 4 hours late.");
+    // No word of the label names a letter here ("Choose file"), so the dialog stays the model's.
+    h.platform.set_outline(vec![el(1, "button", "Choose file", (100, 500, 250, 40))]);
+    *h.platform.foreground.lock().unwrap() = Some(browser("https://www.beispiel-air.example/claim"));
+    *h.platform.on_click_window.lock().unwrap() = Some(file_dialog());
+    h.agent_turns(vec![
+        calls("r1", &[click_el("the button „Choose file“", 1, false)]),
+        calls("r2", &[("search_memory", json!({"query": "boarding pass BX 2041"}))]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.run("Attach my boarding pass").await;
+    assert_eq!(h.platform.typed(), "", "nothing typed by the core");
+    let outs = outputs(&h.requests()[1]);
+    assert!(outs[0].contains("type the full file path"), "{outs:?}");
+    let found = outputs(&h.requests()[2]);
+    let first = found[0].lines().next().unwrap();
+    assert!(first.contains("boarding_pass_bx2041.pdf"), "{found:?}");
+}
+
+#[tokio::test]
+async fn next_with_an_empty_required_field_is_not_clicked_once() {
+    let h = Harness::new(false).await;
+    let mut flight = el(2, "edit", "Flight number *", (100, 200, 300, 40));
+    flight.value = Some("BX 2041".into());
+    h.platform.set_outline(vec![
+        el(1, "edit", "Booking reference *", (100, 100, 300, 40)),
+        flight,
+        el(3, "button", "Next", (700, 600, 200, 50)),
+    ]);
+    h.agent_turns(vec![
+        calls("r1", &[click_el("the button „Next“", 3, false)]),
+        calls("r2", &[type_el("BX7Q2K", "the booking reference", 1), click_el("the button „Next“", 3, false)]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.run("Fill in my claim").await;
+    let outs = outputs(&h.requests()[1]);
+    assert!(outs[0].starts_with("not yet: fields #1 are empty"), "{outs:?}");
+    assert_eq!(h.platform.clicks().last().map(String::as_str), Some("click 800,625"), "{:?}", h.platform.clicks());
+    assert!(!h.platform.clicks().iter().take(1).any(|c| c == "click 800,625"), "not clicked the first time");
+    let outs = outputs(&h.requests()[2]);
+    assert!(outs[1].starts_with("clicked"), "{outs:?}");
+}
+
+#[tokio::test]
+async fn a_question_after_the_send_on_the_thank_you_page_is_done() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    h.platform.set_outline(vec![
+        el(1, "edit", "Full name", (100, 100, 300, 40)),
+        el(2, "button", "Send claim", (700, 600, 200, 50)),
+    ]);
+    h.platform.on_click_outline.lock().unwrap().push_back(vec![el(
+        1,
+        "text",
+        "Thank you, your claim BX7Q2K was received",
+        (100, 100, 600, 40),
+    )]);
+    let ask =
+        ("ask_user", json!({"question": "Your claim is sent. Shall I do anything else?", "options": ["Yes", "No"]}));
+    h.agent_turns(vec![
+        calls("r1", &[click_el("the button „Send claim“", 2, true)]),
+        calls("r2", &[ask]),
+        calls("r3", &[done("never")]),
+    ]);
+    h.auto_answer(ApprovalAnswer::Yes, "Yes");
+    let out = h.run("Send my claim").await;
+    assert_eq!(out, AgentOutcome::Done("Your claim is sent.".into()));
+    let ev = h.drain();
+    assert!(questions(&ev).is_empty(), "no question after the approved card");
+    assert_eq!(cards(&ev).len(), 1);
+    assert_eq!(h.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn a_question_in_the_same_turn_as_the_send_is_done_too_but_not_on_an_error_page() {
+    // Same turn: the core looks at the page afresh.
+    let mut h = Harness::new(false).await;
+    h.platform.set_outline(vec![el(2, "button", "Absenden", (700, 600, 200, 50))]);
+    h.platform.on_click_outline.lock().unwrap().push_back(vec![el(
+        1,
+        "text",
+        "Danke! Eingegangen.",
+        (100, 100, 600, 40),
+    )]);
+    let ask = ("ask_user", json!({"question": "Abgeschickt. Was jetzt?", "options": []}));
+    h.agent_turns(vec![calls("r1", &[click_el("den Knopf „Absenden“", 2, true), ask])]);
+    h.auto_answer(ApprovalAnswer::Yes, "x");
+    assert_eq!(h.run("Schick es ab").await, AgentOutcome::Done("Abgeschickt.".into()));
+    assert!(questions(&h.drain()).is_empty());
+
+    // An error after the send: the question for the missing value is asked.
+    let mut h = Harness::new(false).await;
+    h.platform.set_outline(vec![el(2, "button", "Absenden", (700, 600, 200, 50))]);
+    h.platform.on_click_outline.lock().unwrap().push_back(vec![
+        el(1, "edit", "IBAN", (100, 100, 300, 40)),
+        el(3, "text", "Bitte IBAN ohne Leerzeichen eingeben", (100, 150, 600, 40)),
+        el(2, "button", "Absenden", (700, 600, 200, 50)),
+    ]);
+    let ask = ("ask_user", json!({"question": "Wie lautet deine IBAN?", "options": []}));
+    h.agent_turns(vec![
+        calls("r1", &[click_el("den Knopf „Absenden“", 2, true)]),
+        calls("r2", &[ask]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.auto_answer(ApprovalAnswer::Yes, "DE02");
+    assert_eq!(h.run("Schick es ab").await, AgentOutcome::Done("ok".into()));
+    assert_eq!(questions(&h.drain()).len(), 1);
+}
+
+#[tokio::test]
+async fn a_send_that_only_turned_the_page_is_not_done() {
+    // The approved click led to step 2 with empty fields and a send button, and the model asks for the IBAN: the
+    // claim is not in, so the user gets the question, never a "Done".
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    h.platform.set_outline(vec![
+        el(1, "edit", "Full name", (100, 100, 300, 40)),
+        el(2, "button", "Send claim", (700, 600, 200, 50)),
+    ]);
+    h.platform.on_click_outline.lock().unwrap().push_back(vec![
+        el(5, "text", "Step 2 of 2: payment", (100, 60, 600, 30)),
+        el(6, "edit", "IBAN", (100, 100, 300, 40)),
+        el(7, "edit", "E-mail", (100, 160, 300, 40)),
+        el(8, "button", "Send claim", (700, 600, 200, 50)),
+    ]);
+    let ask = (
+        "ask_user",
+        json!({"question": "Your claim is almost ready. What is your IBAN and your e-mail?", "options": []}),
+    );
+    h.agent_turns(vec![
+        calls("r1", &[click_el("the button „Send claim“", 2, true)]),
+        calls("r2", &[ask]),
+        calls("r3", &[done("ok")]),
+    ]);
+    h.auto_answer(ApprovalAnswer::Yes, "DE02 1203 0000 0000 2020 51, erika.beispiel@example.com");
+    assert_eq!(h.run("Send my claim").await, AgentOutcome::Done("ok".into()));
+    assert_eq!(questions(&h.drain()).len(), 1, "the IBAN question is asked");
+    let outs = outputs(&h.requests()[2]);
+    assert!(outs[0].starts_with("The user answered: DE02"), "{outs:?}");
+}
+
+#[tokio::test]
+async fn send_now_before_the_card_is_answered_by_the_core() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    h.platform.set_outline(vec![el(2, "button", "Send claim", (700, 600, 200, 50))]);
+    let ask = ("ask_user", json!({"question": "Everything is filled in. Send now?", "options": ["Yes", "No"]}));
+    h.agent_turns(vec![calls("r1", &[ask]), calls("r2", &[done("ok")])]);
+    h.auto_answer(ApprovalAnswer::Yes, "No");
+    h.run("Send my claim").await;
+    assert!(questions(&h.drain()).is_empty(), "the card is the consent; no bubble");
+    let outs = outputs(&h.requests()[1]);
+    assert!(outs[0].starts_with("The user answered: yes, use the card."), "{outs:?}");
+}
+
+#[tokio::test]
+async fn nothing_to_do_here_ends_done_but_a_missing_file_is_asked() {
+    let mut h = Harness::new(false).await;
+    h.memory.profile_set("lang", "en").unwrap();
+    let ask = (
+        "ask_user",
+        json!({"question": "This is only weather and town news, nothing to fill in. What shall I do instead?", "options": []}),
+    );
+    h.agent_turns(vec![calls("r1", &[ask]), calls("r2", &[done("never")])]);
+    h.auto_answer(ApprovalAnswer::No, "x");
+    let out = h.run("Look at my screen").await;
+    assert_eq!(out, AgentOutcome::Done("This is only weather and town news, nothing to fill in.".into()));
+    let ev = h.drain();
+    assert!(questions(&ev).is_empty());
+    assert_eq!(h.requests().len(), 1);
+
+    let mut h = Harness::new(false).await;
+    let ask = ("ask_user", json!({"question": "I can't find your boarding pass. Where is the file?", "options": []}));
+    h.agent_turns(vec![calls("r1", &[ask]), calls("r2", &[done("ok")])]);
+    h.auto_answer(ApprovalAnswer::No, "C:/x.pdf");
+    h.run("Fill in my claim").await;
+    assert_eq!(questions(&h.drain()).len(), 1, "a file question is a real question");
+}
+
+#[tokio::test]
+async fn no_taskbar_click_when_the_page_is_already_in_front() {
+    let mut h = Harness::new(false).await;
+    let url = "https://www.beispiel-air.example/claim";
+    h.agent = h.agent.with_current_page(url);
+    *h.platform.foreground.lock().unwrap() = Some(browser(url));
+    h.agent_turns(vec![
+        calls("r1", &[click("the Edge icon „Microsoft Edge“ in the taskbar", false)]),
+        calls("r2", &[done("ok")]),
+    ]);
+    h.run("Fill in my claim").await;
+    assert!(h.platform.clicks().is_empty(), "{:?}", h.platform.clicks());
+    assert_eq!(*h.script.grounds.lock().unwrap(), 0, "no grounding, no model call for it");
+    let outs = outputs(&h.requests()[1]);
+    assert_eq!(outs[0], "not done: the page is already in front; act on it.");
+    let _ = h.drain();
+}
+
+#[tokio::test]
+async fn send_waits_once_for_an_upload_that_names_a_stored_letter() {
+    let h = Harness::new(false).await;
+    store_doc(&h, "C:\\Briefe\\boarding_pass_bx2041.pdf", "sonstiges", "Boarding pass for flight BX 2041");
+    h.platform.set_outline(vec![
+        el(1, "button", "Upload boarding pass", (100, 500, 250, 40)),
+        el(2, "button", "Send claim", (700, 600, 200, 50)),
+    ]);
+    h.agent_turns(vec![
+        calls("r1", &[click_el("the button „Send claim“", 2, true)]),
+        calls("r2", &[click_el("the button „Send claim“", 2, true)]),
+        calls("r3", &[done("Sent.")]),
+    ]);
+    h.auto_answer(ApprovalAnswer::Yes, "");
+    h.run("Send my claim").await;
+    let outs = outputs(&h.requests()[1]);
+    assert!(
+        outs[0].starts_with("not yet: nothing is attached and the page has #1 \"Upload boarding pass\""),
+        "{outs:?}"
+    );
+    // Held once only: the second try is the user's to decide on the card.
+    assert_eq!(h.platform.clicks(), ["click 800,625"]);
 }

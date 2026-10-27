@@ -1,0 +1,38 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-air-v3-step3.png",
+  "targets": {
+    "file_button": {
+      "box": [
+        599,
+        271,
+        858,
+        317
+      ],
+      "sam_query": "button",
+      "description": "Teal button \"Upload boarding pass\" in the dashed upload box"
+    },
+    "confirm_checkbox": {
+      "box": [
+        583,
+        353,
+        604,
+        374
+      ],
+      "sam_query": "checkbox",
+      "description": "Checkbox \"The details are correct\" below the upload box"
+    },
+    "submit_button": {
+      "box": [
+        1183,
+        392,
+        1308,
+        443
+      ],
+      "sam_query": "button",
+      "description": "Red button \"Send\" bottom right of the form"
+    }
+  }
+}

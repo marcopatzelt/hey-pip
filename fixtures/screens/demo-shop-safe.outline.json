@@ -1,0 +1,171 @@
+{
+ "note": "UI Automation outline of demo-shop-safe.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-shop-safe/index.html, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-shop-safe.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "Plants",
+   "value": null,
+   "rect": {
+    "x": 1115,
+    "y": 20,
+    "w": 47,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "Tools",
+   "value": null,
+   "rect": {
+    "x": 1182,
+    "y": 20,
+    "w": 40,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "Basket (2)",
+   "value": null,
+   "rect": {
+    "x": 1242,
+    "y": 20,
+    "w": 74,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "text",
+   "name": "Checkout",
+   "value": null,
+   "rect": {
+    "x": 309,
+    "y": 108,
+    "w": 596,
+    "h": 39
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "text",
+   "name": "Payment by card",
+   "value": null,
+   "rect": {
+    "x": 309,
+    "y": 159,
+    "w": 596,
+    "h": 30
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "edit",
+   "name": "Name on the card",
+   "value": "",
+   "rect": {
+    "x": 309,
+    "y": 228,
+    "w": 596,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "edit",
+   "name": "Card number",
+   "value": "",
+   "rect": {
+    "x": 309,
+    "y": 320,
+    "w": 284,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "edit",
+   "name": "Expiry date (MM/YY)",
+   "value": "",
+   "rect": {
+    "x": 607,
+    "y": 344,
+    "w": 142,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "edit",
+   "name": "Security code",
+   "value": "",
+   "rect": {
+    "x": 763,
+    "y": 320,
+    "w": 142,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 10,
+   "role": "button",
+   "name": "Pay EUR 23.80",
+   "value": null,
+   "rect": {
+    "x": 309,
+    "y": 407,
+    "w": 192,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 11,
+   "role": "text",
+   "name": "Your order",
+   "value": null,
+   "rect": {
+    "x": 981,
+    "y": 108,
+    "w": 310,
+    "h": 30
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

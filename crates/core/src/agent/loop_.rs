@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use super::gate::{
     ApprovalAnswer, ApprovalCard, Gate, Risk, is_attach_target, is_cancel_target, is_delete_target, is_money_target,
-    is_send_target, label_hit, normalize_address, quoted_label, url_host, word_hit,
+    is_next_target, is_send_target, is_taskbar_target, label_hit, normalize_address, quoted_label, url_host, word_hit,
 };
 use super::tools::{DISCOVER_TOOLS, ScrollDir, Tool, bad_call, normalize_combo, say_of, tool_defs, truncate};
 use super::typing::{DateField, Mask, date_field, date_keys, date_shown, iso, parse_date_in, shows_mask};
@@ -339,6 +339,34 @@ pub struct RunState {
     /// The last clicks, keys and page opens that ran, with the page they ran on (newest last, at most
     /// RECENT_ACTS). The same call again on a page that still looks the same is refused at once.
     recent_acts: Vec<RecentAct>,
+    /// The page in front when the approved send ran (step, shape of its PAGE ELEMENTS, picture): a question after
+    /// it on another page (or a thank-you page) is the end of the task.
+    sent_page: Option<(u32, u64, Option<ApiImage>)>,
+    /// The last question shown in this run: the page it was asked on and whether it said "nothing to do here" or
+    /// the user said no. A second one on the same page with no action since ends the run.
+    last_ask: Option<LastAsk>,
+    /// A click, type_text, open_url or key ran since the last question.
+    acted_since_ask: bool,
+    /// The core turned the model's ask_user into done: the step records the call as done.
+    forced_done: Option<String>,
+    /// Shape of the page whose Next click was held back for empty required fields (held back once per page).
+    next_held: Option<u64>,
+    /// The send was held back once for an empty upload that names a stored letter.
+    upload_held: bool,
+    /// The step in which Pip picked a stored letter in the file dialog himself (an Enter right after it is not
+    /// pressed again).
+    prepicked_step: Option<u32>,
+    /// The step that last counted an "already done" field (one count per turn, however many fields it retyped).
+    already_done_step: Option<u32>,
+}
+
+/// The last question of a run and the page it was asked on.
+#[derive(Debug, Clone)]
+struct LastAsk {
+    shape: u64,
+    api: Option<ApiImage>,
+    /// It said there is nothing to do here, or the user answered no.
+    idle: bool,
 }
 
 /// A click, key or page open that ran, with the page in front when it ran.
@@ -456,6 +484,14 @@ impl RunState {
             offer_screen: None,
             nothing_changed: 0,
             recent_acts: Vec::new(),
+            sent_page: None,
+            last_ask: None,
+            acted_since_ask: false,
+            forced_done: None,
+            next_held: None,
+            upload_held: false,
+            prepicked_step: None,
+            already_done_step: None,
         }
     }
 
@@ -494,6 +530,10 @@ impl RunState {
         // The user looked at it: repeats start again.
         self.repeats.clear();
         self.recent_acts.clear();
+        self.last_ask = None;
+        self.next_held = None;
+        self.prepicked_step = None;
+        self.already_done_step = None;
         self.guard_hits = 0;
         self.nothing_changed = 0;
         // A resumed run looks at the screen afresh.
@@ -1175,7 +1215,16 @@ impl Agent {
                         return Ok(StepResult::Continue);
                     }
                 }
-                Ok(Exec::Finish(o)) => return Ok(StepResult::Finished(o)),
+                Ok(Exec::Finish(o)) => {
+                    // The core ended the run in place of the model's question: the record says done, not a question.
+                    if let Some(summary) = state.forced_done.take()
+                        && let Some(c) = state.last_calls.iter_mut().find(|c| c.call_id == call.call_id)
+                    {
+                        c.name = "done".into();
+                        c.arguments = json!({ "summary": summary });
+                    }
+                    return Ok(StepResult::Finished(o));
+                }
                 Err(e) => {
                     // The API needs an output for every call of this response before the retry.
                     for c in &out.calls[i..] {
@@ -1519,6 +1568,7 @@ impl Agent {
         let acts = matches!(tool, Tool::Click { .. } | Tool::TypeText { .. } | Tool::OpenUrl { .. } | Tool::Key { .. });
         if acts && guarded.is_none() {
             state.acted_since_offer = true;
+            state.acted_since_ask = true;
         }
         let ran = guarded.is_none();
         let run = match guarded {
@@ -1544,6 +1594,12 @@ impl Agent {
             && ["clicked", "pressed", "opened"].iter().any(|w| result.starts_with(w))
         {
             state.note_act(key, page);
+        }
+        // A new value really typed is progress: earlier slips ("already shows the text", a scroll that moved
+        // nothing) no longer count toward the stuck question. Else a long form with two harmless retypes ends on
+        // "I keep getting stuck" at the first repeated click, although the run is nearly done.
+        if ran && matches!(tool, Tool::TypeText { .. }) && result.starts_with("typed") {
+            state.nothing_changed = 0;
         }
         if !matches!(tool, Tool::Say { .. } | Tool::Wait { .. } | Tool::Done { .. }) {
             state.history.push(format!("{}: {}", tool.name(), truncate(&result, 120)));
@@ -1576,7 +1632,11 @@ impl Agent {
             let shown = tokio::task::spawn_blocking(move || ui.value_at(p)).await.ok().flatten();
             if let Some(v) = shown.filter(|v| value_fits(&item, text, v)) {
                 tracing::info!(element = id, "loop guard: the field already shows the text, not typed again");
-                state.nothing_changed = state.nothing_changed.saturating_add(1);
+                // One count per turn: a planned turn that retypes three filled fields is one slip, not three.
+                if state.already_done_step != Some(state.step) {
+                    state.already_done_step = Some(state.step);
+                    state.nothing_changed = state.nothing_changed.saturating_add(1);
+                }
                 if state.nothing_changed >= NOTHING_CHANGED_MAX {
                     return self.stuck(lang);
                 }
@@ -1684,6 +1744,308 @@ impl Agent {
         self.bubble(text.to_string(), true);
         state.said.push(key);
         true
+    }
+
+    /// `search_memory`: the stored letters for the query, ranked by how many of its words (and, while a file
+    /// dialog is open, of the file button's label: "Upload boarding pass") their type and summary hold; newest
+    /// first on a tie.
+    fn search_memory(&self, query: &str, state: &RunState) -> Result<String> {
+        let label = state.attach_label.as_deref().filter(|_| state.dialog_open || state.enter_after_attach);
+        let mut rows = self.memory.search_documents(query, 20)?;
+        if let Some(l) = label {
+            for d in self.memory.search_documents(l, 20)? {
+                if !rows.iter().any(|r| r.id == d.id) {
+                    rows.push(d);
+                }
+            }
+        }
+        if rows.is_empty() {
+            return Ok("no letters found".into());
+        }
+        let words = doc_query_words(&format!("{query} {}", label.unwrap_or_default()));
+        let label_words = label.map(doc_query_words).unwrap_or_default();
+        rank_documents(&mut rows, &words);
+        let lines: Vec<String> = rows
+            .iter()
+            .take(5)
+            .enumerate()
+            .map(|(i, d)| {
+                let fits = if i == 0 && doc_hits(&label_words, d) > 0 {
+                    format!(" (fits the button \"{}\")", truncate(label.unwrap_or_default(), 60))
+                } else {
+                    String::new()
+                };
+                format!(
+                    "#{} {} from {} dated {}; file: {}; summary: {}{fits}",
+                    d.id,
+                    d.doc_type.as_str(),
+                    truncate(&d.extract.sender, 80),
+                    d.extract.date.map(|x| x.to_string()).unwrap_or_else(|| "?".into()),
+                    d.path.display(),
+                    truncate(&d.extract.summary_simple, 200)
+                )
+            })
+            .collect();
+        Ok(lines.join("\n"))
+    }
+
+    /// The file dialog just opened from a button whose label names a stored letter ("Upload boarding pass"):
+    /// Pip types that letter's path and presses Enter himself, in the same tool run. Only a stored letter goes
+    /// in, and with a task letter (a sick note to send) only that one. None = no letter fits the label (the
+    /// model picks one as before).
+    async fn prepick_attach(
+        &self,
+        state: &mut RunState,
+        label: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>> {
+        let words = doc_query_words(label);
+        if words.is_empty() {
+            return Ok(None);
+        }
+        let mut rows = match &state.doc_path {
+            Some(p) => self.memory.document_by_path(&p.display().to_string())?.into_iter().collect(),
+            None => self.memory.search_documents("", 50)?,
+        };
+        rank_documents(&mut rows, &words);
+        let Some(doc) = rows.into_iter().next().filter(|d| doc_hits(&words, d) > 0) else { return Ok(None) };
+        let path = doc.path.display().to_string();
+        // The name after the last slash of either kind (a Windows path read on any system).
+        let file = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
+        if !self.type_chunks(&path, cancel).await? {
+            return Ok(None);
+        }
+        self.blocking(|pl| pl.input.key("enter")).await?;
+        state.doc_file = Some(file.clone());
+        state.doc_id = Some(doc.id);
+        state.doc_path = Some(doc.path.clone());
+        state.enter_after_attach = false;
+        state.prepicked_step = Some(state.step);
+        let label = truncate(label, 60);
+        tracing::info!("attach: {file} picked from memory for \"{label}\"");
+        self.log(
+            "attach",
+            json!({ "file": file, "label": label }).to_string(),
+            Risk::Act,
+            None,
+            &format!("attach: {file} picked from memory for \"{label}\""),
+            0,
+        );
+        let _ = self.pause(self.batch_pace(), cancel).await;
+        let still_open = self.foreground().await.is_some_and(|w| w.is_file_dialog());
+        Ok(Some(if still_open {
+            format!(
+                ". The file dialog opened; I typed the path of {file} (from memory, it fits \"{label}\") and pressed \
+                 enter, but the dialog is still open. Look at it."
+            )
+        } else {
+            let filled = filled_elements(&self.read_outline(state.phase).await);
+            let filled = if filled.is_empty() { String::new() } else { format!(" Already filled: {filled}.") };
+            format!(
+                ". The file dialog opened and I picked {file} from memory (it fits \"{label}\"): it is attached. Do \
+                 not open the file dialog again, do not type a path or press enter; continue with the rest.{filled}"
+            )
+        }))
+    }
+
+    /// A Next click on a page whose required fields are still empty: the message for the model instead of the click. Read live from the page (no model call); once per page.
+    async fn empty_before_next(&self, state: &mut RunState) -> Option<String> {
+        let shape = outline_shape(&state.outline);
+        if shape == 0 || state.next_held == Some(shape) {
+            return None;
+        }
+        let fresh = self.read_outline(state.phase).await;
+        let items = if fresh.is_empty() { state.outline.clone() } else { fresh };
+        let empty = empty_required(&items);
+        if empty.is_empty() {
+            return None;
+        }
+        state.next_held = Some(shape);
+        let ids: Vec<String> = empty.iter().map(|id| format!("#{id}")).collect();
+        tracing::info!(fields = ?ids, "next held back: required fields are empty");
+        Some(format!(
+            "not yet: fields {} are empty. Fill every field of this step in one turn by element number (a date in \
+             the pattern the page shows), then click Next. A value you cannot find in WHAT YOU KNOW: ask_user once \
+             for all of them.",
+            ids.join(", ")
+        ))
+    }
+
+    /// The send button is next, but the page's upload button names a stored letter ("Upload boarding pass") and
+    /// nothing was attached in this run: the message for the model instead of the send. Once per run.
+    fn upload_missing(&self, state: &mut RunState) -> Result<Option<String>> {
+        if state.attach_label.is_some() || state.upload_held {
+            return Ok(None);
+        }
+        let docs = self.memory.search_documents("", 50)?;
+        let Some(button) = state.outline.iter().find(|i| {
+            i.role == "button"
+                && is_attach_target(&i.name)
+                && docs.iter().any(|d| doc_hits(&doc_query_words(&i.name), d) > 0)
+        }) else {
+            return Ok(None);
+        };
+        state.upload_held = true;
+        tracing::info!(button = %button.name, "send held back: the upload is still empty");
+        Ok(Some(format!(
+            "not yet: nothing is attached and the page has #{} \"{}\". Click it first (Pip picks the stored letter \
+             in the file dialog himself), then click send.",
+            button.id,
+            truncate(&button.name, 60)
+        )))
+    }
+
+    /// A taskbar or browser icon while the page this run opened is already in front: nothing to bring forward.
+    async fn page_in_front(&self, state: &RunState) -> bool {
+        let Some(opened) = state.last_url.as_deref().or(self.initial_page.as_deref()) else { return false };
+        let Some(address) = self.foreground().await.and_then(|w| w.address) else { return false };
+        let site = |u: &str| self.gate.site_key(u).or_else(|| url_host(u));
+        let shown = normalize_address(&address).unwrap_or(address);
+        same_page(&shown, opened) || site(&shown).is_some_and(|s| site(opened) == Some(s))
+    }
+
+    /// After the approved send: does the page in front confirm it (a thank-you text, or simply another page than
+    /// the one the send ran on, without an error)? A send in this very turn is looked at afresh.
+    async fn send_confirmed(&self, state: &mut RunState) -> bool {
+        let Some((step, shape, before)) = state.sent_page.clone() else { return false };
+        if step == state.step {
+            let (api, outline) = tokio::join!(self.capture(), self.read_outline(state.phase));
+            if let Ok(api) = api {
+                state.last_api = Some(api);
+            }
+            if !outline.is_empty() {
+                state.outline = outline;
+            }
+        }
+        let text = state.outline.iter().map(|i| i.name.to_lowercase()).collect::<Vec<_>>().join(" \n ");
+        if THANKS_WORDS.iter().any(|w| text.contains(w)) {
+            return true;
+        }
+        if ERROR_WORDS.iter().any(|w| text.contains(w)) {
+            return false;
+        }
+        // The page still holds a form (an empty field and a send or next button): the "send" only turned the page,
+        // the claim is not in yet. "Done" here would be a false report.
+        let empty_field = state.outline.iter().any(|i| {
+            i.takes_text() && i.enabled && !i.is_password && i.value.as_deref().unwrap_or("").trim().is_empty()
+        });
+        let form_button =
+            state.outline.iter().any(|i| i.role == "button" && (is_send_target(&i.name) || is_next_target(&i.name)));
+        if empty_field && form_button {
+            tracing::info!("after the send the page still holds a form: not confirmed");
+            return false;
+        }
+        let picture_moved = match (&before, &state.last_api) {
+            (Some(a), Some(b)) => !same_picture(a, b),
+            _ => false,
+        };
+        (shape != 0 && outline_shape(&state.outline) != shape) || picture_moved
+    }
+
+    /// End the run as done in place of the model's question (never a question bubble). `plain`: the sentence is
+    /// the whole answer (shown as it is); else the usual "Done" line follows.
+    fn force_done(&self, state: &mut RunState, text: String, plain: bool, why: &str) -> ToolRun {
+        tracing::info!(why, "{why}");
+        self.log("done", json!({ "summary": truncate(&text, 200) }).to_string(), Risk::Free, None, why, 0);
+        if plain {
+            self.bubble(text.clone(), true);
+            state.answered = true;
+        }
+        state.forced_done = Some(text.clone());
+        ToolRun::finish(Risk::Free, AgentOutcome::Done(text))
+    }
+
+    /// `ask_user`, with the core's ends: after a confirmed send it is done; "Send now?" before the send is
+    /// answered with the card; "nothing to do here" ends the run; a second question on the same page with nothing
+    /// done since ends it too (or, after a real offer, as an open question).
+    async fn ask_user(
+        &self,
+        question: &str,
+        options: &[String],
+        state: &mut RunState,
+        cancel: &CancellationToken,
+        lang: Lang,
+    ) -> Result<ToolRun> {
+        if !state.sent.is_empty() {
+            // A question for a value (the IBAN, an e-mail) is a real question, whatever the page looks like.
+            if !asks_for_value(question) && self.send_confirmed(state).await {
+                let text = statements(question).unwrap_or_else(|| state.sent.last().cloned().unwrap_or_default());
+                return Ok(self.force_done(state, text, false, "done forced after send"));
+            }
+            if !options.is_empty() {
+                // After a send the app offers next steps itself; a "what next?" here loops.
+                tracing::info!("offer after a send: not asked");
+                return Ok(ToolRun::out(Risk::Free, NOT_ASKED_AFTER_SEND));
+            }
+        } else if confirms_send(question) {
+            tracing::info!("send question answered by the core: the card is the consent");
+            return Ok(ToolRun::out(
+                Risk::Free,
+                "The user answered: yes, use the card. The send card asks the user, so never ask before it: click the \
+                 send button now with is_commit=true.",
+            ));
+        }
+        let shape = outline_shape(&state.outline);
+        let same_page = |a: &LastAsk| {
+            a.shape == shape
+                && match (&a.api, &state.last_api) {
+                    (Some(then), Some(now)) => same_picture(then, now),
+                    (None, None) => true,
+                    _ => false,
+                }
+        };
+        let idle_now = state.sent.is_empty() && state.typed.is_empty() && says_nothing_to_do(question);
+        if idle_now && options.is_empty() {
+            let text = statements(question).unwrap_or_else(|| nothing_here(lang).to_string());
+            return Ok(self.force_done(state, text, true, "nothing to do here: done instead of a question"));
+        }
+        if !state.acted_since_ask
+            && state.sent.is_empty()
+            && let Some(last) = state.last_ask.as_ref().filter(|a| same_page(a))
+            && (last.idle || idle_now)
+        {
+            let text = statements(question).unwrap_or_else(|| nothing_here(lang).to_string());
+            return Ok(self.force_done(state, text, true, "second question with nothing done since: done"));
+        }
+        if !options.is_empty() && state.offers >= 1 && (!state.acted_since_offer || screen_unchanged(state)) {
+            // A second offer with nothing done since the first (or nothing came of it: the same screen): the
+            // run never asks round and round. It ends as an open question (never as done: nothing was done),
+            // so nothing is learned or credited. The bubble keeps the question and its buttons: the first one
+            // continues the run, the others close the bubble.
+            tracing::info!("second offer without an action: run ends as an open question");
+            self.open_question_bubble(question, options);
+            state.history.push(format!(
+                "ask_user: you asked twice in a row (\"{}\"); a continued run means the user chose \"{}\"",
+                truncate(question, 100),
+                truncate(&options[0], 40)
+            ));
+            state.offers = 0;
+            state.answered = true;
+            return Ok(ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(question.to_string())));
+        }
+        if !options.is_empty() {
+            state.offers = state.offers.saturating_add(1);
+            state.acted_since_offer = false;
+            state.offer_screen = state.last_api.clone().map(|a| (a, outline_shape(&state.outline)));
+        }
+        state.acted_since_ask = false;
+        state.last_ask = Some(LastAsk { shape, api: state.last_api.clone(), idle: idle_now });
+        match self.ask(state, question, options, cancel, lang).await {
+            Asked::Answer(a) => {
+                if is_no(&a)
+                    && let Some(last) = state.last_ask.as_mut()
+                {
+                    last.idle = true;
+                }
+                state.answers.push(a.clone());
+                Ok(ToolRun::out(Risk::Free, format!("The user answered: {a}")))
+            }
+            Asked::Timeout => {
+                self.away_bubble("question_timeout", "btn_ask_again", None, lang);
+                Ok(ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(question.to_string())))
+            }
+            Asked::Cancelled => Ok(ToolRun::finish(Risk::Free, AgentOutcome::Stopped)),
+        }
     }
 
     async fn run_tool(
@@ -1813,25 +2175,7 @@ say argument of your action.",
             Tool::RememberFact { key, value } => self.remember(key, value, state),
             Tool::SearchMemory { query } => {
                 self.progress(t("progress_search", lang));
-                let rows = self.memory.search_documents(query, 5)?;
-                if rows.is_empty() {
-                    return Ok(ToolRun::out(Risk::Free, "no letters found"));
-                }
-                let lines: Vec<String> = rows
-                    .iter()
-                    .map(|d| {
-                        format!(
-                            "#{} {} from {} dated {}; file: {}; summary: {}",
-                            d.id,
-                            d.doc_type.as_str(),
-                            truncate(&d.extract.sender, 80),
-                            d.extract.date.map(|x| x.to_string()).unwrap_or_else(|| "?".into()),
-                            d.path.display(),
-                            truncate(&d.extract.summary_simple, 200)
-                        )
-                    })
-                    .collect();
-                Ok(ToolRun::out(Risk::Free, lines.join("\n")))
+                Ok(ToolRun::out(Risk::Free, self.search_memory(query, state)?))
             }
             Tool::AddDeadline { title, due, why } => {
                 let now = self.clock.now();
@@ -1849,49 +2193,7 @@ say argument of your action.",
                 })?;
                 Ok(ToolRun::out(Risk::Free, format!("saved deadline #{id}, reminders set")))
             }
-            Tool::AskUser { options, .. } if !options.is_empty() && !state.sent.is_empty() => {
-                // After a send the app offers next steps itself; a "what next?" here loops.
-                tracing::info!("offer after a send: not asked");
-                Ok(ToolRun::out(Risk::Free, NOT_ASKED_AFTER_SEND))
-            }
-            Tool::AskUser { question, options }
-                if !options.is_empty()
-                    && state.offers >= 1
-                    && (!state.acted_since_offer || screen_unchanged(state)) =>
-            {
-                // A second offer with nothing done since the first (or nothing came of it: the same screen): the
-                // run never asks round and round. It ends as an open question (never as done: nothing was done),
-                // so nothing is learned or credited. The bubble keeps the question and its buttons: the first one
-                // continues the run, the others close the bubble.
-                tracing::info!("second offer without an action: run ends as an open question");
-                self.open_question_bubble(question, options);
-                state.history.push(format!(
-                    "ask_user: you asked twice in a row (\"{}\"); a continued run means the user chose \"{}\"",
-                    truncate(question, 100),
-                    truncate(&options[0], 40)
-                ));
-                state.offers = 0;
-                state.answered = true;
-                Ok(ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(question.clone())))
-            }
-            Tool::AskUser { question, options } => {
-                if !options.is_empty() {
-                    state.offers = state.offers.saturating_add(1);
-                    state.acted_since_offer = false;
-                    state.offer_screen = state.last_api.clone().map(|a| (a, outline_shape(&state.outline)));
-                }
-                match self.ask(state, question, options, cancel, lang).await {
-                    Asked::Answer(a) => {
-                        state.answers.push(a.clone());
-                        Ok(ToolRun::out(Risk::Free, format!("The user answered: {a}")))
-                    }
-                    Asked::Timeout => {
-                        self.away_bubble("question_timeout", "btn_ask_again", None, lang);
-                        Ok(ToolRun::finish(Risk::Free, AgentOutcome::NeedsUser(question.clone())))
-                    }
-                    Asked::Cancelled => Ok(ToolRun::finish(Risk::Free, AgentOutcome::Stopped)),
-                }
-            }
+            Tool::AskUser { question, options } => self.ask_user(question, options, state, cancel, lang).await,
             Tool::Done { summary } => Ok(ToolRun::finish(Risk::Free, AgentOutcome::Done(summary.clone()))),
             Tool::Suggest { page_quote, reason_doc_id, reason_deadline_id } => {
                 self.suggest(page_quote, *reason_doc_id, *reason_deadline_id, state, cancel, lang).await
@@ -1912,6 +2214,15 @@ say argument of your action.",
     ) -> Result<ToolRun> {
         self.pip(PipState::Acting);
         let base_risk = self.gate.classify(tool, None);
+        // The page this run opened is in front already: a taskbar or browser icon would only hide or shuffle it.
+        let element_name_early =
+            element.and_then(|id| state.outline.iter().find(|i| i.id == id)).map(|i| i.name.as_str());
+        if is_taskbar_target(&format!("{description} {sam_query} {}", element_name_early.unwrap_or_default()))
+            && self.page_in_front(state).await
+        {
+            tracing::info!("taskbar click refused: the page is already in front");
+            return Ok(ToolRun::out(base_risk, "not done: the page is already in front; act on it."));
+        }
         // By number from PAGE ELEMENTS: the element's own rect, no SAM / locate. Unknown number: the picture.
         let mut by_element: Option<OutlineItem> = None;
         let mut note = String::new();
@@ -1933,6 +2244,19 @@ say argument of your action.",
             },
             None => None,
         };
+        // Next with required fields still empty: not clicked (one live check, no model call), so the retry does
+        // not cost a page and a turn.
+        let next_label = by_element
+            .as_ref()
+            .map(|i| i.name.clone())
+            .or_else(|| quoted_label(description))
+            .unwrap_or_else(|| description.to_string());
+        if is_next_target(&next_label)
+            && !matches!(tool, Tool::Click { is_commit: true, .. })
+            && let Some(msg) = self.empty_before_next(state).await
+        {
+            return Ok(ToolRun::out(base_risk, msg));
+        }
         let located = match picked {
             Some(t) => Some(t),
             None => self.locate(state, sam_query, description, quoted_label(description)).await?,
@@ -1999,6 +2323,14 @@ say argument of your action.",
             state.enter_after_attach = true;
             state.attach_label = Some(button_label.clone());
         }
+        // The send button while the page's upload button names a stored letter and nothing was attached yet:
+        // not clicked, once (no card, no model call). The card would else go out without the boarding pass.
+        if risk == Risk::Commit
+            && is_send_target(&target_text)
+            && let Some(msg) = self.upload_missing(state)?
+        {
+            return Ok(ToolRun::out(Risk::Act, msg));
+        }
         if risk == Risk::Commit {
             let card = match self.commit_check(tool, state, Some(&target), &ui_name, cancel, lang).await? {
                 Ok(card) => card,
@@ -2054,13 +2386,15 @@ say argument of your action.",
             return Ok(ToolRun::finish(risk, AgentOutcome::Stopped));
         }
         let p = target.point;
+        let page_before = (state.step, outline_shape(&state.outline), state.last_api.clone());
         self.blocking(move |pl| pl.input.click(p)).await?;
         state.last_point = Some(p);
         state.clicks_since_look += 1;
         let just_sent = sent.is_some();
         if let Some(what) = sent {
             state.sent.push(what);
-            state.send_label = Some(button_label);
+            state.send_label = Some(button_label.clone());
+            state.sent_page = Some(page_before);
         }
         let attach_note = if attach_card { ATTACH_APPROVED_NOTE } else { "" };
         let mut out = format!("clicked {description}{attach_note}{note}");
@@ -2084,7 +2418,16 @@ say argument of your action.",
             // The file dialog can take a few seconds to open (slow PCs). Wait for it, so the next picture
             // shows it and the model does not click the button again.
             match self.wait_for_file_dialog(cancel).await {
-                Some(true) => out.push_str(". The file dialog is open now: type the full file path, then press enter."),
+                Some(true) => {
+                    // The button names a stored letter ("Upload boarding pass"): Pip picks it himself.
+                    let label = state.attach_label.clone().unwrap_or(button_label);
+                    match self.prepick_attach(state, &label, cancel).await? {
+                        Some(note) => out.push_str(&note),
+                        None => {
+                            out.push_str(". The file dialog is open now: type the full file path, then press enter.")
+                        }
+                    }
+                }
                 Some(false) => out.push_str(". No file dialog has opened yet."),
                 None => {}
             }
@@ -2723,6 +3066,19 @@ say argument of your action.",
         if combo == "space" && focused.as_ref().is_some_and(UiElement::is_pressable) {
             risk = Risk::Commit; // Space presses the focused button
         }
+        let dialog_now = self.foreground().await.is_some_and(|w| w.is_file_dialog());
+        if is_enter
+            && !dialog_now
+            && state.prepicked_step.is_some_and(|s| s + 1 >= state.step)
+            && !matches!(tool, Tool::Key { is_commit: true, .. })
+        {
+            // Pip already picked the file and pressed Enter in the dialog: this one would land on the form.
+            tracing::info!("enter after Pip's own file pick: not pressed");
+            return Ok(ToolRun::out(
+                Risk::Act,
+                "not pressed: the file is already attached and the dialog is closed. Continue with the rest.",
+            ));
+        }
         let attach_enter = std::mem::take(&mut state.enter_after_attach);
         let dialog = is_enter && attach_enter && self.foreground().await.is_some_and(|w| w.is_file_dialog());
         if risk == Risk::Commit && is_enter && attach_enter {
@@ -2756,10 +3112,12 @@ say argument of your action.",
             return Ok(ToolRun::finish(risk, AgentOutcome::Stopped));
         }
         let c = combo.clone();
+        let page_before = (state.step, outline_shape(&state.outline), state.last_api.clone());
         self.blocking(move |pl| pl.input.key(&c)).await?;
         let just_sent = sent.is_some();
         if let Some(what) = sent {
             state.sent.push(what);
+            state.sent_page = Some(page_before);
         }
         let mut out = format!("pressed {combo}");
         if just_sent {
@@ -4445,6 +4803,7 @@ fn guard_lines(v: &Verdict, lang: Lang) -> Vec<String> {
             Signal::AsksSensitive { field } => Some(tf("guard_sensitive", lang, &[("field", field)])),
             Signal::Rushes { phrase } => Some(tf("guard_rushes", lang, &[("phrase", phrase)])),
             Signal::FakeWarning { .. } => Some(t("guard_fake_warning", lang).to_string()),
+            Signal::PaymentUnderPressure { org, .. } => Some(guard::payment_pressure_line(org.as_deref(), lang)),
         })
         .collect()
 }
@@ -5158,6 +5517,309 @@ fn merge_outline(old: &mut [OutlineItem], fresh: Vec<OutlineItem>) {
     }
 }
 
+/// Words on a page that confirm a send ("Thank you, your claim was received", "Danke, eingegangen").
+const THANKS_WORDS: &[&str] = &[
+    "thank",
+    "received",
+    "submitted",
+    "successfully",
+    "confirmation",
+    "danke",
+    "eingegangen",
+    "erhalten",
+    "bestätigung",
+    "erfolgreich",
+];
+/// Words on a page that name a problem after a send ("Please enter your IBAN without spaces").
+const ERROR_WORDS: &[&str] =
+    &["please", "bitte", "invalid", "ungültig", "required", "erforderlich", "fehlt", "missing", "error", "fehler"];
+/// Words of a file button that name no document ("Upload", "Choose file", "Datei auswählen").
+const DOC_STOP_WORDS: &[&str] = &[
+    "upload",
+    "uploads",
+    "choose",
+    "select",
+    "attach",
+    "browse",
+    "file",
+    "files",
+    "datei",
+    "dateien",
+    "hochladen",
+    "auswählen",
+    "anhängen",
+    "your",
+    "ihre",
+    "deine",
+    "dein",
+    "from",
+    "with",
+    "this",
+    "that",
+    "here",
+    "document",
+    "documents",
+    "dokument",
+    "button",
+    "knopf",
+    "click",
+    "add",
+];
+
+/// The words of a query or a button label that can name a letter: at least 4 letters, no file-button words.
+fn doc_query_words(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in text.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
+        if w.chars().count() >= 4 && !DOC_STOP_WORDS.contains(&w) && !out.iter().any(|o| o == w) {
+            out.push(w.to_string());
+        }
+    }
+    out
+}
+
+/// Other words for a letter's type (a "sick note" button means the Krankschreibung).
+fn doc_type_words(t: DocType) -> &'static str {
+    match t {
+        DocType::AuBescheinigung => "sick note krankschreibung krankmeldung arbeitsunfähigkeit certificate au",
+        DocType::Bescheid => "notice decision bescheid",
+        DocType::Rechnung => "invoice bill rechnung",
+        DocType::Mahnung => "reminder mahnung",
+        DocType::Vertrag => "contract vertrag",
+        DocType::Brief => "letter brief",
+        DocType::Sonstiges => "",
+    }
+}
+
+/// How many of `words` a letter's type, file name and summary hold (whole words, a plural s aside; a long word
+/// also as the start of a longer one: "krankschreibung" in "krankschreibungen").
+fn doc_hits(words: &[String], d: &crate::memory::DocumentRow) -> usize {
+    let file = d.path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    // What the letter IS (its type and file name) counts double against what it only talks about (a notice
+    // that says "attach your boarding pass" is not the boarding pass).
+    let name = format!("{} {} {file}", d.doc_type.as_str(), doc_type_words(d.doc_type)).to_lowercase();
+    let summary = d.extract.summary_simple.to_lowercase();
+    let hits = |hay: &str| {
+        let tokens: Vec<&str> = hay.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).collect();
+        words
+            .iter()
+            .filter(|w| {
+                tokens.iter().any(|t| {
+                    *t == w.as_str()
+                        || t.strip_suffix('s') == Some(w.as_str())
+                        || w.strip_suffix('s') == Some(*t)
+                        || (w.chars().count() >= 6 && t.starts_with(w.as_str()))
+                })
+            })
+            .count()
+    };
+    2 * hits(&name) + hits(&summary)
+}
+
+/// Most word hits first; on a tie the newest letter.
+fn rank_documents(rows: &mut [crate::memory::DocumentRow], words: &[String]) {
+    rows.sort_by(|a, b| {
+        doc_hits(words, b).cmp(&doc_hits(words, a)).then(b.created_at.cmp(&a.created_at)).then(b.id.cmp(&a.id))
+    });
+}
+
+/// Element numbers of the required text fields a Next click would leave empty (a * in the label, "required",
+/// "Pflicht"). A date field that shows only its pattern ("dd.mm.yyyy") is empty.
+fn empty_required(items: &[OutlineItem]) -> Vec<u32> {
+    let fields: Vec<&OutlineItem> = items.iter().filter(|i| i.takes_text() && i.enabled && !i.is_password).collect();
+    let empty = |i: &OutlineItem| {
+        let v = i.value.as_deref().unwrap_or("").trim();
+        v.is_empty() || shows_mask(v).is_some() || v.eq_ignore_ascii_case(i.name.trim())
+    };
+    let required = |i: &OutlineItem| {
+        let n = i.name.to_lowercase();
+        n.contains('*') || ["required", "pflicht", "erforderlich"].iter().any(|w| n.contains(w))
+    };
+    fields.iter().filter(|i| required(i) && empty(i)).map(|i| i.id).collect()
+}
+
+/// "#7 Full name, #8 E-mail, #11 No (checked)": the fields that hold a value and the ticked boxes and radios.
+fn filled_elements(items: &[OutlineItem]) -> String {
+    let parts: Vec<String> = items
+        .iter()
+        .filter_map(|i| {
+            let v = i.value.as_deref().unwrap_or("").trim();
+            if i.takes_text() && !i.is_password && !v.is_empty() && shows_mask(v).is_none() {
+                Some(format!("#{} {}", i.id, truncate(i.name.trim(), 30)))
+            } else if matches!(i.role.as_str(), "checkbox" | "radio") && v.eq_ignore_ascii_case("checked") {
+                Some(format!("#{} {} (checked)", i.id, truncate(i.name.trim(), 30)))
+            } else {
+                None
+            }
+        })
+        .collect();
+    parts.join(", ")
+}
+
+/// The sentences of a question that are not questions ("Your claim is sent. What next?" -> "Your claim is
+/// sent."). None when every sentence asks.
+fn statements(question: &str) -> Option<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for c in question.chars() {
+        cur.push(c);
+        if matches!(c, '.' | '!' | '?') {
+            let s = cur.trim().to_string();
+            if !s.ends_with('?') && s.chars().any(char::is_alphanumeric) {
+                out.push(s);
+            }
+            cur.clear();
+        }
+    }
+    let rest = cur.trim();
+    if rest.chars().any(char::is_alphanumeric) && !rest.ends_with('?') && !out.is_empty() {
+        out.push(rest.to_string());
+    }
+    (!out.is_empty()).then(|| out.join(" "))
+}
+
+/// "Send now?", "Shall I send it?", "Soll ich das abschicken?": a question whose only point is the send, which
+/// the send card asks anyway.
+fn confirms_send(question: &str) -> bool {
+    let low = question.to_lowercase();
+    if low.chars().count() > 140 || !low.contains('?') {
+        return false;
+    }
+    // A value, or a doubt ("send anyway, without the IBAN?"): that is the user's call, not the core's.
+    let asks_value = [
+        "which",
+        "what is",
+        "what's",
+        "welche",
+        "was ist",
+        "wie lautet",
+        "where",
+        " wo ",
+        "anyway",
+        "trotzdem",
+        "without",
+        "ohne",
+        "empty",
+        "leer",
+        "missing",
+        "fehlt",
+        "wrong",
+        "falsch",
+    ]
+    .iter()
+    .any(|w| low.contains(w));
+    let send =
+        ["send", "submit", "abschick", "absend", "senden", "einreich", "übermittel"].iter().any(|w| low.contains(w));
+    let asks = [
+        "shall i",
+        "should i",
+        "can i",
+        "may i",
+        "do you want me",
+        "would you like me",
+        "ready to",
+        " now?",
+        "soll ich",
+        "darf ich",
+        "jetzt?",
+        "möchtest du",
+    ]
+    .iter()
+    .any(|w| low.contains(w))
+        || low.trim_start().starts_with("send")
+        || low.trim_start().starts_with("submit");
+    send && asks && !asks_value
+}
+
+/// Words of a question that ask for a value or a file ("What is your IBAN?", "Where is the boarding pass?").
+const VALUE_WORDS: &[&str] = &[
+    "file",
+    "boarding",
+    "upload",
+    "attach",
+    "where",
+    "which",
+    "what is",
+    "what's",
+    "datei",
+    "anhäng",
+    " wo ",
+    "welche",
+    "wie lautet",
+    "was ist",
+    "number",
+    "nummer",
+    "iban",
+    "date",
+    "datum",
+    "name",
+    "e-mail",
+    "email",
+    "address",
+    "adresse",
+    "password",
+    "passwort",
+    "code",
+    "log in",
+    "login",
+    "anmeld",
+];
+
+/// The question asks for a value or a file: a real question even after a send. Only the sentences that ask
+/// count ("Your claim BX7Q2K was received. Anything else?" asks for nothing).
+fn asks_for_value(question: &str) -> bool {
+    let low = question.to_lowercase();
+    let asking: Vec<&str> = low.split_inclusive(['.', '!', '?']).map(str::trim).filter(|s| s.ends_with('?')).collect();
+    let text = if asking.is_empty() { low.clone() } else { format!(" {} ", asking.join(" ")) };
+    VALUE_WORDS.iter().any(|w| text.contains(w))
+}
+
+/// The question says there is nothing to do on this page ("nothing to fill in", "I cannot send your letter
+/// here", "What shall I do instead?") and asks for no value or file.
+fn says_nothing_to_do(question: &str) -> bool {
+    let low = question.to_lowercase();
+    let wants_value = VALUE_WORDS.iter().any(|w| low.contains(w));
+    let idle = [
+        "nothing to fill",
+        "nothing to do",
+        "nothing to send",
+        "nothing for me",
+        "nothing i can",
+        "nothing here",
+        "no form",
+        "not a form",
+        "cannot send your letter",
+        "can't send your letter",
+        "what should i do",
+        "what shall i do",
+        "what do you want me to do",
+        "what would you like me to do",
+        "nichts zu tun",
+        "nichts auszufüllen",
+        "nichts zu senden",
+        "nichts zu schicken",
+        "kein formular",
+        "was soll ich",
+    ]
+    .iter()
+    .any(|w| low.contains(w));
+    idle && !wants_value
+}
+
+/// The user said no (or "not now") to a question.
+fn is_no(answer: &str) -> bool {
+    let low = answer.trim().trim_end_matches(['.', '!']).to_lowercase();
+    ["no", "nein", "not now", "nicht jetzt", "no thanks", "nein danke", "später", "later", "skip"]
+        .contains(&low.as_str())
+}
+
+/// The end of a run on a page with nothing to do, when the model's words were only a question.
+fn nothing_here(lang: Lang) -> &'static str {
+    match lang {
+        Lang::De => "Hier gibt es nichts zu tun.",
+        Lang::En => "Nothing to do here.",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -5734,5 +6396,61 @@ mod tests {
         let task = accepted_task("„Return your questionnaire“", "letter #3");
         assert!(task.contains("\"Return your questionnaire\""), "{task}");
         assert!(!task.contains(['„', '“', '”']), "{task}");
+    }
+
+    #[test]
+    fn the_core_reads_what_a_question_means() {
+        assert_eq!(statements("Your claim is sent. Shall I do anything else?").as_deref(), Some("Your claim is sent."));
+        assert_eq!(statements("What shall I do next?"), None);
+        assert_eq!(statements("Done! Anything else?").as_deref(), Some("Done!"));
+        assert!(confirms_send("Send now?"));
+        assert!(confirms_send("Everything is filled in. Shall I send the claim?"));
+        assert!(confirms_send("Soll ich das Formular jetzt abschicken?"));
+        assert!(!confirms_send("Which e-mail shall I send it to?"));
+        assert!(!confirms_send("What is your IBAN?"));
+        assert!(!confirms_send("The IBAN field is empty. Shall I send it anyway?"), "a doubt is the user's call");
+        assert!(asks_for_value("Your claim is almost ready. What is your IBAN?"));
+        assert!(asks_for_value("Wie lautet deine IBAN?"));
+        assert!(asks_for_value("Please write all 3 in one answer: e-mail, IBAN, Yes or No."));
+        assert!(!asks_for_value("Your claim BX7Q2K was received; keep the number. Anything else?"));
+        assert!(!asks_for_value("Your claim is sent. Shall I do anything else?"));
+        assert!(says_nothing_to_do("This is only weather and town news, nothing to fill in. What shall I do instead?"));
+        assert!(says_nothing_to_do("This is a pizza order page. I cannot send your letter here. What should I do?"));
+        assert!(says_nothing_to_do("Hier gibt es nichts zu tun. Was soll ich machen?"));
+        assert!(!says_nothing_to_do("I can't find your boarding pass. What should I do?"));
+        assert!(!says_nothing_to_do("What is your booking reference?"));
+        assert!(is_no("Nein") && is_no("Not now.") && !is_no("Yes"));
+    }
+
+    #[test]
+    fn next_waits_only_for_required_empty_fields() {
+        let item = |id: u32, name: &str, value: &str| OutlineItem {
+            id,
+            role: "edit".into(),
+            name: name.into(),
+            value: Some(value.into()),
+            rect: PhysRect { x: 0, y: 0, w: 10, h: 10 },
+            offscreen: false,
+            enabled: true,
+            is_password: false,
+            localized_role: None,
+            is_date: false,
+        };
+        let page = [
+            item(1, "Booking reference *", ""),
+            item(2, "Date of flight (required)", "dd.mm.yyyy"),
+            item(3, "Flight number *", "BX 2041"),
+            item(4, "Comment", ""),
+        ];
+        assert_eq!(empty_required(&page), [1, 2]);
+        assert!(empty_required(&[item(4, "Comment", ""), item(5, "Phone", "")]).is_empty(), "nothing required");
+    }
+
+    #[test]
+    fn button_words_that_name_a_letter() {
+        assert_eq!(doc_query_words("Upload boarding pass"), ["boarding", "pass"]);
+        assert_eq!(doc_query_words("Datei auswählen"), Vec::<String>::new());
+        assert_eq!(doc_query_words("Krankschreibung hochladen"), ["krankschreibung"]);
+        assert!(doc_type_words(DocType::AuBescheinigung).contains("sick note"));
     }
 }

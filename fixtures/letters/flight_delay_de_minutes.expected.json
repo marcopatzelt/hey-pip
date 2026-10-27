@@ -1,0 +1,27 @@
+{
+  "doc_type": "brief",
+  "date": "2026-10-04",
+  "reference": "BX7Q2K",
+  "sender_contains": "Beispiel Air",
+  "recipient_contains": "Erika Beispiel",
+  "au": null,
+  "flight": {
+    "airline": "Beispiel Air",
+    "flight_no": "BX 2041",
+    "date": "2026-10-03",
+    "from": "DUS",
+    "to": "TFS",
+    "delay_minutes": 245,
+    "cancelled": false,
+    "booking_ref": "BX7Q2K"
+  },
+  "deadlines_due": [],
+  "rule_deadlines": [
+    {
+      "rule_id": "eu261_claim",
+      "due": "2029-12-31"
+    }
+  ],
+  "tip": "eu261_delay",
+  "note": "German notice of the same flight (Beispiel Air, BX 2041, DUS -> TFS, 03.10.2026), the delay only in minutes: 'Ankunftsverspätung 245 Minuten' (4 h 05 min, over 3 hours: EU 261 band 1,500-3,500 km = EUR 400 may be owed). Claim limit 31.12.2029."
+}

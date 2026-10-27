@@ -1,6 +1,7 @@
 //! Deadline rules (Rust code with source + tests, never invented by the model),
 //! NRW holidays 2026/27, reminder engine, the page guard (`guard`: warning signs, no model call) and
-//! "Good to know" tips with sources (`tips`), and money the user may be owed (`flight`: EU 261 for a delayed or
+//! "Good to know" tips with sources (`tips`) and their check on official websites (`lookup`: Muse Spark + web search, fixed
+//! generic queries, cached), and money the user may be owed (`flight`: EU 261 for a delayed or
 //! cancelled flight).
 //!
 //! OWNER: agent "memory-rules".
@@ -12,6 +13,7 @@ pub mod daily;
 pub mod engine;
 pub mod flight;
 pub mod guard;
+pub mod lookup;
 pub mod text;
 pub mod tips;
 pub mod widerspruch;

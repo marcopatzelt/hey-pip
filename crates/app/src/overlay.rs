@@ -338,6 +338,18 @@ pub enum Resend {
     DownUp,
 }
 
+/// Who pressed, as far as the hook can tell.
+#[cfg_attr(not(windows), allow(dead_code))] // only the Windows mouse hook (and the tests) use it
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presser {
+    /// A person's hand on the mouse.
+    Person,
+    /// An injected press (the agent's click through SendInput, or any other program's): never rescued.
+    Agent,
+    /// The rescued press Pip sends again itself.
+    Resend,
+}
+
 #[cfg_attr(not(windows), allow(dead_code))] // only the Windows mouse hook (and the tests) use it
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Rescue {
@@ -345,12 +357,20 @@ enum Rescue {
     Idle,
     DownOwed,
     UpOwed,
+    /// The press went out again; it has not come by yet.
     DownSent,
+    /// Press and release went out again; neither has come by yet.
+    DownUpSent,
+    /// The press sent again came by; the person's release ends the rescue.
+    Held,
+    /// The press of a sent-again pair came by; its own release ends the rescue.
+    OwnUpDue,
     /// Pip's own press was dropped (it slipped off the rect); its own release is dropped too.
     Dropped,
 }
 
-/// The hook's decisions: click-through follows the cursor; a press that would fall through is rescued.
+/// The hook's decisions: click-through follows the cursor; a person's press that would fall through is rescued.
+/// Injected presses (`LLMHF_INJECTED`, or Pip's own input tag) are the agent's: they never are.
 #[cfg_attr(not(windows), allow(dead_code))] // only the Windows mouse hook (and the tests) use it
 #[derive(Debug, Default)]
 pub struct ClickGuard {
@@ -359,13 +379,27 @@ pub struct ClickGuard {
 
 #[cfg_attr(not(windows), allow(dead_code))] // only the Windows mouse hook (and the tests) use it
 impl ClickGuard {
-    /// `own`: an event Pip sent again itself; `inside`: the cursor is on a hit rect; `click_through`: the window's
-    /// live WS_EX_TRANSPARENT bit.
-    pub fn decide(&mut self, ev: MouseEv, own: bool, inside: bool, click_through: bool) -> Verdict {
+    /// Who sent this press: `own` = Pip's input tag in dwExtraInfo, `injected` = LLMHF_INJECTED. An injected press
+    /// is Pip's rescue only while one is on its way back; every other injected press is the agent's.
+    pub fn presser(&self, own: bool, injected: bool) -> Presser {
+        if !own && !injected {
+            Presser::Person
+        } else if matches!(self.rescue, Rescue::DownSent | Rescue::DownUpSent) {
+            Presser::Resend
+        } else {
+            Presser::Agent
+        }
+    }
+
+    /// `own`: the event carries Pip's input tag (his rescue or the agent's SendInput); `injected`: LLMHF_INJECTED;
+    /// `inside`: the cursor is on a hit rect; `click_through`: the window's live WS_EX_TRANSPARENT bit.
+    pub fn decide(&mut self, ev: MouseEv, own: bool, injected: bool, inside: bool, click_through: bool) -> Verdict {
         // On a hit rect the window takes clicks, everywhere else they go through.
         let follow = Verdict::Pass((click_through == inside).then_some(!inside));
-        match ev {
-            MouseEv::LeftDown if !own => {
+        let presser = self.presser(own, injected);
+        match (ev, presser) {
+            (MouseEv::Move, _) => follow,
+            (MouseEv::LeftDown, Presser::Person) => {
                 if inside && click_through {
                     self.rescue = Rescue::DownOwed;
                     Verdict::Rescue
@@ -375,42 +409,54 @@ impl ClickGuard {
                 }
             }
             // Pip's own press (sent again) no longer lands on a rect: it must not reach the page under Pip.
-            MouseEv::LeftDown if !inside => {
+            (MouseEv::LeftDown, Presser::Resend) if !inside => {
                 self.rescue = Rescue::Dropped;
                 Verdict::Drop
             }
-            MouseEv::LeftUp if !own => match self.rescue {
+            (MouseEv::LeftDown, Presser::Resend) => {
+                self.rescue = if self.rescue == Rescue::DownUpSent { Rescue::OwnUpDue } else { Rescue::Held };
+                follow
+            }
+            // The agent's press goes where the agent aimed: never rescued, never makes Pip's window take it. Only
+            // a stale bit off the rects is fixed (the press would land on the overlay instead of the page).
+            (MouseEv::LeftDown, Presser::Agent) => Verdict::Pass((!inside && !click_through).then_some(true)),
+            (MouseEv::LeftUp, Presser::Person) => match self.rescue {
                 Rescue::DownOwed => {
                     self.rescue = Rescue::UpOwed;
                     Verdict::HoldUp
                 }
-                Rescue::DownSent | Rescue::Dropped => {
+                Rescue::DownSent | Rescue::Held | Rescue::Dropped => {
                     self.rescue = Rescue::Idle;
                     Verdict::Pass(None)
                 }
-                Rescue::Idle | Rescue::UpOwed => Verdict::Pass(None),
+                _ => Verdict::Pass(None),
             },
-            MouseEv::LeftUp if self.rescue == Rescue::Dropped => {
-                self.rescue = Rescue::Idle;
-                Verdict::Drop
-            }
-            MouseEv::LeftUp => Verdict::Pass(None),
-            MouseEv::Move | MouseEv::LeftDown => follow,
+            (MouseEv::LeftUp, _) => match self.rescue {
+                Rescue::Dropped => {
+                    self.rescue = Rescue::Idle;
+                    Verdict::Drop
+                }
+                Rescue::OwnUpDue => {
+                    self.rescue = Rescue::Idle;
+                    Verdict::Pass(None)
+                }
+                _ => Verdict::Pass(None),
+            },
         }
     }
 
     /// The hook thread is free to send again: what goes out.
     pub fn resend(&mut self) -> Resend {
-        match std::mem::take(&mut self.rescue) {
+        match self.rescue {
             Rescue::DownOwed => {
                 self.rescue = Rescue::DownSent;
                 Resend::Down
             }
-            Rescue::UpOwed => Resend::DownUp,
-            other => {
-                self.rescue = other;
-                Resend::Nothing
+            Rescue::UpOwed => {
+                self.rescue = Rescue::DownUpSent;
+                Resend::DownUp
             }
+            _ => Resend::Nothing,
         }
     }
 }
@@ -445,7 +491,7 @@ impl SyncCheck {
     }
 }
 
-/// One left press by a person, as the hook saw it (logged by the poll, so the hook itself stays fast).
+/// One left press by a person or the agent (never Pip's own rescue), as the hook saw it (logged by the poll, so the hook itself stays fast).
 #[cfg_attr(not(windows), allow(dead_code))] // only the Windows mouse hook (and the tests) use it
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClickRecord {
@@ -456,6 +502,8 @@ pub struct ClickRecord {
     pub click_through: bool,
     /// Swallowed and sent again.
     pub rescued: bool,
+    /// An injected press (the agent's click): logged as "agent click", never rescued.
+    pub agent: bool,
     /// The class of the window holding the mouse capture in the foreground thread (a browser popup), if any.
     pub capture_class: Option<String>,
 }
@@ -478,15 +526,14 @@ mod hook {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, GA_ROOT, GUITHREADINFO, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetGUIThreadInfo, GetMessageW,
-        GetWindowLongPtrW, HC_ACTION, MSG, MSLLHOOKSTRUCT, PostThreadMessageW, SetWindowLongPtrW, SetWindowsHookExW,
-        UnhookWindowsHookEx, WH_MOUSE_LL, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WS_EX_LAYERED,
-        WS_EX_TRANSPARENT, WindowFromPoint,
+        GetWindowLongPtrW, HC_ACTION, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PostThreadMessageW, SetWindowLongPtrW,
+        SetWindowsHookExW, UnhookWindowsHookEx, WH_MOUSE_LL, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+        WS_EX_LAYERED, WS_EX_TRANSPARENT, WindowFromPoint,
     };
 
-    use super::{ClickGuard, ClickRecord, MouseEv, Resend, Verdict, inside_any};
+    use pip_platform::windows::PIP_INPUT_TAG;
 
-    /// Marks the presses Pip sends again (dwExtraInfo), so the hook lets them pass.
-    const OWN_TAG: usize = 0x5049_5021;
+    use super::{ClickGuard, ClickRecord, MouseEv, Presser, Resend, Verdict, inside_any};
     /// Posted to the hook thread: send the rescued press again (SendInput must not run inside the hook).
     const WM_RESEND: u32 = WM_APP + 0x51;
 
@@ -582,11 +629,21 @@ mod hook {
             _ => return false,
         };
         let p = PhysPoint { x: ms.pt.x, y: ms.pt.y };
-        let own = ms.dwExtraInfo == OWN_TAG;
+        // Pip's tag: his rescue and every SendInput of the agent (platform sets it); LLMHF_INJECTED: any injected
+        // input, also when a tag got lost. Both mean "not a person's hand".
+        let own = ms.dwExtraInfo == PIP_INPUT_TAG;
+        let injected = ms.flags & LLMHF_INJECTED != 0;
         let inside = s.rects.read().map(|r| inside_any(&r, p)).unwrap_or(false);
         let live = click_through(s.hwnd).unwrap_or(false);
-        let verdict = s.guard.lock().map(|mut g| g.decide(ev, own, inside, live)).unwrap_or(Verdict::Pass(None));
-        if ev == MouseEv::LeftDown && !own {
+        let (verdict, presser) = s
+            .guard
+            .lock()
+            .map(|mut g| {
+                let who = g.presser(own, injected);
+                (g.decide(ev, own, injected, inside, live), who)
+            })
+            .unwrap_or((Verdict::Pass(None), Presser::Person));
+        if ev == MouseEv::LeftDown && presser != Presser::Resend {
             // The window under the cursor is looked up by the poll (WindowFromPoint sends WM_NCHITTEST to other
             // threads' windows: a busy one would stall the hook, and Windows drops a slow hook without a word).
             let rec = ClickRecord {
@@ -594,6 +651,7 @@ mod hook {
                 inside,
                 click_through: live,
                 rescued: verdict == Verdict::Rescue,
+                agent: presser == Presser::Agent,
                 capture_class: capture(),
             };
             if let Ok(tx) = s.clicks.lock() {
@@ -628,6 +686,11 @@ mod hook {
     /// One "click" log line for a person's left press (from the poll, off the hook's path). `ours`: the top-level
     /// window under the press is Pip's now; after a rescue that is expected, as the window takes clicks by then.
     pub fn log_click(hwnd: isize, c: &ClickRecord) {
+        if c.agent {
+            // The agent's own click (injected): never rescued, never a person's click.
+            tracing::info!(x = c.at.x, y = c.at.y, inside = c.inside, click_through = c.click_through, "agent click");
+            return;
+        }
         let root = unsafe { GetAncestor(WindowFromPoint(POINT { x: c.at.x, y: c.at.y }), GA_ROOT) };
         tracing::info!(
             x = c.at.x,
@@ -654,7 +717,7 @@ mod hook {
             .map(|&f| INPUT {
                 r#type: INPUT_MOUSE,
                 Anonymous: INPUT_0 {
-                    mi: MOUSEINPUT { dx: 0, dy: 0, mouseData: 0, dwFlags: f, time: 0, dwExtraInfo: OWN_TAG },
+                    mi: MOUSEINPUT { dx: 0, dy: 0, mouseData: 0, dwFlags: f, time: 0, dwExtraInfo: PIP_INPUT_TAG },
                 },
             })
             .collect();
@@ -868,40 +931,40 @@ mod tests {
     fn click_through_follows_the_cursor() {
         let mut g = ClickGuard::default();
         // onto a bubble while the window lets clicks through: take clicks
-        assert_eq!(g.decide(Move, false, true, true), Verdict::Pass(Some(false)));
+        assert_eq!(g.decide(Move, false, false, true, true), Verdict::Pass(Some(false)));
         // still on it, bit already off: nothing to write
-        assert_eq!(g.decide(Move, false, true, false), Verdict::Pass(None));
+        assert_eq!(g.decide(Move, false, false, true, false), Verdict::Pass(None));
         // off the bubble: let clicks through again
-        assert_eq!(g.decide(Move, false, false, false), Verdict::Pass(Some(true)));
-        assert_eq!(g.decide(Move, false, false, true), Verdict::Pass(None));
+        assert_eq!(g.decide(Move, false, false, false, false), Verdict::Pass(Some(true)));
+        assert_eq!(g.decide(Move, false, false, false, true), Verdict::Pass(None));
         // the agent's own cursor jumps count the same (it moves over Pip too)
-        assert_eq!(g.decide(Move, true, true, true), Verdict::Pass(Some(false)));
+        assert_eq!(g.decide(Move, true, true, true, true), Verdict::Pass(Some(false)));
     }
 
     #[test]
     fn a_press_on_a_bubble_that_would_fall_through_is_sent_again() {
         let mut g = ClickGuard::default();
         // "Continue" pressed while the bit is still set (it lagged): swallow, take clicks, send again
-        assert_eq!(g.decide(LeftDown, false, true, true), Verdict::Rescue);
+        assert_eq!(g.decide(LeftDown, false, false, true, true), Verdict::Rescue);
         assert_eq!(g.resend(), Resend::Down);
         // the press Pip sent again passes (window takes clicks now)
-        assert_eq!(g.decide(LeftDown, true, true, false), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftDown, true, true, true, false), Verdict::Pass(None));
         // the person's release passes and ends the rescue
-        assert_eq!(g.decide(LeftUp, false, true, false), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftUp, false, false, true, false), Verdict::Pass(None));
         assert_eq!(g.resend(), Resend::Nothing);
     }
 
     #[test]
     fn a_quick_release_before_the_press_went_out_is_held_back() {
         let mut g = ClickGuard::default();
-        assert_eq!(g.decide(LeftDown, false, true, true), Verdict::Rescue);
+        assert_eq!(g.decide(LeftDown, false, false, true, true), Verdict::Rescue);
         // the release arrives first: hold it, both go out in order
-        assert_eq!(g.decide(LeftUp, false, true, false), Verdict::HoldUp);
+        assert_eq!(g.decide(LeftUp, false, false, true, false), Verdict::HoldUp);
         assert_eq!(g.resend(), Resend::DownUp);
-        assert_eq!(g.decide(LeftDown, true, true, false), Verdict::Pass(None));
-        assert_eq!(g.decide(LeftUp, true, true, false), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftDown, true, true, true, false), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftUp, true, true, true, false), Verdict::Pass(None));
         // nothing owed any more: a later release passes
-        assert_eq!(g.decide(LeftUp, false, true, false), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftUp, false, false, true, false), Verdict::Pass(None));
         assert_eq!(g.resend(), Resend::Nothing);
     }
 
@@ -909,48 +972,104 @@ mod tests {
     fn presses_that_need_no_rescue_pass() {
         let mut g = ClickGuard::default();
         // on the bubble, window already takes clicks
-        assert_eq!(g.decide(LeftDown, false, true, false), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftDown, false, false, true, false), Verdict::Pass(None));
         // on the page, click-through on
-        assert_eq!(g.decide(LeftDown, false, false, true), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftDown, false, false, false, true), Verdict::Pass(None));
         // on the page but the bit is off (a stale state): turn it on first, the press still passes
-        assert_eq!(g.decide(LeftDown, false, false, false), Verdict::Pass(Some(true)));
-        // the agent's own press on a rect is never swallowed
-        assert_eq!(g.decide(LeftDown, true, true, true), Verdict::Pass(Some(false)));
+        assert_eq!(g.decide(LeftDown, false, false, false, false), Verdict::Pass(Some(true)));
+        // the agent's own press on a rect is never swallowed, and never makes Pip take it
+        assert_eq!(g.decide(LeftDown, true, true, true, true), Verdict::Pass(None));
         assert_eq!(g.resend(), Resend::Nothing);
         for _ in 0..3 {
-            assert_eq!(g.decide(LeftUp, false, false, true), Verdict::Pass(None));
+            assert_eq!(g.decide(LeftUp, false, false, false, true), Verdict::Pass(None));
         }
     }
 
     #[test]
     fn a_press_sent_again_that_slipped_off_pip_never_reaches_the_page() {
         let mut g = ClickGuard::default();
-        assert_eq!(g.decide(LeftDown, false, true, true), Verdict::Rescue);
+        assert_eq!(g.decide(LeftDown, false, false, true, true), Verdict::Rescue);
         assert_eq!(g.resend(), Resend::Down);
         // the cursor left the bubble's edge in the meantime: Pip's own press is swallowed, not let through
-        assert_eq!(g.decide(LeftDown, true, false, false), Verdict::Drop);
+        assert_eq!(g.decide(LeftDown, true, true, false, false), Verdict::Drop);
         // the person's release passes (a lone release does nothing on a page) and ends it
-        assert_eq!(g.decide(LeftUp, false, false, false), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftUp, false, false, false, false), Verdict::Pass(None));
         assert_eq!(g.resend(), Resend::Nothing);
         // same with press and release sent together: both are swallowed
-        assert_eq!(g.decide(LeftDown, false, true, true), Verdict::Rescue);
-        assert_eq!(g.decide(LeftUp, false, true, false), Verdict::HoldUp);
+        assert_eq!(g.decide(LeftDown, false, false, true, true), Verdict::Rescue);
+        assert_eq!(g.decide(LeftUp, false, false, true, false), Verdict::HoldUp);
         assert_eq!(g.resend(), Resend::DownUp);
-        assert_eq!(g.decide(LeftDown, true, false, false), Verdict::Drop);
-        assert_eq!(g.decide(LeftUp, true, false, false), Verdict::Drop);
+        assert_eq!(g.decide(LeftDown, true, true, false, false), Verdict::Drop);
+        assert_eq!(g.decide(LeftUp, true, true, false, false), Verdict::Drop);
         // and the guard is clean again
-        assert_eq!(g.decide(LeftDown, false, false, true), Verdict::Pass(None));
-        assert_eq!(g.decide(LeftUp, false, false, true), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftDown, false, false, false, true), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftUp, false, false, false, true), Verdict::Pass(None));
     }
 
     #[test]
     fn a_new_press_forgets_an_old_rescue() {
         let mut g = ClickGuard::default();
-        assert_eq!(g.decide(LeftDown, false, true, true), Verdict::Rescue);
+        assert_eq!(g.decide(LeftDown, false, false, true, true), Verdict::Rescue);
         assert_eq!(g.resend(), Resend::Down);
         // the release got lost somewhere; the next press on the page is an ordinary one
-        assert_eq!(g.decide(LeftDown, false, false, true), Verdict::Pass(None));
-        assert_eq!(g.decide(LeftUp, false, false, true), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftDown, false, false, false, true), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftUp, false, false, false, true), Verdict::Pass(None));
+        assert_eq!(g.resend(), Resend::Nothing);
+    }
+
+    /// One left press of a fresh guard: (own tag, injected, inside, click-through) -> verdict.
+    fn press(own: bool, injected: bool, inside: bool, live: bool) -> Verdict {
+        ClickGuard::default().decide(LeftDown, own, injected, inside, live)
+    }
+
+    #[test]
+    fn an_injected_press_is_never_rescued_and_never_takes_clicks() {
+        // VM 27.10. 10:32:59: the agent's click on "Open form" next to Pip was rescued onto Pip.
+        assert_eq!(press(false, true, true, true), Verdict::Pass(None), "injected (no tag) + inside + click-through");
+        assert_eq!(press(true, true, true, true), Verdict::Pass(None), "the agent's tagged press");
+        assert_eq!(press(true, false, true, true), Verdict::Pass(None), "the tag alone");
+        // inside with the window taking clicks: it stays as it is (never toggled)
+        assert_eq!(press(false, true, true, false), Verdict::Pass(None));
+        // outside with a stale bit: the press goes to the page, not to the overlay
+        assert_eq!(press(false, true, false, false), Verdict::Pass(Some(true)));
+        assert_eq!(press(false, true, false, true), Verdict::Pass(None));
+        // a person's press in the same spot still is rescued
+        assert_eq!(press(false, false, true, true), Verdict::Rescue);
+        assert_eq!(press(false, false, true, false), Verdict::Pass(None));
+    }
+
+    #[test]
+    fn who_pressed() {
+        let mut g = ClickGuard::default();
+        assert_eq!(g.presser(false, false), Presser::Person);
+        assert_eq!(g.presser(true, true), Presser::Agent);
+        assert_eq!(g.presser(false, true), Presser::Agent);
+        // the agent's press leaves the guard alone: nothing owed, nothing to send
+        assert_eq!(g.decide(LeftDown, true, true, true, true), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftUp, true, true, true, true), Verdict::Pass(None));
+        assert_eq!(g.resend(), Resend::Nothing);
+        // while a rescued press is on its way back, the tagged press is Pip's own
+        assert_eq!(g.decide(LeftDown, false, false, true, true), Verdict::Rescue);
+        // owed but not sent yet: an injected press now is still the agent's
+        assert_eq!(g.presser(true, true), Presser::Agent);
+        assert_eq!(g.resend(), Resend::Down);
+        assert_eq!(g.presser(true, true), Presser::Resend);
+        assert_eq!(g.decide(LeftDown, true, true, true, false), Verdict::Pass(None));
+        // once it came by, a later injected press is the agent's again
+        assert_eq!(g.presser(true, true), Presser::Agent);
+        assert_eq!(g.decide(LeftUp, false, false, true, false), Verdict::Pass(None));
+        assert_eq!(g.presser(false, true), Presser::Agent);
+    }
+
+    #[test]
+    fn an_agent_click_during_a_rescue_does_not_end_it() {
+        let mut g = ClickGuard::default();
+        assert_eq!(g.decide(LeftDown, false, false, true, true), Verdict::Rescue);
+        // an agent press slips in before the hook thread sent the person's press again: it passes, the rescue stays
+        assert_eq!(g.decide(LeftDown, true, true, false, true), Verdict::Pass(None));
+        assert_eq!(g.resend(), Resend::Down);
+        assert_eq!(g.decide(LeftDown, true, true, true, false), Verdict::Pass(None));
+        assert_eq!(g.decide(LeftUp, false, false, true, false), Verdict::Pass(None));
         assert_eq!(g.resend(), Resend::Nothing);
     }
 

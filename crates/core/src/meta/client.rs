@@ -24,6 +24,9 @@ pub struct MetaClient {
     pub(crate) key: String,
     usage: Arc<UsageCounter>,
     retry: RetryPolicy,
+    /// Model name sent instead of `MODEL_SPARK` in every Responses request (the CLI's eval runs on invented data
+    /// set it from `EVAL_MODEL`; the app never does).
+    spark_model: Option<String>,
 }
 
 impl fmt::Debug for MetaClient {
@@ -121,6 +124,23 @@ impl MetaClient {
             key: key.into(),
             usage: Arc::default(),
             retry: RetryPolicy::default(),
+            spark_model: None,
+        }
+    }
+
+    /// Send `model` instead of `MODEL_SPARK` in every Responses request of this client (other models, e.g. SAM,
+    /// stay). For the CLI's eval runs on invented data only; the app never calls it. The token counter is shared
+    /// with the client it was cloned from.
+    pub fn with_spark_model(mut self, model: impl Into<String>) -> Self {
+        self.spark_model = Some(model.into()).filter(|m: &String| !m.trim().is_empty());
+        self
+    }
+
+    /// The model name a request for `model` goes out with (`with_spark_model` replaces Muse Spark only).
+    pub fn model_for(&self, model: &str) -> String {
+        match &self.spark_model {
+            Some(m) if model == super::MODEL_SPARK => m.clone(),
+            _ => model.to_string(),
         }
     }
 
@@ -200,6 +220,7 @@ impl MetaClient {
     pub async fn respond(&self, req: &ResponseRequest) -> Result<ResponseOutput> {
         let mut body = req.to_json();
         body["stream"] = Value::Bool(false);
+        body["model"] = Value::String(self.model_for(&req.model));
         // PIP_DUMP_REQ=folder: keep each request body for latency tests (contains the screenshot).
         if let Ok(dir) = std::env::var("PIP_DUMP_REQ") {
             let n =
@@ -218,6 +239,7 @@ impl MetaClient {
     pub fn respond_stream(&self, req: &ResponseRequest) -> impl Stream<Item = Result<ResponseEvent>> + Send + 'static {
         let mut body = req.to_json();
         body["stream"] = Value::Bool(true);
+        body["model"] = Value::String(self.model_for(&req.model));
         self.stream_json(body)
     }
 
@@ -324,6 +346,16 @@ fn redact(msg: String, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spark_model_replaces_only_muse_spark() {
+        let c = MetaClient::new("https://x/v1/", "k");
+        assert_eq!(c.model_for(super::super::MODEL_SPARK), super::super::MODEL_SPARK);
+        let e = c.clone().with_spark_model("muse-spark-other");
+        assert_eq!(e.model_for(super::super::MODEL_SPARK), "muse-spark-other");
+        assert_eq!(e.model_for("sam-3.1"), "sam-3.1");
+        assert_eq!(c.clone().with_spark_model(" ").model_for(super::super::MODEL_SPARK), super::super::MODEL_SPARK);
+    }
 
     #[test]
     fn debug_hides_key() {

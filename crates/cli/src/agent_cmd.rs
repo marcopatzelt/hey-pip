@@ -43,6 +43,9 @@ pub struct Options {
     /// Named targets (from <screen>.boxes.json) whose click shows the next screen: a cookie button, "Next", a
     /// submit that leads to an error screen.
     pub advance_on_click: Vec<String>,
+    /// Inline documents (an eval task's `documents`, expected.json shape plus `file`): the summary a FILE answer
+    /// stores its file with (`file => letters/boarding_pass_bx2041.pdf`, see `file_answer`).
+    pub documents: Vec<Value>,
 }
 
 impl Options {
@@ -61,8 +64,28 @@ impl Options {
             seed_letter: true,
             seed_facts: true,
             advance_on_click: Vec::new(),
+            documents: Vec::new(),
         }
     }
+}
+
+/// `EVAL_MODEL` (e.g. `muse-spark-1.3-contributor`): the model name the eval's agent runs and letter reads send
+/// instead of Muse Spark's default. Eval runs on invented data only; the app never reads it.
+pub fn eval_model() -> Option<String> {
+    std::env::var("EVAL_MODEL").ok().map(|m| m.trim().to_string()).filter(|m| !m.is_empty())
+}
+
+/// The client with `EVAL_MODEL` in place of Muse Spark (the same token counter), or the client as it is.
+pub fn with_eval_model(meta: Arc<pip_core::meta::MetaClient>) -> Arc<pip_core::meta::MetaClient> {
+    match eval_model() {
+        Some(m) => Arc::new(meta.as_ref().clone().with_spark_model(m)),
+        None => meta,
+    }
+}
+
+/// The model the dry run's agent steps use: `EVAL_MODEL` or Muse Spark's default.
+pub fn model_name() -> String {
+    eval_model().unwrap_or_else(|| pip_core::meta::MODEL_SPARK.to_string())
 }
 
 /// A memory condition for measuring how much Pip relies on what it knows (eval `memory`, CLI `--memory`).
@@ -149,9 +172,30 @@ pub struct Report {
     /// The run ended Done, but its last model turn was a question with options (`ask_user` with buttons, which
     /// the core turns into the closing bubble): the user was left with an open question, not a finished task.
     pub ended_on_question: bool,
+    /// Questions asked AFTER a send card was approved ("What shall I do next?" once the claim is sent): a sent
+    /// task must end with a result, not with a new question.
+    pub asked_after_send: u32,
+    /// What the page guard said: the text of each guard bubble (its buttons are `guard:…`) and the signs of each
+    /// `guard_warned` memory event, in order.
+    pub guard_text: Vec<String>,
+    /// Files the dry run handed Pip on a FILE answer (stored as documents), as stored paths.
+    pub files_given: Vec<String>,
 }
 
 impl Report {
+    /// The run's question texts (without the dry run's answer) plus the closing question of a run that ended
+    /// NeedsUser, when it is not the last asked one (a question that timed out ends the run with its own text).
+    pub fn question_texts(&self) -> Vec<String> {
+        let mut texts: Vec<String> =
+            self.asked.iter().map(|a| a.rsplit_once(" -> ").map_or(a.as_str(), |(q, _)| q).to_string()).collect();
+        if let Some(AgentOutcome::NeedsUser(q)) = &self.outcome
+            && texts.last().is_none_or(|l| l.trim() != q.trim())
+        {
+            texts.push(q.clone());
+        }
+        texts
+    }
+
     /// Every expected value (trimmed) went into a field in this run.
     pub fn typed_all(&self, expect: &[String]) -> bool {
         expect.iter().all(|e| self.typed.iter().any(|t| t.trim() == e.trim()))
@@ -333,14 +377,15 @@ fn when_rule(screen: &Path) -> Option<(String, regex::Regex)> {
     Some((field, pattern))
 }
 
-/// Text field values of the PAGE ELEMENTS by name.
+/// Text field and checkbox values of the PAGE ELEMENTS by name (a checkbox reads "checked" / "unchecked", so a
+/// when.json can show an error screen for a box left empty).
 fn field_values_by_name(fake: &FakePlatform) -> BTreeMap<String, String> {
     fake.outline
         .lock()
         .map(|items| {
             items
                 .iter()
-                .filter(|i| i.takes_text())
+                .filter(|i| i.takes_text() || i.role == "checkbox")
                 .map(|i| (i.name.clone(), i.value.clone().unwrap_or_default()))
                 .collect()
         })
@@ -634,8 +679,9 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let platform = Platform { screen: platform.screen, input: Arc::new(scroller), ui: platform.ui };
     let (bus, _commands) = Bus::new();
     let opener_quiet = o.quiet;
+    say(format!("Model: {}", model_name()));
     let agent = Agent::new(
-        ctx.meta()?,
+        with_eval_model(ctx.meta()?),
         platform,
         ctx.memory.clone(),
         Gate::new(ctx.config.demo_mode).with_fixtures(&[&ctx.config.fixtures_dir]),
@@ -643,7 +689,8 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         ctx.clock.clone(),
     )
     .with_pace(Duration::ZERO)
-    .with_approval_timeout(Duration::from_secs(60))
+    // The dry run answers at once; only a question it leaves open on purpose ("(no answer)") waits this long.
+    .with_approval_timeout(Duration::from_secs(20))
     .with_url_opener(Arc::new(move |url: &str| {
         if !opener_quiet {
             println!("    (dry run: would open {url})");
@@ -659,9 +706,27 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let answers = Arc::new(Mutex::new(o.answers.iter().filter(|a| !is_decline(a)).cloned().collect::<VecDeque<_>>()));
     let questions = Arc::new(Mutex::new(Vec::<String>::new()));
     let defaults = Arc::new(Mutex::new(0u32));
+    let after_send = Arc::new(Mutex::new(0u32));
+    let guard_text = Arc::new(Mutex::new(Vec::<String>::new()));
+    let files_given = Arc::new(Mutex::new(Vec::<String>::new()));
+    let files: FileStore = {
+        let (memory, fixtures, docs, now) =
+            (ctx.memory.clone(), ctx.config.fixtures_dir.clone(), o.documents.clone(), ctx.now);
+        Arc::new(move |rel: &str| store_file(&memory, &fixtures, &docs, rel, now))
+    };
     let printer = tokio::spawn(print_events(
         bus.clone(),
-        Answering { approve: o.approve, answers, questions: questions.clone(), decline, defaults: defaults.clone() },
+        Answering {
+            approve: o.approve,
+            answers,
+            questions: questions.clone(),
+            decline,
+            defaults: defaults.clone(),
+            files: Some(files),
+            after_send: after_send.clone(),
+            guard_text: guard_text.clone(),
+            files_given: files_given.clone(),
+        },
         ctx.lang,
         o.quiet,
         boxes.clone(),
@@ -743,6 +808,13 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         let typed_advance = typed && (next_filled || (screen_i == 0 && o.advance_on_click.is_empty()));
         let progressed = typed_advance || clicked_advance || approved_now > approved_before;
         approved_before = approved_now;
+        // Typed AND clicked "Next" in one step: the "-filled" picture is only the in-between state; the page that
+        // follows the click is what is in front now (else the dry run keeps showing the filled form, and the
+        // agent's second "Next" is refused as a repeat on an unchanged page).
+        if typed && next_filled && clicked_advance && screen_i + 2 < screens.len() {
+            screen_i += 1;
+            say(format!("  [screen] passed {} (typed and clicked on in one step)", screens[screen_i].display()));
+        }
         if progressed && screen_i + 1 < screens.len() {
             screen_i += 1;
             if is_error(&screens[screen_i])
@@ -788,6 +860,21 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
     let by_hand_secs = learned.as_ref().map_or(0, |l| l.by_hand_secs);
     let ended_on_question = matches!(outcome, Some(AgentOutcome::Done(_))) && last_turn_question;
     let defaults = *defaults.lock().expect("defaults");
+    // The guard's own record: the signs of each warning event of this run (after the bubbles, in order).
+    let mut guard_text = guard_text.lock().expect("guard text").clone();
+    let warned_now = count_events(&ctx.memory, "guard_warned").saturating_sub(warned_before);
+    if warned_now > 0 {
+        let mut signs: Vec<String> = ctx
+            .memory
+            .recent_events(u32::MAX)?
+            .into_iter()
+            .filter(|e| e.kind == "guard_warned")
+            .take(warned_now as usize)
+            .map(|e| e.text)
+            .collect();
+        signs.reverse();
+        guard_text.extend(signs);
+    }
     let report = Report {
         outcome,
         steps: state.step,
@@ -804,6 +891,9 @@ pub async fn run(ctx: &Ctx, o: Options) -> Result<Report> {
         guard_overridden: count_events(&ctx.memory, "guard_overridden").saturating_sub(overridden_before),
         defaults,
         ended_on_question,
+        asked_after_send: *after_send.lock().expect("after send"),
+        guard_text,
+        files_given: files_given.lock().expect("files").clone(),
     };
 
     if !o.quiet {
@@ -867,6 +957,60 @@ struct Answering {
     decline: bool,
     /// Questions answered by the fallback (decline or first button).
     defaults: Arc<Mutex<u32>>,
+    /// A FILE answer's fixture path -> the stored path Pip gets as the answer (the file stored as a document).
+    files: Option<FileStore>,
+    /// The cards so far, to count questions asked after an approved send card.
+    after_send: Arc<Mutex<u32>>,
+    /// Guard bubble texts.
+    guard_text: Arc<Mutex<Vec<String>>>,
+    /// Files handed over (stored paths).
+    files_given: Arc<Mutex<Vec<String>>>,
+}
+
+/// Stores a fixture file as a document and returns its stored path (None: no such file in fixtures/).
+type FileStore = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// The answer "(no answer)": the dry run leaves that question open, like a user who does not know (the core
+/// waits for its timeout and ends the run NeedsUser with the question).
+pub const NO_ANSWER: &str = "(no answer)";
+
+/// A FILE answer: the value of an answer names a file in fixtures/ (`file => letters/boarding_pass_bx2041.pdf`,
+/// keyed like other answers: `"boarding pass, file => letters/boarding_pass_bx2041.pdf"`). Only a relative path
+/// with an extension counts.
+pub fn file_answer_path(value: &str) -> Option<&str> {
+    let v = value.trim();
+    let name = v.rsplit(['/', '\\']).next()?;
+    (!v.is_empty() && !v.starts_with('/') && !v.contains(' ') && name.contains('.') && v.contains('/')).then_some(v)
+}
+
+/// Stores `rel` (a fixture) as a document with the summary of the matching inline `documents` entry (else a plain
+/// stand-in naming the file) and returns its stored path; None when the file is not in fixtures/.
+fn store_file(
+    ctx_memory: &Arc<pip_core::memory::Memory>,
+    fixtures: &Path,
+    docs: &[Value],
+    rel: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> Option<String> {
+    let file = fixtures.join(rel);
+    if !file.is_file() {
+        return None;
+    }
+    let name = file.file_name()?.to_str()?.to_string();
+    let doc = docs
+        .iter()
+        .find(|d| d["file"].as_str().is_some_and(|f| f.ends_with(&name)))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({"doc_type": "sonstiges", "sender_contains": "", "summary": format!("File {name} the user gave Pip")}));
+    let clock = Arc::new(FixedClock::new(now));
+    let rules = RuleEngine::new(ctx_memory.clone(), clock.clone() as Arc<dyn Clock>);
+    match crate::letters::seed_document(ctx_memory, &rules, &clock, &doc, &file, now) {
+        Ok(_) => Some(file.display().to_string()),
+        Err(e) => {
+            tracing::warn!(error = %e, "dry run: storing the file answer failed");
+            None
+        }
+    }
 }
 
 /// The `decline` entry of an answer list (any case).
@@ -989,7 +1133,8 @@ async fn print_events(
     boxes: Arc<Mutex<Boxes>>,
     cards: Arc<Mutex<Vec<CardSeen>>>,
 ) {
-    let Answering { approve, answers, questions, decline, defaults } = answering;
+    let Answering { approve, answers, questions, decline, defaults, files, after_send, guard_text, files_given } =
+        answering;
     let mut rx = bus.to_ui.subscribe();
     let mut last_point: Option<PhysRect> = None;
     let out = |s: String| {
@@ -1007,11 +1152,33 @@ async fn print_events(
             UiEvent::Progress { text } if !text.is_empty() => out(format!("    Pip: {text}")),
             UiEvent::Bubble { text, buttons, question_id } => {
                 out(format!("    Pip says: {text}"));
+                if buttons.iter().any(|b| b.id.starts_with("guard:")) {
+                    guard_text.lock().expect("guard text").push(text.clone());
+                }
                 if let Some(q) = question_id {
-                    let (choice, by_default) =
+                    if cards.lock().expect("cards").iter().any(|c| c.approved && !c.attach) {
+                        *after_send.lock().expect("after send") += 1;
+                    }
+                    let (mut choice, by_default) =
                         pick_answer(&mut answers.lock().expect("answers"), &buttons, &text, decline);
                     let mark = if by_default { " (default)" } else { "" };
                     *defaults.lock().expect("defaults") += u32::from(by_default);
+                    let open = buttons.iter().any(|b| b.id == pip_core::agent::loop_::TEXT_ANSWER);
+                    // A FILE answer: the fixture is stored as a document, Pip gets its stored path.
+                    if open
+                        && let Some(rel) = file_answer_path(&choice)
+                        && let Some(store) = &files
+                        && let Some(stored) = store(rel)
+                    {
+                        files_given.lock().expect("files").push(stored.clone());
+                        choice = stored;
+                    }
+                    if open && choice.trim() == NO_ANSWER {
+                        // Left open on purpose: the user does not know; the core times out and ends NeedsUser.
+                        questions.lock().expect("questions").push(format!("{text} -> {NO_ANSWER}"));
+                        out("    (dry run leaves the question open)".into());
+                        continue;
+                    }
                     questions.lock().expect("questions").push(format!("{text} -> {choice}{mark}"));
                     out(format!("    (dry run answers: {choice})"));
                     bus.pending.resolve_answer(q, choice);
@@ -1194,6 +1361,9 @@ mod tests {
             guard_overridden: 0,
             defaults: 0,
             ended_on_question: false,
+            asked_after_send: 0,
+            guard_text: vec![],
+            files_given: vec![],
         };
         assert!(r.gate_held_at_submit());
         r.clicks.push((PhysPoint { x: 859, y: 940 }, Some("submit_button".into())));
@@ -1301,7 +1471,83 @@ mod tests {
             guard_overridden: 0,
             defaults: 0,
             ended_on_question: false,
+            asked_after_send: 0,
+            guard_text: vec![],
+            files_given: vec![],
         }
+    }
+
+    #[test]
+    fn a_file_answer_names_a_fixture_path_and_stores_it_as_a_document() {
+        assert_eq!(file_answer_path("letters/boarding_pass_bx2041.pdf"), Some("letters/boarding_pass_bx2041.pdf"));
+        for not in ["7654321", "Erika Beispiel", "erika.beispiel@example.com", "/etc/passwd", "a b/c.pdf", NO_ANSWER] {
+            assert_eq!(file_answer_path(not), None, "{not}");
+        }
+        // Keyed like other answers: a question that names the boarding pass gets the path.
+        let mut q: VecDeque<String> =
+            ["email => erika.beispiel@example.com", "boarding pass, file => letters/boarding_pass_bx2041.pdf"]
+                .map(String::from)
+                .into();
+        let open = [Button::new(pip_core::agent::loop_::TEXT_ANSWER, "", true)];
+        let (a, _) = pick_answer(&mut q, &open, "Where is your boarding pass?", false);
+        assert_eq!(a, "letters/boarding_pass_bx2041.pdf");
+        // Stored as a document with the summary of the task's inline entry; the answer is the stored path.
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        let memory = Arc::new(pip_core::memory::Memory::open_in_memory().unwrap());
+        let now = pip_core::rules::local_at(chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(), 12, 0);
+        let docs = [serde_json::json!({"file": "letters/boarding_pass_bx2041.pdf", "doc_type": "sonstiges",
+            "sender_contains": "Beispiel Air", "date": "2026-10-01", "summary": "Boarding pass BX 2041"})];
+        let stored = store_file(&memory, &fixtures, &docs, "letters/boarding_pass_bx2041.pdf", now).unwrap();
+        assert!(stored.ends_with("boarding_pass_bx2041.pdf"), "{stored}");
+        let found = memory.search_documents("boarding", 5).unwrap();
+        assert!(found.iter().any(|d| d.path.ends_with("boarding_pass_bx2041.pdf")));
+        assert!(store_file(&memory, &fixtures, &docs, "letters/nope.pdf", now).is_none());
+    }
+
+    #[test]
+    fn question_texts_add_the_closing_question_once() {
+        let mut r = report_with(vec![]);
+        r.asked = vec!["Where is your boarding pass file? -> (no answer)".into()];
+        r.outcome = Some(AgentOutcome::NeedsUser("Where is your boarding pass file?".into()));
+        assert_eq!(r.question_texts(), ["Where is your boarding pass file?"], "a timed-out question ends the run");
+        r.outcome = Some(AgentOutcome::NeedsUser("Please add your boarding pass yourself.".into()));
+        assert_eq!(r.question_texts().len(), 2);
+        r.outcome = Some(AgentOutcome::Done("ok".into()));
+        assert_eq!(r.question_texts().len(), 1);
+    }
+
+    #[test]
+    fn eval_model_comes_from_the_env_for_the_dry_run_only() {
+        // The app's config never reads EVAL_MODEL; the dry run's client does (other tests leave it unset).
+        let cfg = pip_core::config::Config::from_lookup(|k| (k == "EVAL_MODEL").then(|| "x".to_string()));
+        assert_eq!(cfg.agent_model, pip_core::meta::MODEL_SPARK, "the app keeps its model");
+        let m = Arc::new(pip_core::meta::MetaClient::new("http://127.0.0.1:9", "k"));
+        let key = "EVAL_MODEL";
+        let before = std::env::var_os(key);
+        // SAFETY: test-only; no other test reads or writes EVAL_MODEL.
+        unsafe { std::env::set_var(key, "muse-spark-1.3-contributor") };
+        assert_eq!(eval_model().as_deref(), Some("muse-spark-1.3-contributor"));
+        assert_eq!(model_name(), "muse-spark-1.3-contributor");
+        assert_eq!(with_eval_model(m.clone()).model_for(pip_core::meta::MODEL_SPARK), "muse-spark-1.3-contributor");
+        unsafe { std::env::set_var(key, "  ") };
+        assert_eq!(eval_model(), None);
+        assert_eq!(with_eval_model(m).model_for(pip_core::meta::MODEL_SPARK), pip_core::meta::MODEL_SPARK);
+        match before {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
+    #[test]
+    fn a_when_rule_reads_a_checkbox_left_empty() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/screens");
+        let err = dir.join("demo-air-v3-step3-error.png");
+        let mut now = BTreeMap::new();
+        assert!(error_screen_applies(&err, &now), "no box in the list: empty");
+        now.insert("The details are correct".to_string(), "unchecked".to_string());
+        assert!(error_screen_applies(&err, &now));
+        now.insert("The details are correct".to_string(), "checked".to_string());
+        assert!(!error_screen_applies(&err, &now), "ticked: the page accepts");
     }
 
     #[test]
@@ -1414,6 +1660,9 @@ mod tests {
             guard_overridden: 0,
             defaults: 0,
             ended_on_question: false,
+            asked_after_send: 0,
+            guard_text: vec![],
+            files_given: vec![],
         };
         let want = ["Erika Beispiel".to_string(), "G123456789".to_string()];
         assert!(!r.typed_all(&want));

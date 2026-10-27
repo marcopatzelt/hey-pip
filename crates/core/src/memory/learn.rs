@@ -286,6 +286,13 @@ pub fn learn_from_letter_text(mem: &Memory, doc_id: i64, x: &DocumentExtract, te
     let mut facts: Vec<(&str, String)> = Vec::new();
     if let Some(p) = x.person.as_deref().map(str::trim).filter(|p| !p.is_empty() && p.chars().count() <= 80) {
         facts.push(("full_name", p.to_string()));
+    } else if let Some(r) = person_name(&x.recipient).filter(|r| Some(r) != insurer.as_ref())
+        && mem.profile_get("full_name")?.is_none()
+        && mem.profile_get("name")?.is_none_or(|n| n.trim().is_empty())
+    {
+        // No person on the letter: the recipient is the user when it reads like a person's name ("Erika
+        // Beispiel", "Frau Erika Beispiel"), never an office or a firm.
+        facts.push(("full_name", r));
     }
     if let Some(name) = &insurer {
         facts.push(("insurer", name.clone()));
@@ -318,6 +325,71 @@ pub fn learn_from_letter_text(mem: &Memory, doc_id: i64, x: &DocumentExtract, te
         }
     }
     Ok(saved)
+}
+
+/// Words in a recipient that make it an organisation, not a person.
+const ORG_WORDS: &[&str] = &[
+    "health",
+    "kasse",
+    "krankenkasse",
+    "versicherung",
+    "insurance",
+    "gmbh",
+    "ag",
+    "kg",
+    "e.v.",
+    "ev",
+    "amt",
+    "stadt",
+    "gemeinde",
+    "air",
+    "airline",
+    "airlines",
+    "airways",
+    "bank",
+    "sparkasse",
+    "university",
+    "universität",
+    "hochschule",
+    "praxis",
+    "dr",
+    "ltd",
+    "inc",
+    "company",
+    "service",
+    "center",
+    "zentrum",
+    "team",
+    "aok",
+    "tk",
+    "barmer",
+    "dak",
+    "office",
+    "büro",
+    "verwaltung",
+    "behörde",
+    "jobcenter",
+    "agentur",
+    "finanzamt",
+    "customer",
+];
+
+/// "Frau Erika Beispiel" / "Erika Beispiel" -> "Erika Beispiel": two to four capitalised words, no digits, no
+/// organisation words. None for "Evergreen Health" or an address line.
+fn person_name(recipient: &str) -> Option<String> {
+    let line = recipient.lines().next().unwrap_or("").trim();
+    let words: Vec<&str> = line
+        .split_whitespace()
+        .filter(|w| !matches!(w.to_lowercase().trim_end_matches('.'), "frau" | "herr" | "herrn" | "mr" | "mrs" | "ms"))
+        .collect();
+    let ok = (2..=4).contains(&words.len())
+        && line.chars().count() <= 60
+        && !line.chars().any(|c| c.is_ascii_digit())
+        && words.iter().all(|w| w.chars().next().is_some_and(char::is_uppercase))
+        && !words
+            .iter()
+            .any(|w| ORG_WORDS.contains(&w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric() && c != '.')));
+    ok.then(|| words.join(" "))
 }
 
 /// Words that mark a link as the airline's claim page.
@@ -515,6 +587,29 @@ mod tests {
         bescheid.reference = Some("50.2-WG-2026-04711".into());
         let m2 = Memory::open_in_memory().unwrap();
         assert_eq!(learn_from_letter(&m2, 7, &bescheid).unwrap(), ["full_name"]);
+    }
+
+    #[test]
+    fn the_recipient_gives_the_name_when_the_letter_names_no_person() {
+        let m = Memory::open_in_memory().unwrap();
+        let mut x = au_letter();
+        x.person = None;
+        x.recipient = "Frau Erika Beispiel".into();
+        assert!(learn_from_letter(&m, 7, &x).unwrap().contains(&"full_name".to_string()));
+        let f = m.profile_meta("full_name").unwrap().unwrap();
+        assert_eq!((f.value.as_str(), f.source.as_str()), ("Erika Beispiel", "letter:7"));
+        // An office or a firm is never the user's name; nor does a letter replace a name the user gave.
+        let m = Memory::open_in_memory().unwrap();
+        x.recipient = "Evergreen Health".into();
+        learn_from_letter(&m, 8, &x).unwrap();
+        assert_eq!(m.profile_get("full_name").unwrap(), None);
+        set_fact(&m, "full_name", "Erika B.", "user").unwrap();
+        x.recipient = "Erika Beispiel".into();
+        learn_from_letter(&m, 9, &x).unwrap();
+        assert_eq!(m.profile_get("full_name").unwrap().as_deref(), Some("Erika B."));
+        assert_eq!(person_name("Stadt Beispielstadt Amt für Wohnen"), None);
+        assert_eq!(person_name("Lindenweg 7"), None);
+        assert_eq!(person_name("Herr Max Mustermann").as_deref(), Some("Max Mustermann"));
     }
 
     #[test]

@@ -29,7 +29,8 @@ pub async fn read(ctx: &Ctx, file: &Path, crop: Option<&Path>) -> Result<()> {
     // client is never called for it, so a missing MODEL_API_KEY does not matter there.
     let private = OpenWeightsClient::from_config(&ctx.config).map(Arc::new);
     let meta = match (ctx.meta(), &private) {
-        (Ok(m), _) => m,
+        // EVAL_MODEL (invented letters only) replaces Muse Spark's default for this read.
+        (Ok(m), _) => crate::agent_cmd::with_eval_model(m),
         (Err(_), Some(_)) => Arc::new(MetaClient::new("http://127.0.0.1:9", "unused")),
         (Err(e), None) => return Err(e),
     };

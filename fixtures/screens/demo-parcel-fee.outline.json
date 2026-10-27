@@ -1,0 +1,96 @@
+{
+ "note": "UI Automation outline of demo-parcel-fee.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-parcel-fee/index.html, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-parcel-fee.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "text",
+   "name": "Pay EUR 1.99 within 24 hours or your parcel will be returned",
+   "value": null,
+   "rect": {
+    "x": 471,
+    "y": 207,
+    "w": 658,
+    "h": 78
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "edit",
+   "name": "Card number",
+   "value": "",
+   "rect": {
+    "x": 471,
+    "y": 386,
+    "w": 313,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "edit",
+   "name": "Expiry date (MM/YY)",
+   "value": "",
+   "rect": {
+    "x": 800,
+    "y": 413,
+    "w": 157,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "edit",
+   "name": "CVV",
+   "value": "",
+   "rect": {
+    "x": 973,
+    "y": 386,
+    "w": 157,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "edit",
+   "name": "SMS code",
+   "value": "",
+   "rect": {
+    "x": 471,
+    "y": 508,
+    "w": 658,
+    "h": 49
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "button",
+   "name": "Pay EUR 1.99 and release my parcel",
+   "value": null,
+   "rect": {
+    "x": 471,
+    "y": 592,
+    "w": 658,
+    "h": 55
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

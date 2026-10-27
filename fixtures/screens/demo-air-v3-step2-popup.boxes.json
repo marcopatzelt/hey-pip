@@ -1,0 +1,28 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-air-v3-step2-popup.png",
+  "targets": {
+    "cookie_necessary": {
+      "box": [
+        784,
+        533,
+        951,
+        581
+      ],
+      "sam_query": "button",
+      "description": "Button \"Necessary only\" in the cookie dialog, left of the dark \"Accept all\""
+    },
+    "cookie_all": {
+      "box": [
+        968,
+        533,
+        1091,
+        581
+      ],
+      "sam_query": "button",
+      "description": "Dark button \"Accept all\" in the cookie dialog, right of \"Necessary only\""
+    }
+  }
+}

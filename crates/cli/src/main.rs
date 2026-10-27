@@ -12,7 +12,7 @@
 //!   pip-cli --lang en agent "…" --page file://…/fixtures/demo-uni/index.html --answer 7654321
 //!   pip-cli transcribe sample.wav
 //!   pip-cli --lang en agent "@task_look_screen" --memory cold --answer "name => Erika Beispiel"
-//!   pip-cli eval [--real] [--set quick] [--only demo-uni-v2,account-check] [--jobs 4]
+//!   EVAL_MODEL=muse-spark-1.3 pip-cli eval [--real] [--set quick] [--only demo-uni-v2,account-check] [--jobs 4]
 //!   pip-cli card --demo --out target/pip-did-this.html
 
 mod agent_cmd;
@@ -137,8 +137,10 @@ enum Cmd {
     Eval {
         #[arg(long, default_value = "eval/tasks.json")]
         tasks: PathBuf,
-        #[arg(long, default_value = "eval/results.md")]
-        out: PathBuf,
+        /// Results file. Default: eval/results.md for a full run; `--set quick` or `--only` write
+        /// target/eval-<set-or-only>.md (never eval/results.md).
+        #[arg(long)]
+        out: Option<PathBuf>,
         /// Also run the real read-only websites of eval/real-sites.json (dry run up to the send card, DEMO_MODE off
         /// for those tasks only, every card refused: nothing is ever sent).
         #[arg(long)]
@@ -249,6 +251,7 @@ async fn main() -> Result<()> {
                 seed_letter,
                 seed_facts,
                 advance_on_click,
+                documents: Vec::new(),
             };
             agent_cmd::run(&ctx, opts).await.map(|_| ())
         }
@@ -262,6 +265,7 @@ async fn main() -> Result<()> {
         }
         Cmd::Eval { tasks, out, real, set, only, jobs } => {
             let only: Vec<String> = only.into_iter().map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect();
+            let out = out.unwrap_or_else(|| eval::default_out(set, &only));
             eval::run(&ctx, &tasks, &out, real, set, &only, jobs).await
         }
         Cmd::Card { out, demo } => card::run(&ctx, &out, demo),

@@ -1,0 +1,141 @@
+{
+ "note": "UI Automation outline of demo-air-v3-step3.png (file:///home/polo/dev/papierkram-copilot/fixtures/demo-air-v3/index.html?step3, 1600x1000), written by make_outline.py from the live page. Rects are physical pixels of the PNG.",
+ "image": "demo-air-v3-step3.png",
+ "items": [
+  {
+   "id": 1,
+   "role": "link",
+   "name": "BX Beispiel Air",
+   "value": null,
+   "rect": {
+    "x": 264,
+    "y": 48,
+    "w": 173,
+    "h": 40
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 2,
+   "role": "link",
+   "name": "Flights",
+   "value": null,
+   "rect": {
+    "x": 994,
+    "y": 56,
+    "w": 50,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 3,
+   "role": "link",
+   "name": "Manage booking",
+   "value": null,
+   "rect": {
+    "x": 1066,
+    "y": 56,
+    "w": 127,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 4,
+   "role": "link",
+   "name": "Service",
+   "value": null,
+   "rect": {
+    "x": 1215,
+    "y": 56,
+    "w": 53,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 5,
+   "role": "link",
+   "name": "Log in",
+   "value": null,
+   "rect": {
+    "x": 1290,
+    "y": 56,
+    "w": 46,
+    "h": 24
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 6,
+   "role": "text",
+   "name": "Delay compensation",
+   "value": null,
+   "rect": {
+    "x": 552,
+    "y": 118,
+    "w": 784,
+    "h": 39
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 7,
+   "role": "button",
+   "name": "Upload boarding pass",
+   "value": null,
+   "rect": {
+    "x": 599,
+    "y": 271,
+    "w": 260,
+    "h": 47
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 8,
+   "role": "checkbox",
+   "name": "The details are correct",
+   "value": "unchecked",
+   "rect": {
+    "x": 583,
+    "y": 353,
+    "w": 22,
+    "h": 22
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  },
+  {
+   "id": 9,
+   "role": "button",
+   "name": "Send",
+   "value": null,
+   "rect": {
+    "x": 1183,
+    "y": 392,
+    "w": 126,
+    "h": 53
+   },
+   "offscreen": false,
+   "enabled": true,
+   "is_password": false
+  }
+ ]
+}

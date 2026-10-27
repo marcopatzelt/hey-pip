@@ -2,7 +2,9 @@
 """Build the invented example letters (PDF + PNG) and the phone photo of the sick note.
 
 All people, insurers, offices, numbers and addresses are INVENTED. No real logos.
-Run from anywhere:  python3 fixtures/letters/make_letters.py [flight]   (flight: only the Beispiel Air family)
+Run from anywhere:  python3 fixtures/letters/make_letters.py [flight|flight-variants]
+(flight: only the Beispiel Air family; flight-variants: only the e-mail screenshot, the phone photo and the German
+notice of BX 2041)
 Needs: reportlab, pymupdf, ImageMagick 7 (`magick`).
 """
 
@@ -694,7 +696,87 @@ def make_photo(src_png: pathlib.Path, dst: pathlib.Path) -> None:
     tmp.rmdir()
 
 
+def make_flight_de_minutes() -> None:
+    """The German notice of the same flight, the delay given only in minutes ("245 Minuten")."""
+    c = Canvas(str(OUT / "flight_delay_de_minutes.pdf"), pagesize=A4)
+    c.setTitle("Beispiel Air – Information zu Ihrem Flug BX 2041 (Beispiel)")
+    c.setFont("Helvetica", 7.5)
+    c.setFillColor(GREY)
+    c.drawString(20 * mm, H - 12 * mm, "Gedruckte E-Mail · Sonntag, 4. Oktober 2026, 09:12")
+    c.setFillColor(black)
+    y = email_header(
+        c,
+        [
+            ("Von:", "Beispiel Air Kundenservice <service@beispiel-air.example>"),
+            ("Gesendet:", "Sonntag, 4. Oktober 2026, 09:12"),
+            ("An:", "Erika Beispiel <erika.beispiel@example.com>"),
+            ("Betreff:", "Beispiel Air – Information zu Ihrem Flug BX 2041"),
+        ],
+        H - 22 * mm,
+    )
+    logo_beispiel_air(c, 20 * mm, y - 6 * mm)
+    y = paragraphs(
+        c,
+        y - 18 * mm,
+        ["Sehr geehrte Frau Beispiel,",
+         "Ihr Flug ist leider verspätet angekommen. Hier die Angaben zu Ihrer Reise:"],
+        size=10.5,
+    )
+    y = flight_table(
+        c,
+        y,
+        [
+            ("Fluggast", "Erika Beispiel"),
+            ("Buchungsnummer", "BX7Q2K"),
+            ("Flug", "BX 2041"),
+            ("Strecke", "Düsseldorf (DUS) → Teneriffa Süd (TFS)"),
+            ("Flugdatum", "03.10.2026"),
+            ("Ankunftsverspätung", "245 Minuten"),
+            ("Grund", "verspätete Ankunft des Flugzeugs aus einem früheren Flug"),
+        ],
+    )
+    paragraphs(
+        c,
+        y,
+        ["Anträge können Sie unter beispiel-air.example/claim stellen. Bitte halten Sie Ihre Buchungsnummer und Ihre "
+         "Bordkarte bereit.",
+         "Mit freundlichen Grüßen", "Ihr Beispiel Air Kundenservice"],
+        size=10.5,
+    )
+    footer(
+        c,
+        [
+            "Beispiel Air · Flughafenstraße 1 · 40999 Beispielstadt · www.beispiel-air.example",
+            "Sie erhalten diese E-Mail, weil Sie einen Flug bei Beispiel Air gebucht haben.",
+        ],
+    )
+    c.showPage()
+    c.save()
+
+
+def make_flight_mail_png() -> None:
+    """flight_delay_bx2041_mail.png: the notice as an e-mail open in a web mail, 1600x1000 (headless Firefox through
+    fixtures/screens/make_outline.py; the page is flight_delay_bx2041_mail.html)."""
+    sys.path.insert(0, str(OUT.parent / "screens"))
+    from make_outline import capture
+
+    tmp = OUT / "_mail"
+    capture(str(OUT / "flight_delay_bx2041_mail.html"), "mail", "", None, tmp, False)
+    (tmp / "mail.png").replace(OUT / "flight_delay_bx2041_mail.png")
+    for f in tmp.iterdir():
+        f.unlink()
+    tmp.rmdir()
+
+
 def main() -> None:
+    if sys.argv[1:] == ["flight-variants"]:
+        # Run 4: the same notice as an e-mail screenshot, as a phone photo, and in German with the delay in minutes.
+        # The existing letters stay byte for byte (the photo starts from the PNG that is already there).
+        make_flight_mail_png()
+        make_photo(OUT / "flight_delay_bx2041.png", OUT / "flight_delay_bx2041_foto.jpg")
+        make_flight_de_minutes()
+        print("ok: flight variants")
+        return
     if sys.argv[1:] == ["flight"]:
         # Only the flight family (the other letters stay byte for byte as they are).
         make_flight_letters()

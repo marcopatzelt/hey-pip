@@ -1,0 +1,27 @@
+{
+  "doc_type": "brief",
+  "date": "2026-10-04",
+  "reference": "BX7Q2K",
+  "sender_contains": "Beispiel Air",
+  "recipient_contains": "Erika Beispiel",
+  "au": null,
+  "flight": {
+    "airline": "Beispiel Air",
+    "flight_no": "BX 2041",
+    "date": "2026-10-03",
+    "from": "DUS",
+    "to": "TFS",
+    "delay_minutes": 250,
+    "cancelled": false,
+    "booking_ref": "BX7Q2K"
+  },
+  "deadlines_due": [],
+  "rule_deadlines": [
+    {
+      "rule_id": "eu261_claim",
+      "due": "2029-12-31"
+    }
+  ],
+  "tip": "eu261_delay",
+  "note": "The delay notice of flight_delay_bx2041 as a 1600x1000 e-mail screenshot (web mail 'Beispiel Mail': header, the airline's answer, Erika's own question quoted below it). The quote must not change the fields: sender Beispiel Air, date of the e-mail 4.10.2026, 250 min late."
+}

@@ -1,0 +1,27 @@
+{
+  "doc_type": "brief",
+  "date": "2026-10-04",
+  "reference": "BX7Q2K",
+  "sender_contains": "Beispiel Air",
+  "recipient_contains": "Erika Beispiel",
+  "au": null,
+  "flight": {
+    "airline": "Beispiel Air",
+    "flight_no": "BX 2041",
+    "date": "2026-10-03",
+    "from": "DUS",
+    "to": "TFS",
+    "delay_minutes": 250,
+    "cancelled": false,
+    "booking_ref": "BX7Q2K"
+  },
+  "deadlines_due": [],
+  "rule_deadlines": [
+    {
+      "rule_id": "eu261_claim",
+      "due": "2029-12-31"
+    }
+  ],
+  "tip": "eu261_delay",
+  "note": "The printed delay notice of flight_delay_bx2041 as a phone photo (angle, shadow, wooden table; make_letters.py make_photo). SAM crops the sheet; the fields stay the same."
+}

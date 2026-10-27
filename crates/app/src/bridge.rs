@@ -790,6 +790,24 @@ async fn forward_events(ctx: Shared) {
     }
 }
 
+/// A pressed option goes to whoever waits for it (a run's question, or one the app asked; also one still on screen
+/// after its run ended). Nobody waits any more (a second press, a stopped run): logged, dropped. True = delivered.
+fn take_answer(pending: &pip_core::events::Pending, question_id: uuid::Uuid, choice: String) -> bool {
+    let ok = pending.resolve_answer(question_id, choice);
+    if !ok {
+        tracing::info!("answer {question_id}: nobody waits for it any more");
+    }
+    ok
+}
+
+/// What Pip says when a pressed option answers nobody any more.
+fn question_over(lang: Lang) -> &'static str {
+    match lang {
+        Lang::De => "Die Frage ist schon vorbei. Frag mich einfach noch einmal, wenn du sie brauchst.",
+        Lang::En => "That question is over now. Just ask me again if you need it.",
+    }
+}
+
 async fn dispatch(ctx: Shared, mut rx: mpsc::Receiver<UserCommand>) {
     while let Some(cmd) = rx.recv().await {
         let c = ctx.clone();
@@ -820,7 +838,11 @@ async fn dispatch(ctx: Shared, mut rx: mpsc::Receiver<UserCommand>) {
                 ctx.bus.emit(UiEvent::ApprovalClosed { id });
             }
             UserCommand::Answer { question_id, choice } => {
-                ctx.bus.pending.resolve_answer(question_id, choice);
+                if !take_answer(&ctx.bus.pending, question_id, choice) {
+                    // The question outlived its run (stopped, timed out): the person pressed a button that answers
+                    // nobody. Say so, instead of closing the bubble without a word.
+                    ctx.say(question_over(ctx.lang()), vec![]);
+                }
                 ctx.set_waiting(false);
             }
             UserCommand::ReminderAnswer { reminder_id, choice } => c.reminder_answer(reminder_id, &choice),
@@ -1394,8 +1416,11 @@ impl Ctx {
         self.release_focus();
         self.set_acting(true);
         tauri::async_runtime::spawn(async move {
+            let mut closing = None;
             let out = if self.backend.mock {
-                Ok(mock::run_task(&self.bus, self.screen(), lang, token.clone()).await)
+                let (out, offer) = mock::run_task(&self.bus, self.screen(), lang, token.clone()).await;
+                closing = offer;
+                Ok(out)
             } else {
                 let agent = self.backend.agent.clone().expect("checked above");
                 let tk = token.clone();
@@ -1414,6 +1439,16 @@ impl Ctx {
             }
             *self.run.lock().expect("run lock") = None;
             self.set_acting(false);
+            // The mock story's closing offer is still on screen: its answer comes after the run (acting off).
+            if let Some(offer) = closing {
+                let me = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(choice) = offer.answer(&me.bus, Duration::from_secs(600)).await {
+                        me.pip(PipState::Idle);
+                        me.say(mock::closing_reply(lang, &choice), vec![]);
+                    }
+                });
+            }
             let retry = self.last_text.lock().expect("text lock").clone().map(|text| UserCommand::Text { text });
             match out {
                 // The core already said the friendly, specific reason ("zu lange", "kein Internet"): keep it.
@@ -2427,6 +2462,41 @@ pub fn format_due(d: NaiveDate, lang: Lang) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// VM 27.10. 13:58 / core review: the run's last question is still on screen when the run ends; the pressed
+    /// option must reach the waiter as the answer (main.js keeps its buttons and question id after acting off).
+    #[tokio::test]
+    async fn the_end_of_run_offer_gets_the_pressed_option() {
+        let (bus, mut cmds) = Bus::new();
+        let mut ui = bus.to_ui.subscribe();
+        let offer = mock::ask_closing_offer(&bus, Lang::En);
+        let qid = loop {
+            if let UiEvent::Bubble { question_id: Some(q), buttons, .. } = ui.recv().await.unwrap() {
+                assert_eq!(buttons.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), ["yes", "no"]);
+                break q;
+            }
+        };
+        assert_eq!(qid, offer.question_id);
+        // the run is over (acting off); the page sends exactly what runButton(id, qid) sends
+        let page = serde_json::json!({ "type": "answer", "question_id": qid.to_string(), "choice": "no" });
+        bus.from_ui.send(serde_json::from_value(page).unwrap()).await.unwrap();
+        let Some(UserCommand::Answer { question_id, choice }) = cmds.recv().await else { panic!("no Answer command") };
+        assert_eq!(question_id, qid);
+        assert!(take_answer(&bus.pending, question_id, choice), "the answer had no waiter");
+        assert_eq!(offer.answer(&bus, Duration::from_secs(1)).await.as_deref(), Some("no"));
+        assert_eq!(mock::closing_reply(Lang::En, "no"), "Okay, I won't.");
+        // a second press: nobody waits any more, dropped without a panic
+        assert!(!take_answer(&bus.pending, qid, "yes".into()));
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_closing_offer_ends_quietly() {
+        let (bus, _cmds) = Bus::new();
+        let offer = mock::ask_closing_offer(&bus, Lang::De);
+        let qid = offer.question_id;
+        assert_eq!(offer.answer(&bus, Duration::from_millis(10)).await, None);
+        assert!(!bus.pending.resolve_answer(qid, "yes".into()), "the waiter is gone after the timeout");
+    }
 
     #[test]
     fn card_says_nothing_yet_when_every_number_is_zero() {

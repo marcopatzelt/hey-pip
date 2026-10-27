@@ -52,6 +52,12 @@ const PROFILE: &[(&str, &str)] = &[
     ("onboarded", "1"),
 ];
 
+/// The demo person's profile facts (one source: the app's demo profile seeds them, the eval's `full` memory on
+/// the flight rows too, and the web lookup's privacy test checks no query carries any of them).
+pub fn demo_profile() -> &'static [(&'static str, &'static str)] {
+    PROFILE
+}
+
 /// The day the demo story is told: the day after the insurer's letter, two days before the sick note ends.
 /// Every demo date moves by `now - STORY_DAY`, so the story lives on any day.
 pub const STORY_DAY: NaiveDate = NaiveDate::from_ymd_opt(2026, 10, 28).expect("valid story day");

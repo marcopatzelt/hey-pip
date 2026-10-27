@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beispiel Air – Delay compensation (step 1 of 3)</title>
+<!-- Third claim page of the INVENTED airline "Beispiel Air" for the flight evals (a variant of demo-air, so a
+     speed-up shows understanding, not memorised pixels). English, THREE steps:
+     1 "Flight": flight number, date of the flight (<input type=date>), booking reference, "Continue".
+     2 "You": a cookie banner first ("Necessary only" / "Accept all"), then name, e-mail, the Yes/No question
+       "Did the airline offer you a voucher?", IBAN, "Continue".
+     3 "Documents": "Upload boarding pass" (required), a checkbox "The details are correct", "Send".
+       Send with the box empty shows "Please confirm that the details are correct." and stays.
+     Success: "Thank you. Claim BX7Q2K received on …". Nothing leaves the page.
+     Switches (fixture screenshots only, fixtures/screens/make_outline.py): ?fill (step 1: all three; step 2: only
+     the name, what memory knows), ?step2 (with ?popup: the cookie banner still open), ?step3, ?error (step 3 with the
+     file chosen and the box empty, after Send), ?thanks, ?mark. -->
+<style>
+  :root {
+    --red: #c8102e; --red-dark: #8e0b20; --navy: #1d2b4f; --teal: #0d6b73;
+    --ink: #1d2433; --muted: #5d6779; --line: #cfd6e2; --bg: #f6f7fb; --error: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 18px/1.5 "Segoe UI", system-ui, -apple-system, Arial, sans-serif; color: var(--ink); background: var(--bg); }
+  .demo-bar { background: #fff4d6; color: #6b4e00; text-align: center; font-size: 15px; padding: 6px 16px; border-bottom: 1px solid #f0dca0; }
+  header { background: var(--navy); color: #fff; }
+  .top { max-width: 1120px; margin: 0 auto; padding: 12px 24px; display: flex; align-items: center; gap: 28px; }
+  .logo { display: flex; align-items: center; gap: 10px; color: #fff; text-decoration: none; }
+  .logo-mark { width: 40px; height: 40px; border-radius: 50%; background: var(--red); display: grid; place-items: center; font-weight: 700; }
+  .logo b { font-size: 22px; }
+  nav { display: flex; gap: 22px; margin-left: auto; }
+  nav a { color: #dfe6f5; text-decoration: none; font-size: 16px; }
+  main { max-width: 1120px; margin: 0 auto; padding: 18px 24px 30px; display: grid; grid-template-columns: 260px 1fr; gap: 28px; }
+  aside { font-size: 15px; color: var(--muted); }
+  aside ol { list-style: none; padding: 0; margin: 0; }
+  aside li { padding: 10px 14px; border-left: 4px solid var(--line); margin-bottom: 6px; background: #fff; }
+  aside li.on { border-color: var(--teal); color: var(--ink); font-weight: 600; }
+  aside li.done { border-color: var(--navy); }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .lead { margin: 0 0 14px; color: var(--muted); font-size: 16px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 20px 26px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; }
+  .field { margin-bottom: 14px; }
+  .lbl { display: block; font-weight: 600; margin-bottom: 6px; }
+  .hint { font-size: 14px; color: var(--muted); margin-top: 3px; }
+  input[type=text], input[type=email], input[type=date] {
+    width: 100%; font: inherit; padding: 10px 12px; border: 1px solid #9aa5b8; border-radius: 4px; background: #fff; color: var(--ink);
+  }
+  .radios { display: flex; gap: 28px; padding-top: 6px; }
+  .radios label { display: flex; gap: 10px; align-items: center; }
+  .radios input, .check input { width: 22px; height: 22px; accent-color: var(--teal); }
+  .upload { border: 2px dashed #9aa5b8; border-radius: 6px; padding: 16px 18px; display: flex; align-items: center; gap: 18px; background: #f9fafc; }
+  .file-input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .btn-file { display: inline-flex; align-items: center; gap: 10px; padding: 10px 20px; border-radius: 4px; cursor: pointer; background: var(--teal); color: #fff; font-weight: 600; white-space: nowrap; }
+  .file-name { color: var(--muted); font-size: 16px; }
+  .file-name.chosen { color: var(--ink); font-weight: 600; }
+  .check { display: flex; gap: 10px; align-items: center; }
+  .actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+  .back { color: var(--muted); font-size: 16px; }
+  .btn { font: inherit; font-size: 19px; font-weight: 700; padding: 12px 40px; border-radius: 4px; border: 0; cursor: pointer; background: var(--red); color: #fff; }
+  .error { color: var(--error); font-size: 15px; margin-top: 6px; display: none; }
+  .invalid .error { display: block; }
+  .invalid input[type=text], .invalid input[type=email], .invalid input[type=date] { border-color: var(--error); }
+  .alert { display: none; background: #fdecea; border: 1px solid #f3b8b3; color: var(--error); padding: 10px 14px; border-radius: 4px; margin-bottom: 12px; font-size: 16px; }
+  .invalid-form .alert { display: block; }
+  #step2, #step3, #thanks { display: none; }
+  .on2 #step1, .on3 #step1, .on3 #step2 { display: none; }
+  .on2 #step2 { display: block; }
+  .on3 #step3 { display: block; }
+  .done #step1, .done #step2, .done #step3, .done .lead, .done #title { display: none; }
+  .done #thanks { display: block; }
+  .banner { display: none; position: fixed; inset: 0; background: rgba(20, 28, 48, .55); }
+  .banner .in { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 640px; background: #fff; border-radius: 8px; padding: 24px 28px; display: flex; flex-wrap: wrap; gap: 14px 16px; justify-content: flex-end; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
+  .banner h2 { margin: 0; width: 100%; font-size: 22px; }
+  .banner p { margin: 0 0 6px; width: 100%; font-size: 16px; }
+  .banner button { font: inherit; font-size: 17px; padding: 10px 22px; border-radius: 4px; cursor: pointer; }
+  .b-nec { background: #fff; color: var(--navy); border: 2px solid var(--navy); }
+  .b-all { background: var(--navy); color: #fff; border: 2px solid var(--navy); }
+  .cookies .banner { display: block; }
+  .ok { width: 60px; height: 60px; border-radius: 50%; background: var(--teal); color: #fff; display: grid; place-items: center; font-size: 34px; margin-bottom: 12px; }
+  footer { text-align: center; font-size: 14px; color: var(--muted); padding: 0 24px 24px; }
+  .mark #next1, .mark #next2 { background: #f00 !important; color: #f00; }
+  .mark #submit { background: #0ff !important; color: #0ff; }
+  .mark .btn-file { background: #f0f !important; color: #f0f; }
+</style>
+</head>
+<body>
+<div class="demo-bar">Demo page of an invented airline. Nothing is sent.</div>
+<header>
+  <div class="top">
+    <a class="logo" href="#"><span class="logo-mark">BX</span><b>Beispiel Air</b></a>
+    <nav><a href="#">Flights</a><a href="#">Manage booking</a><a href="#">Service</a><a href="#">Log in</a></nav>
+  </div>
+</header>
+
+<main>
+  <aside>
+    <ol>
+      <li class="on" id="s1">Step 1 · Flight</li>
+      <li id="s2">Step 2 · You</li>
+      <li id="s3">Step 3 · Documents</li>
+    </ol>
+  </aside>
+  <div>
+    <h1 id="title">Delay compensation</h1>
+    <p class="lead">Your flight arrived 3 hours late or more? Tell us about it in three short steps.</p>
+
+    <form class="card" id="step1" novalidate>
+      <div class="row">
+        <div class="field" id="w-flight">
+          <label class="lbl" for="f-flight">Flight number</label>
+          <input type="text" id="f-flight" name="flight">
+          <div class="hint">For example BX 2041</div>
+          <div class="error">Please enter the flight number.</div>
+        </div>
+        <div class="field" id="w-date">
+          <label class="lbl" for="f-date">Date of the flight</label>
+          <input type="date" id="f-date" name="date">
+          <div class="error">Please choose the date of the flight.</div>
+        </div>
+      </div>
+      <div class="field" id="w-ref">
+        <label class="lbl" for="f-ref">Booking reference</label>
+        <input type="text" id="f-ref" name="ref" maxlength="6" autocomplete="off">
+        <div class="hint">6 characters, on your booking confirmation</div>
+        <div class="error">Please enter the booking reference (6 characters).</div>
+      </div>
+      <div class="actions"><span class="back"></span><button type="submit" class="btn" id="next1">Continue</button></div>
+    </form>
+
+    <form class="card" id="step2" novalidate>
+      <div class="row">
+        <div class="field" id="w-name">
+          <label class="lbl" for="f-name">Name of the passenger</label>
+          <input type="text" id="f-name" name="name" autocomplete="name">
+          <div class="error">Please enter the passenger's name.</div>
+        </div>
+        <div class="field" id="w-email">
+          <label class="lbl" for="f-email">E-mail address</label>
+          <input type="email" id="f-email" name="email" autocomplete="email">
+          <div class="error">Please enter an e-mail address.</div>
+        </div>
+      </div>
+      <div class="field" id="w-voucher">
+        <span class="lbl">Did the airline offer you a voucher?</span>
+        <div class="radios">
+          <label><input type="radio" name="voucher" value="yes" id="f-voucher-yes"> Yes</label>
+          <label><input type="radio" name="voucher" value="no" id="f-voucher-no"> No</label>
+        </div>
+        <div class="error">Please answer the voucher question.</div>
+      </div>
+      <div class="field" id="w-iban">
+        <label class="lbl" for="f-iban">IBAN for the payment</label>
+        <input type="text" id="f-iban" name="iban" autocomplete="off">
+        <div class="hint">Without spaces</div>
+        <div class="error">Please enter the IBAN without spaces.</div>
+      </div>
+      <div class="actions"><span class="back">← Back</span><button type="submit" class="btn" id="next2">Continue</button></div>
+    </form>
+
+    <form class="card" id="step3" novalidate>
+      <div class="alert" role="alert" id="confirm-alert">Please confirm that the details are correct.</div>
+      <div class="field" id="w-file">
+        <span class="lbl">Boarding pass (required)</span>
+        <div class="upload">
+          <input class="file-input" type="file" id="f-pass" name="pass" accept=".pdf,.jpg,.jpeg,.png">
+          <label class="btn-file" for="f-pass"><span aria-hidden="true">⤒</span><span>Upload boarding pass</span></label>
+          <span class="file-name" id="file-name">No file selected</span>
+        </div>
+      </div>
+      <div class="field" id="w-confirm">
+        <label class="check"><input type="checkbox" id="f-confirm" name="confirm"> The details are correct</label>
+      </div>
+      <div class="actions"><span class="back">← Back</span><button type="submit" class="btn" id="submit">Send</button></div>
+    </form>
+
+    <section id="thanks" aria-live="polite">
+      <div class="card">
+        <div class="ok">✓</div>
+        <h1>Thank you. Claim <span id="t-ref">BX7Q2K</span> received on <span id="t-when"></span></h1>
+        <p>We will reply by e-mail. You do not need to do anything else.</p>
+      </div>
+    </section>
+  </div>
+</main>
+<footer>Beispiel Air is invented. Invented example for tests; no data leaves the computer.</footer>
+
+<div class="banner" id="cookies">
+  <div class="in" role="dialog" aria-label="Cookies">
+    <h2>Cookies on beispiel-air.example</h2>
+    <p>We use cookies to run this site. With "Accept all" we also measure how the site is used.</p>
+    <button type="button" class="b-nec" id="cookie-necessary">Necessary only</button>
+    <button type="button" class="b-all" id="cookie-all">Accept all</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  const step = (n) => {
+    document.body.classList.remove("on2", "on3");
+    if (n > 1) document.body.classList.add(`on${n}`);
+    for (const k of [1, 2, 3]) {
+      $(`s${k}`).classList.toggle("on", k === n);
+      $(`s${k}`).classList.toggle("done", k < n);
+    }
+    document.title = `Beispiel Air – Delay compensation (step ${n} of 3)`;
+  };
+  const closeCookies = () => document.body.classList.remove("cookies");
+  $("cookie-necessary").addEventListener("click", closeCookies);
+  $("cookie-all").addEventListener("click", closeCookies);
+  const file = $("f-pass"), fileName = $("file-name");
+  file.addEventListener("change", () => {
+    const f = file.files[0];
+    fileName.textContent = f ? f.name : "No file selected";
+    fileName.classList.toggle("chosen", !!f);
+  });
+  $("step1").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const ref = $("f-ref").value.trim(), flight = $("f-flight").value.trim(), date = $("f-date").value;
+    $("w-ref").classList.toggle("invalid", !/^[A-Za-z0-9]{6}$/.test(ref));
+    $("w-flight").classList.toggle("invalid", !flight);
+    $("w-date").classList.toggle("invalid", !date);
+    if (/^[A-Za-z0-9]{6}$/.test(ref) && flight && date) {
+      step(2);
+      document.body.classList.add("cookies");
+    }
+  });
+  $("step2").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const iban = $("f-iban").value;
+    const checks = [
+      ["w-name", !!$("f-name").value.trim()],
+      ["w-email", /@/.test($("f-email").value)],
+      ["w-voucher", !!document.querySelector('input[name="voucher"]:checked')],
+      ["w-iban", !!iban.trim() && !/\s/.test(iban)],
+    ];
+    let ok = true;
+    for (const [id, good] of checks) {
+      $(id).classList.toggle("invalid", !good);
+      if (!good) ok = false;
+    }
+    if (ok) step(3);
+  });
+  $("step3").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const fileOk = !!file.files[0] || fileName.classList.contains("chosen");
+    $("w-file").classList.toggle("invalid", !fileOk);
+    const confirmed = $("f-confirm").checked;
+    $("step3").classList.toggle("invalid-form", !confirmed);
+    if (!fileOk || !confirmed) return;
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    $("t-ref").textContent = $("f-ref").value.trim().toUpperCase() || "BX7Q2K";
+    $("t-when").textContent = `${now.getDate()} ${now.toLocaleString("en-GB", { month: "long" })} ${now.getFullYear()} at ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    document.body.classList.add("done");
+    document.title = "Thank you – Beispiel Air";
+  });
+
+  // Fixture screenshots only (fake file name, no real file).
+  const s3 = params.has("step3") || params.has("error");
+  const s2 = params.has("step2");
+  if (s3) step(3);
+  else if (s2) step(2);
+  if (params.has("popup")) document.body.classList.add("cookies");
+  if (params.has("fill") && !s2 && !s3) {
+    $("f-flight").value = "BX 2041";
+    $("f-date").value = "2026-10-03";
+    $("f-ref").value = "BX7Q2K";
+  }
+  // Step 2 ?fill shows only the name (what memory knows): a picture cannot show what was typed.
+  if (params.has("fill") && s2) $("f-name").value = "Erika Beispiel";
+  if (params.has("error")) {
+    fileName.textContent = "boarding_pass_bx2041.pdf";
+    fileName.classList.add("chosen");
+    $("submit").click();
+  }
+  if (params.has("thanks")) {
+    $("t-when").textContent = "29 October 2026 at 18:06";
+    document.body.classList.add("done");
+  }
+  if (params.has("mark")) document.body.classList.add("mark");
+})();
+</script>
+</body>
+</html>

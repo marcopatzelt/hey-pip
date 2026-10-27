@@ -18,6 +18,7 @@ const EDGE = 8;        // keep this far from screen edges
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const Peek = window.Peek;  // ui/peek.js: rest / hover / up state machine and geometry
 const Tip = window.Tip;    // ui/tip.js: "Good to know" bubble parts
+const Bubble = window.Bubble; // ui/bubble.js: same-bubble check, one press = one action, what an ended run keeps
 const PIP_TITLE = "Click to ask me. Hold to talk to me.";
 let peekSecs = 10;         // PIP_PEEK_SECS from the app: quiet this long -> back to the edge (0 = never)
 
@@ -39,6 +40,8 @@ const st = {
   onboarding: null,
   bubbleKind: null,
   bubbleQid: null,       // question id of the bubble on screen (a guard bubble asked by a run)
+  bubbleEnded: false,    // the shown question outlived its run (kept with its buttons; a new run closes it)
+  bubbleSig: null,       // Bubble.signature of the bubble on screen (text, kind, qid, labels): same = keep its buttons
   guardPose: false,      // the guard bubble put Pip in the "ask" pose; cleared when it closes
   tipLabel: "",          // "Good to know" of the last tip bubble (its "Why?" bubble shows the same label)
   bubbleSticky: false,   // the bubble waits for an answer (buttons, question, reminder, onboarding)
@@ -453,6 +456,8 @@ function hitScene() {
   const g = peekGeo(st.peek);
   return {
     pip: el.pip.hidden ? null : { box: rectOf(el.pip), home: st.home, peek: st.peek, head: { x: g.x, y: g.y, w: P, h: g.visibleH, bottom: g.bottom } },
+    // a run acts: Pip's body next to the target never takes the agent's (or the person's) click on it
+    acting: st.acting && !el.stop.hidden,
     boxes: [el.bubble, el.card, el.ask, el.panel, el.progress, el.stop, el.note].map(rectOf),
     micDown,
     viewport: { w: innerWidth, h: innerHeight },
@@ -495,6 +500,8 @@ function hideBubble() {
     showPose();
   }
   st.bubbleKind = null;
+  st.bubbleSig = null;
+  st.bubbleEnded = false;
   st.bubbleSticky = false;
   if (wasSticky && st.queue.length) {
     const next = st.queue.shift();
@@ -505,11 +512,19 @@ function hideBubble() {
   layout();
 }
 
+/** Other controls: the same press rules, each with its own clock (Stop right after a bubble button still stops). */
+const onPress = (node, fn) => Bubble.attach(node, () => fn(), { clock: Bubble.pressClock() });
+
+// A button acts on pointerup (or click, or Enter / Space), exactly once per press (ui/bubble.js): a click that
+// never comes (the button was rebuilt between down and up, WebView2's activation click) loses no answer.
 function makeButton(label, primary, onClick, cls) {
   const b = document.createElement("button");
   b.className = (primary ? "btn primary" : "btn") + (cls ? ` ${cls}` : "");
   b.textContent = label;
-  b.addEventListener("click", onClick);
+  Bubble.attach(b, (via) => {
+    jsLog("info", `button pressed: ${String(label).slice(0, 40)} (${via})`);
+    onClick();
+  });
   return b;
 }
 
@@ -551,6 +566,12 @@ function showBubble(text, opts = {}) {
   clearTimeout(st.bubbleTimer);
   // The same sentence again (core and app both confirm a stop): update quietly, no second pop.
   const same = !el.bubble.hidden && el.bText.textContent === text && st.bubbleKind === (opts.kind || "say");
+  // The same bubble again (text, kind, qid, labels): its buttons, extras and inputs stay the very same nodes. A
+  // rebuild between a press and its release would lose the press.
+  const sig = Bubble.signature(text, opts);
+  const keep = !el.bubble.hidden && Bubble.sameBubble(st.bubbleSig, sig);
+  st.bubbleSig = sig;
+  if (!keep) st.bubbleEnded = false;
   el.bubble.className = "bubble" + (opts.kind ? ` ${opts.kind}` : "");
   if (opts.label) el.bubble.dataset.label = opts.label; else delete el.bubble.dataset.label;
   st.bubbleKind = opts.kind || "say";
@@ -563,9 +584,11 @@ function showBubble(text, opts = {}) {
   st.bubbleSticky = sticky;
   el.bText.textContent = text;
   decorateStats(text);
-  el.bExtra.replaceChildren(...(opts.extra || []));
-  el.bButtons.replaceChildren(...(opts.buttons || []).map((b) => makeButton(b.label, b.primary, b.onClick, b.cls)));
-  el.bAfter.replaceChildren(...(opts.after || []));
+  if (!keep) {
+    el.bExtra.replaceChildren(...(opts.extra || []));
+    el.bButtons.replaceChildren(...(opts.buttons || []).map((b) => makeButton(b.label, b.primary, b.onClick, b.cls)));
+    el.bAfter.replaceChildren(...(opts.after || []));
+  }
   el.bClose.hidden = !opts.closeX;
   el.bubble.classList.toggle("has-x", !!opts.closeX);
   el.bubble.hidden = false;
@@ -628,7 +651,7 @@ function decorateStats(text) {
 el.bubble.addEventListener("click", (e) => {
   if (el.bubble.classList.contains("closable") && !e.target.closest("button")) hideBubble();
 });
-el.bClose.addEventListener("click", () => hideBubble());
+Bubble.attach(el.bClose, () => hideBubble());
 
 /** Core / app buttons: "cmd:<type>" -> UserCommand, "app:<action>" -> app_action, "close" -> just close. */
 // A question without choices: a text field and one button that sends what was typed.
@@ -745,7 +768,7 @@ setInterval(() => {
   }
 }, 500);
 
-el.stop.addEventListener("click", stopNow);
+onPress(el.stop, stopNow);
 // Stop first (Pip says "Ich habe aufgehört. Nichts wurde abgeschickt."), then close an open card as "no".
 function stopNow() {
   send({ type: "stop" });
@@ -824,10 +847,11 @@ function showReminder(ev) {
   const whyBtn = document.createElement("button");
   whyBtn.className = "link";
   whyBtn.textContent = s("btn_why");
-  whyBtn.addEventListener("click", () => { why.hidden = !why.hidden; layout(); });
+  onPress(whyBtn, () => { why.hidden = !why.hidden; layout(); });
   say(ev.text, {
     kind: "reminder",
     sticky: true,
+    id: ev.reminder_id, // the same words for another reminder: its buttons must answer that one
     extra: [whyBtn, why],
     buttons: ev.buttons.map((b) => ({
       label: b.label, primary: b.primary,
@@ -853,7 +877,7 @@ function closeAsk() {
   if (st.askOpen) { st.askOpen = false; invoke("release_focus").catch(() => {}); }
   layout();
 }
-$("ask-close").addEventListener("click", closeAsk);
+onPress($("ask-close"), closeAsk);
 $("ask-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const text = el.askInput.value.trim();
@@ -865,11 +889,11 @@ $("ask-form").addEventListener("submit", (e) => {
 el.askInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("ask-form").requestSubmit(); }
 });
-$("ask-letter").addEventListener("click", () => { closeAsk(); send({ type: "pick_file" }); });
-$("ask-deadlines").addEventListener("click", () => { closeAsk(); invoke("open_deadlines").catch(() => {}); });
-$("ask-knows").addEventListener("click", () => { closeAsk(); invoke("open_knowledge").catch(() => {}); });
-$("ask-card").addEventListener("click", () => { closeAsk(); invoke("app_action", { action: "my_card" }).catch(() => {}); });
-$("ask-pause").addEventListener("click", () => { closeAsk(); invoke("app_action", { action: "pause" }).catch(() => {}); });
+onPress($("ask-letter"), () => { closeAsk(); send({ type: "pick_file" }); });
+onPress($("ask-deadlines"), () => { closeAsk(); invoke("open_deadlines").catch(() => {}); });
+onPress($("ask-knows"), () => { closeAsk(); invoke("open_knowledge").catch(() => {}); });
+onPress($("ask-card"), () => { closeAsk(); invoke("app_action", { action: "my_card" }).catch(() => {}); });
+onPress($("ask-pause"), () => { closeAsk(); invoke("app_action", { action: "pause" }).catch(() => {}); });
 // "Look at my screen": Pip looks at what is open and offers concrete help (works for anything).
 function lookAtScreen() {
   send({ type: "text", text: s("task_look_screen") });
@@ -887,7 +911,7 @@ function fillChips() {
     b.type = "button";
     b.className = "chip";
     b.textContent = s(key);
-    b.addEventListener("click", () => { closeAsk(); go(); });
+    onPress(b, () => { closeAsk(); go(); });
     return b;
   }));
 }
@@ -931,7 +955,7 @@ function showPanel(items) {
     if (it.why) {
       const why = para(it.why, "why"); why.hidden = true;
       const t = document.createElement("button"); t.className = "link"; t.textContent = s("btn_why");
-      t.addEventListener("click", () => { why.hidden = !why.hidden; layout(); });
+      onPress(t, () => { why.hidden = !why.hidden; layout(); });
       row.append(t);
       li.append(row, why);
     } else li.append(row);
@@ -943,7 +967,7 @@ function showPanel(items) {
   el.panel.hidden = false;
   layout();
 }
-$("panel-close").addEventListener("click", () => { el.panel.hidden = true; layout(); });
+onPress($("panel-close"), () => { el.panel.hidden = true; layout(); });
 
 // ---------- "What Pip knows" (same panel) ----------
 function showKnowledge(ev) {
@@ -1095,12 +1119,22 @@ function onApp(ev) {
         closeAsk(); el.panel.hidden = true; st.marks = [];
         // a warning left over from an ended run must not hold the new run's questions in the queue
         if (st.bubbleKind === "guard" && !st.bubbleQid) hideBubble();
+        // so must a question the last run left open
+        else if (st.bubbleEnded) hideBubble();
       }
       else {
         setProgress(""); hideCard(); st.marks = [];
-        // Questions of the ended run wait for nobody: drop them from the queue, keep the shown one readable.
-        st.queue = st.queue.filter((q) => !q.opts.qid);
-        if (st.bubbleKind === "question") {
+        // Questions of the ended run that wait in the queue wait for nobody: drop them. The shown question keeps
+        // its buttons and its id (ui/bubble.js afterRun): the pressed option still reaches the core as the answer.
+        const end = Bubble.afterRun(el.bubble.hidden ? null
+          : { kind: st.bubbleKind, qid: st.bubbleQid, buttons: el.bButtons.childElementCount }, st.queue);
+        st.queue = end.queue;
+        if (end.keep) {
+          st.bubbleEnded = true;
+          el.bClose.hidden = false; // it may also be closed without an answer now
+          el.bubble.classList.add("has-x");
+          showCount();
+        } else if (st.bubbleKind === "question") {
           st.bubbleSticky = false;
           const next = st.queue.shift();
           if (next) showBubble(next.text, next.opts); else showBubble(el.bText.textContent);

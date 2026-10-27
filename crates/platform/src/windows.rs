@@ -38,6 +38,10 @@ use crate::{FoundElement, MonitorInfo};
 /// Characters per SendInput batch when typing; small batches keep browsers from dropping keys.
 const TYPE_CHUNK: usize = 24;
 
+/// dwExtraInfo of every mouse and key event Pip sends (the agent's input and the overlay's rescued press). The
+/// overlay's mouse hook knows Pip's own input by it (and by LLMHF_INJECTED): such a press is never rescued.
+pub const PIP_INPUT_TAG: usize = 0x5049_5021;
+
 pub struct WinPlatform {
     enigo: Mutex<Enigo>,
 }
@@ -51,7 +55,8 @@ impl WinPlatform {
     /// The concrete type (for `find` and tools that need more than the traits).
     pub fn new_arc() -> Result<Arc<WinPlatform>> {
         set_dpi_awareness();
-        let enigo = Enigo::new(&Settings::default()).map_err(|e| anyhow!("cannot control mouse and keyboard: {e}"))?;
+        let settings = Settings { windows_dw_extra_info: Some(PIP_INPUT_TAG), ..Settings::default() };
+        let enigo = Enigo::new(&settings).map_err(|e| anyhow!("cannot control mouse and keyboard: {e}"))?;
         Ok(Arc::new(WinPlatform { enigo: Mutex::new(enigo) }))
     }
 

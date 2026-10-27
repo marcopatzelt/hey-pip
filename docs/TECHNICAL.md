@@ -80,6 +80,28 @@ flowchart LR
 | **Muse Image 1.0** (`/v1/images/generations`, `/edits`) | Designed Pip: the character and its eight poses (idle, wave, listen, think, point, happy, ask, sleep). | used offline |
 | **Muse Glimmer** (open weights, local) / **Muse Spark Open** (open weights, Baseten) | Private mode: reads photos and scans of letters through an OpenAI-compatible endpoint (llama.cpp on the computer, or Baseten). SAM and the Meta API are not called for the letter. | built: private mode reads photos and scans through an OpenAI-compatible endpoint (llama.cpp or Baseten); tested against a mock server, live run pending |
 
+### Web lookup behind a tip (Muse Spark + web search)
+
+When a letter brings a "Good to know" tip, the letter pipeline (`docs/pipeline.rs`, once per letter, never inside
+the acting loop, never in private mode) asks Muse Spark with the `web_search` tool for the current official rule
+(`meta/search.rs`: one `/v1/responses` call, `search_context_size: "low"`, location DE, `include:
+["web_search_call.results"]`, no function tools, effort low, two sentences, no advice). The query is a FIXED text
+per tip id (`rules/lookup.rs`, `TOPICS`): nothing from memory, the letter or the profile can enter it, and a test
+checks every query against the demo profile. A source counts only on official domains (`ALLOWED_DOMAINS`: europa.eu,
+gesetze-im-internet.de, verbraucherzentrale.de, federal and state portals): the model's `url_citation` annotations
+first; when it cites nothing (often, measured Oct 27), the first official search result whose address or title
+names the law. No official page, no web sentence. Pip adds one sentence to the tip: "The website … says: …
+(checked …). Please check there." The Rust rule stays the ground truth: when the web text misses the rule's amount
+or period, Pip says "The rule I know says …; the website … says …. Please check with …". Answers are cached in memory
+events (`web_lookup`) for 7 days per topic and language, so the second ask costs no call and no token. Each lookup
+logs `web lookup: <tip_id> <hit|cache|none>`. `PIP_WEB_LOOKUP=0` turns it off (on by default when a key exists).
+An answer that talks about the search instead of the rule ("the results show no period", "I found") or gives
+advice is dropped too, and a banned word counts only as a whole word ("issued" is not "sue"). Measured Oct 27
+(live, 6 topics, about 5,000 tokens per search): 4 of 6 topics (flight delay, objection period, withdrawal, deposit)
+gave a usable sentence with an official page; the sick-pay and university re-registration answers only described
+the search results, so those tips keep the built-in rule and no web sentence. The search index is thin on German
+official pages, so the queries name the law and its English translation on gesetze-im-internet.de.
+
 Pip uses Meta's colour world (blue to violet) but no Meta logo and no Meta character.
 
 ## Safety and privacy
@@ -122,12 +144,16 @@ another site.
 - **Signals:** the page names a known organisation but is not its site and not a known site; the address looks like
   a known one (the known name plus extra words, or at most two letters different); a field asks for a password,
   PIN, TAN, SMS code, IBAN or card number; pressure words ("within 24 hours", "will be locked", "sofort");
-  a phone number next to "locked", "virus" or "security alert".
+  a phone number next to "locked", "virus" or "security alert"; and, with no memory at all, fields for at least two
+  of card number, CVV, SMS/one-time code and PIN together with pressure (a pressure phrase, a countdown such as
+  "09:59 left", or a fee of at most EUR 5 next to "parcel", "Paket" or "customs").
 - **Verdict:** warn = (claims a known organisation OR lookalike address) AND (asks for a secret OR rushes), OR a
-  fake warning with a phone number. A new site that asks for nothing secret, and a sister page of the insurer that
-  asks for nothing secret, stay silent.
-- **The amber bubble:** "Wait. This page doesn't look right to me.", one plain sentence per sign, then "I am not sure
-  it is a scam, but I would not type anything here." The safe button comes first: "Take me to the real Evergreen Health"
+  fake warning with a phone number, OR card and code under pressure. A new site that asks for nothing secret, a
+  sister page of the insurer that asks for nothing secret, and a shop's checkout with card fields but no pressure
+  stay silent; a site Pip used before never raises the card or phone signs.
+- **The amber bubble:** "Wait. This page doesn't look right to me.", one plain sentence per sign (for card and code:
+  "This page asks for your card number and a code and tries to rush you. It uses the name Beispiel Post, but I can't
+  check that it really belongs to Beispiel Post."), then "I can't be sure, but I would not type anything here." The safe button comes first: "Take me to the real Evergreen Health"
   (opens the page memory knows and ends the task) or "Stop here". Then "I'm sure, continue": the guard is off for
   this task, and the send card still asks before anything leaves the computer.
 - **Events:** `guard_warned` (the signs), `guard_overridden` (the user went on), `guard_redirected` (Pip opened

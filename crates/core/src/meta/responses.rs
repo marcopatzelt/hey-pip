@@ -250,6 +250,95 @@ fn parse_usage(u: Option<&Value>) -> Usage {
     Usage { input_tokens: get("input_tokens"), output_tokens: get("output_tokens") }
 }
 
+/// The built-in web search tool (Meta add-on): `{"type":"web_search","search_context_size":"low",
+/// "user_location":{"type":"approximate","country":<country>}}`. Never sent together with function tools.
+pub fn web_search_tool(country: &str) -> Value {
+    json!({
+        "type": "web_search",
+        "search_context_size": "low",
+        "user_location": { "type": "approximate", "country": country },
+    })
+}
+
+/// Turns `body` (from `ResponseRequest::to_json` without function tools) into a web search request: the one
+/// `web_search` tool, `include: ["web_search_call.results"]` (the raw hits) and a cap on output tokens.
+pub fn with_web_search(body: &mut Value, country: &str, max_output_tokens: u64) {
+    body["tools"] = json!([web_search_tool(country)]);
+    body["tool_choice"] = json!("auto");
+    body["include"] = json!(["web_search_call.results"]);
+    body["max_output_tokens"] = json!(max_output_tokens);
+}
+
+/// A `url_citation` annotation of an `output_text` part: the page the model cited for `text[start..end]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UrlCitation {
+    pub url: String,
+    pub title: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// The answer of a web search request: the final text (commentary such as "I'll look this up" is left out),
+/// the cited pages, and every page the search returned (url, title), in order.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SearchOutput {
+    pub text: String,
+    pub citations: Vec<UrlCitation>,
+    pub results: Vec<(String, String)>,
+    /// The response ran out of output tokens before it was complete.
+    pub incomplete: bool,
+}
+
+/// Parse a web search response. Messages whose `phase` is "commentary" are not the answer.
+pub fn parse_search(v: &Value) -> SearchOutput {
+    let mut out = SearchOutput {
+        incomplete: v.get("status").and_then(Value::as_str) == Some("incomplete"),
+        ..SearchOutput::default()
+    };
+    let mut texts: Vec<String> = Vec::new();
+    for item in v.get("output").and_then(Value::as_array).into_iter().flatten() {
+        match item.get("type").and_then(Value::as_str) {
+            Some("message") if item.get("phase").and_then(Value::as_str) != Some("commentary") => {
+                for part in item.get("content").and_then(Value::as_array).into_iter().flatten() {
+                    if part.get("type").and_then(Value::as_str) != Some("output_text") {
+                        continue;
+                    }
+                    let text = part.get("text").and_then(Value::as_str).unwrap_or_default();
+                    for a in part.get("annotations").and_then(Value::as_array).into_iter().flatten() {
+                        if a.get("type").and_then(Value::as_str) != Some("url_citation") {
+                            continue;
+                        }
+                        let s = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or_default().trim().to_string();
+                        let n = |k: &str| a.get(k).and_then(Value::as_u64).unwrap_or(0) as usize;
+                        if !s("url").is_empty() {
+                            out.citations.push(UrlCitation {
+                                url: s("url"),
+                                title: s("title"),
+                                start: n("start_index"),
+                                end: n("end_index"),
+                            });
+                        }
+                    }
+                    if !text.trim().is_empty() {
+                        texts.push(text.trim().to_string());
+                    }
+                }
+            }
+            Some("web_search_call") => {
+                for r in item.get("results").and_then(Value::as_array).into_iter().flatten() {
+                    let s = |k: &str| r.get(k).and_then(Value::as_str).unwrap_or_default().trim().to_string();
+                    if !s("url").is_empty() {
+                        out.results.push((s("url"), s("title")));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out.text = texts.join(" ");
+    out
+}
+
 #[derive(Debug, Clone)]
 pub enum ResponseEvent {
     TextDelta(String),
@@ -339,6 +428,44 @@ mod tests {
         assert_eq!(out.calls[0].arguments, json!({"city":"Berlin"}));
         assert_eq!(out.calls[1].arguments, Value::String("not json".into()));
         assert_eq!(out.usage, Usage { input_tokens: 533, output_tokens: 303 });
+    }
+
+    #[test]
+    fn web_search_request_and_citations() {
+        let mut body = ResponseRequest::new("muse-spark-1.3", "Two sentences.", vec![]).to_json();
+        with_web_search(&mut body, "DE", 300);
+        assert_eq!(body["tools"].as_array().unwrap().len(), 1, "no function tools next to web_search");
+        assert_eq!(body["tools"][0]["type"], "web_search");
+        assert_eq!(body["tools"][0]["search_context_size"], "low");
+        assert_eq!(body["tools"][0]["user_location"], json!({"type":"approximate","country":"DE"}));
+        assert_eq!(body["include"], json!(["web_search_call.results"]));
+        assert_eq!(body["max_output_tokens"], 300);
+        // Shape of a real answer (2026-10-27), trimmed, with one annotation added as the docs show it.
+        let v = json!({
+            "id": "resp_1", "status": "completed",
+            "output": [
+                {"type":"message","phase":"commentary","content":[{"type":"output_text","text":"I'll look.","annotations":[]}]},
+                {"type":"web_search_call","status":"completed","action":{"type":"search","query":"q"},
+                 "results":[{"type":"text_result","title":"EUR-Lex 261","url":"https://eur-lex.europa.eu/x","snippet":""},
+                            {"type":"text_result","title":"Blog","url":"https://blog.example/y","snippet":""}]},
+                {"type":"message","content":[{"type":"output_text","text":"Rule 261/2004 gives EUR 250, 400 or 600.",
+                  "annotations":[{"type":"url_citation","url":"https://eur-lex.europa.eu/x","title":"EUR-Lex 261",
+                                  "start_index":0,"end_index":40}]}]}
+            ]
+        });
+        let out = parse_search(&v);
+        assert_eq!(out.text, "Rule 261/2004 gives EUR 250, 400 or 600.");
+        assert_eq!(
+            out.citations,
+            vec![UrlCitation {
+                url: "https://eur-lex.europa.eu/x".into(),
+                title: "EUR-Lex 261".into(),
+                start: 0,
+                end: 40
+            }]
+        );
+        assert_eq!(out.results.len(), 2);
+        assert!(!out.incomplete);
     }
 
     #[test]

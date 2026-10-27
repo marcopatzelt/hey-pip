@@ -1,0 +1,68 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-air-v3-step2-filled.png",
+  "targets": {
+    "name_field": {
+      "box": [
+        579,
+        253,
+        932,
+        301
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Name of the passenger\", top left"
+    },
+    "email_field": {
+      "box": [
+        955,
+        253,
+        1308,
+        301
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"E-mail address\", top right"
+    },
+    "voucher_yes_radio": {
+      "box": [
+        584,
+        359,
+        605,
+        380
+      ],
+      "sam_query": "radio button",
+      "description": "Radio button \"Yes\" under \"Did the airline offer you a voucher?\", left of \"No\""
+    },
+    "voucher_no_radio": {
+      "box": [
+        680,
+        359,
+        701,
+        380
+      ],
+      "sam_query": "radio button",
+      "description": "Radio button \"No\" under \"Did the airline offer you a voucher?\", right of \"Yes\""
+    },
+    "iban_field": {
+      "box": [
+        579,
+        429,
+        1308,
+        477
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"IBAN for the payment\" below the voucher question"
+    },
+    "next_button": {
+      "box": [
+        1142,
+        516,
+        1308,
+        567
+      ],
+      "sam_query": "button",
+      "description": "Red button \"Continue\" bottom right of the form"
+    }
+  }
+}

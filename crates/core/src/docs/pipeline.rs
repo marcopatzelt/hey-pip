@@ -17,7 +17,7 @@ use crate::meta::responses::data_url;
 use crate::meta::{
     Content, Effort, InputItem, MODEL_SPARK, MetaClient, MetaError, OpenWeightsClient, ResponseRequest, SamBox, ToolDef,
 };
-use crate::rules::{RuleEngine, Tip, tips};
+use crate::rules::{RuleEngine, Tip, lookup, tips};
 
 /// Tool the model calls with the result (strict schema = extract + `letter_text`).
 const SAVE_TOOL: &str = "save_letter";
@@ -117,6 +117,8 @@ pub struct DocPipeline {
     rules: Arc<RuleEngine>,
     /// Private mode: letters are read by a Meta open-weights model (local or self-chosen endpoint).
     private: Option<Arc<OpenWeightsClient>>,
+    /// Check a tip's rule on official websites (`rules::lookup`; PIP_WEB_LOOKUP, never in private mode).
+    web_lookup: bool,
 }
 
 /// What kind of file we got (by magic bytes, not by extension).
@@ -413,7 +415,13 @@ pub(crate) fn insurer_from(extract: &DocumentExtract) -> Option<String> {
 
 impl DocPipeline {
     pub fn new(meta: Arc<MetaClient>, memory: Arc<Memory>, rules: Arc<RuleEngine>) -> Self {
-        Self { meta, memory, rules, private: None }
+        Self { meta, memory, rules, private: None, web_lookup: crate::config::web_lookup_from_env() }
+    }
+
+    /// Turn the web lookup behind a tip on or off (tests, the eval runner).
+    pub fn with_web_lookup(mut self, on: bool) -> Self {
+        self.web_lookup = on;
+        self
     }
 
     /// Private mode: photos and scans are read by this open-weights client; SAM and Muse Spark
@@ -441,7 +449,7 @@ impl DocPipeline {
             let known = say("doc_known", lang, &[]);
             let bubble = format!("{known} {}", bubble_text(&row.extract, &deadlines, lang));
             let unsure = is_unsure(&row.extract) && !deadlines.is_empty();
-            let tip = self.tip_for(&row.extract, &deadlines, lang);
+            let tip = self.with_web(self.tip_for(&row.extract, &deadlines, lang), lang).await;
             return Ok(IngestResult {
                 doc_id: row.id,
                 extract: row.extract,
@@ -491,7 +499,7 @@ impl DocPipeline {
             "letter ingested"
         );
         let unsure = is_unsure(&extract) && !deadlines.is_empty();
-        let tip = self.tip_for(&extract, &deadlines, lang);
+        let tip = self.with_web(self.tip_for(&extract, &deadlines, lang), lang).await;
         Ok(IngestResult {
             doc_id,
             extract,
@@ -512,6 +520,19 @@ impl DocPipeline {
             tracing::warn!(error = %e, "tip check failed");
             None
         })
+    }
+
+    /// The tip with its rule checked on an official website: once per letter, after the tip is found (never inside
+    /// the acting loop), cached 7 days. Only a fixed generic query leaves the computer (`lookup::TOPICS`); private
+    /// mode sends nothing. No tip, no lookup; no official page, the tip stays as it is.
+    async fn with_web(&self, tip: Option<Tip>, lang: Lang) -> Option<Tip> {
+        let mut tip = tip?;
+        if self.web_lookup && !self.is_private() {
+            if let Some(note) = lookup::for_tip(&self.meta, &self.memory, &tip, lang, chrono::Local::now()).await {
+                lookup::attach(&mut tip, note, lang);
+            }
+        }
+        Some(tip)
     }
 
     /// Private mode: the open-weights model reads the PNG and answers with one JSON object

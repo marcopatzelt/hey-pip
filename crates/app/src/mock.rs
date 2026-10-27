@@ -65,7 +65,7 @@ pub fn tip(lang: Lang) -> Tip {
     let text = text
         .replace("{due}", &tip_date(mock_date(MOCK_DUE), lang))
         .replace("{until}", &tip_date(mock_date(MOCK_UNTIL), lang));
-    Tip { id: rule.id, text, source: rule.source, url: rule.url, deadline_id: None }
+    Tip { id: rule.id, text, source: rule.source, url: rule.url, deadline_id: None, web: None }
 }
 
 pub async fn ingest(lang: Lang) -> MockLetter {
@@ -109,11 +109,62 @@ pub fn reminder_answer(choice: &str, lang: Lang) -> String {
 
 /// The demo story: fill the invented health-insurance form, two approval cards, done.
 /// `PIP_MOCK_SCENE=guard`: the lookalike-page scene instead (the amber guard bubble, for filming).
-pub async fn run_task(bus: &Bus, screen: OverlayInfo, lang: Lang, token: CancellationToken) -> AgentOutcome {
+/// The scripted run; a finished story leaves its closing offer on screen (the answer is awaited after the run).
+pub async fn run_task(
+    bus: &Bus,
+    screen: OverlayInfo,
+    lang: Lang,
+    token: CancellationToken,
+) -> (AgentOutcome, Option<ClosingOffer>) {
     if std::env::var("PIP_MOCK_SCENE").is_ok_and(|v| v.trim() == "guard") {
-        return run_guard_paced(bus, screen, lang, token, 1.0).await;
+        return (run_guard_paced(bus, screen, lang, token, 1.0).await, None);
     }
-    run_task_paced(bus, screen, lang, token, 1.0).await
+    let out = run_task_paced(bus, screen, lang, token, 1.0).await;
+    let offer = matches!(out, AgentOutcome::Done(_)).then(|| ask_closing_offer(bus, lang));
+    (out, offer)
+}
+
+/// A question asked at the very end of a run, still on screen when the run has ended (acting off): the overlay
+/// keeps its buttons, and the pressed option reaches the waiter here as an ordinary answer.
+pub struct ClosingOffer {
+    pub question_id: Uuid,
+    answer: tokio::sync::oneshot::Receiver<String>,
+}
+
+impl ClosingOffer {
+    /// The pressed option (button id), or None when nobody answered within `wait`.
+    pub async fn answer(self, bus: &Bus, wait: Duration) -> Option<String> {
+        let got = tokio::time::timeout(wait, self.answer).await.ok().and_then(Result::ok);
+        bus.pending.resolve_answer(self.question_id, String::new());
+        got.filter(|a| !a.is_empty())
+    }
+}
+
+/// Ask the closing offer: "Shall I remind you about the next sick note?" [Yes] [Not now].
+pub fn ask_closing_offer(bus: &Bus, lang: Lang) -> ClosingOffer {
+    let question_id = Uuid::new_v4();
+    let answer = bus.pending.wait_answer(question_id);
+    let text = pick(
+        lang,
+        "Soll ich dich am Montag an die nächste Krankschreibung erinnern?",
+        "Shall I remind you about the next sick note on Monday?",
+    );
+    bus.emit(UiEvent::Speak { text: text.into() });
+    bus.emit(UiEvent::Bubble {
+        text: text.into(),
+        buttons: vec![Button::new("yes", t("btn_yes", lang), true), Button::new("no", t("btn_not_now", lang), false)],
+        question_id: Some(question_id),
+    });
+    ClosingOffer { question_id, answer }
+}
+
+/// What Pip says to the closing offer's answer.
+pub fn closing_reply(lang: Lang, choice: &str) -> &'static str {
+    if choice == "yes" {
+        pick(lang, "Mache ich. Ich sage dir am Montag Bescheid.", "Will do. I'll let you know on Monday.")
+    } else {
+        pick(lang, "Gut, dann nicht.", "Okay, I won't.")
+    }
 }
 
 /// The guard bubble as the core sends it: an ordinary bubble with "guard:" buttons; line 1 = title, one line per

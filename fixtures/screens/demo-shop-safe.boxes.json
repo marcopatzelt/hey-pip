@@ -1,0 +1,48 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-shop-safe.png",
+  "targets": {
+    "card_field": {
+      "box": [
+        309,
+        320,
+        592,
+        368
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Card number\""
+    },
+    "expiry_field": {
+      "box": [
+        607,
+        344,
+        748,
+        392
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Expiry date (MM/YY)\""
+    },
+    "cvv_field": {
+      "box": [
+        763,
+        320,
+        904,
+        368
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Security code\""
+    },
+    "submit_button": {
+      "box": [
+        309,
+        407,
+        500,
+        459
+      ],
+      "sam_query": "button",
+      "description": "Green button \"Pay EUR 23.80\""
+    }
+  }
+}

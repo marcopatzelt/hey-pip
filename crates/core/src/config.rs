@@ -28,6 +28,9 @@ pub struct Config {
     pub private_model: String,
     /// PIP_PRIVATE=0 turns private mode off even when the base is set.
     pub private_disabled: bool,
+    /// PIP_WEB_LOOKUP: check the rule behind a "Good to know" tip on official sites (Muse Spark + web search).
+    /// On when an API key exists; `PIP_WEB_LOOKUP=0` turns it off (the eval runner does for agent rows).
+    pub web_lookup: bool,
 }
 
 impl Config {
@@ -58,6 +61,7 @@ impl Config {
             private_model: var("PRIVATE_MODEL").unwrap_or_else(|| crate::meta::MODEL_GLIMMER.to_string()),
             private_disabled: var("PIP_PRIVATE")
                 .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off")),
+            web_lookup: web_lookup_on(&var),
         }
     }
 
@@ -71,6 +75,19 @@ impl Config {
     pub fn db_path(&self) -> PathBuf {
         self.data_dir.join("memory.db")
     }
+}
+
+/// The web lookup switch: a key exists and PIP_WEB_LOOKUP is not "0"/"off"/"false"/"no".
+fn web_lookup_on(var: &dyn Fn(&str) -> Option<String>) -> bool {
+    var("MODEL_API_KEY").is_some()
+        && !var("PIP_WEB_LOOKUP")
+            .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
+}
+
+/// `Config::web_lookup` read from the process environment (after `.env`), for code that has no Config
+/// (the letter pipeline). The key itself is only checked for presence, never kept.
+pub fn web_lookup_from_env() -> bool {
+    web_lookup_on(&|k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()))
 }
 
 const APP_DIR: &str = "Pip";
@@ -236,5 +253,15 @@ mod tests {
             assert!(!cfg(&[("PRIVATE_MODEL_BASE", "http://x/v1"), ("PIP_PRIVATE", no)]).private_mode(), "{no}");
         }
         assert!(!cfg(&[("PRIVATE_MODEL_BASE", "  ")]).private_mode(), "blank base is no base");
+    }
+
+    #[test]
+    fn web_lookup_switch() {
+        assert!(!cfg(&[]).web_lookup, "no key, no lookup");
+        assert!(cfg(&[("MODEL_API_KEY", "k")]).web_lookup, "on by default with a key");
+        for no in ["0", "off", "false", "no"] {
+            assert!(!cfg(&[("MODEL_API_KEY", "k"), ("PIP_WEB_LOOKUP", no)]).web_lookup, "{no}");
+        }
+        assert!(cfg(&[("MODEL_API_KEY", "k"), ("PIP_WEB_LOOKUP", "1")]).web_lookup);
     }
 }

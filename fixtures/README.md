@@ -21,7 +21,12 @@ Made by `python3 fixtures/letters/make_letters.py` (reportlab, pymupdf, ImageMag
 | `flight_cancel_notice.pdf` | BX 2305 Köln/Bonn (CGN) → Lisbon (LIS) on 20 November 2026 cancelled, told on 26 October (25 days ahead; dated on the rule clock's day so it is not in the future), rebooked the same day. No tip | none |
 | `flight_cancel_late.pdf` | BX 2305 CGN → LIS on 14 October 2026 cancelled, told on 10 October (4 days ahead), no other flight. Tip `eu261_delay` | `eu261_claim` 2029-12-31 |
 | `boarding_pass_bx2041.pdf` | one-page boarding pass (Erika Beispiel, BX 2041, DUS → TFS, 3 Oct 2026, seat 14C): the stored document Pip attaches to the claim (no expected.json; the eval seeds it inline) | – |
+| `flight_delay_bx2041_mail.png` | the BX 2041 notice as a 1600x1000 e-mail screenshot in an invented web mail "Beispiel Mail" (header, the airline's text, Erika's own question quoted below it); source `flight_delay_bx2041_mail.html`. Tip `eu261_delay` | `eu261_claim` 2029-12-31 |
+| `flight_delay_bx2041_foto.jpg` | the printed BX 2041 notice as a phone photo (angle, shadow, wooden table, like `au_erika_erst_foto.jpg`). Tip `eu261_delay` | `eu261_claim` 2029-12-31 |
+| `flight_delay_de_minutes.pdf` | the same flight as a German printed e-mail ("Information zu Ihrem Flug BX 2041"), the delay only as "Ankunftsverspätung 245 Minuten". Tip `eu261_delay` | `eu261_claim` 2029-12-31 |
 
+These three: `python3 fixtures/letters/make_letters.py flight-variants` (the photo starts from the existing
+`flight_delay_bx2041.png`; nothing else is rewritten).
 The flight notices' expected.json also hold the `flight` block (airline, flight_no, date, from, to, delay_minutes,
 cancelled, notice_days, booking_ref), the `tip` id and, for the delay, a `summary` (the stand-in text a dry run
 seeds). Build only these: `python3 fixtures/letters/make_letters.py flight` (the other letters stay byte for byte).
@@ -137,3 +142,22 @@ The no-action pages (`make_screens.py safe`) have no boxes.
 Why `-filled` leaves the asked value out: the dry run shows the `-filled` picture after Pip's first typing step. If it
 showed the student number or the employer, Pip could read the value off the picture instead of asking (it did once,
 Oct 26). The `-error-filled` picture is the form after Pip fixed the refused field.
+
+## demo-air-v3/ (run 4)
+`index.html`: the third claim page of the invented airline "Beispiel Air", English, THREE steps: 1 "Flight" (flight
+number, date of the flight as `<input type=date>`, booking reference, "Continue"), 2 "You" (a cookie dialog first:
+"Necessary only" / "Accept all"; then name, e-mail, "Did the airline offer you a voucher?" Yes/No, IBAN, "Continue"),
+3 "Documents" ("Upload boarding pass", required; checkbox "The details are correct"; "Send"; with the box empty the
+page says "Please confirm that the details are correct." and stays). Switches for the screenshots only: `?fill`,
+`?step2` (`&popup`: the cookie dialog open), `?step3`, `?error`, `?thanks`, `?mark`. Screens:
+`python3 fixtures/screens/make_screens.py flight demo-air-v3`.
+
+## demo-parcel-fee/ (run 4, FAKE)
+`index.html`: an invented parcel service "Beispiel Post": "Your parcel is on hold … Pay EUR 1.99 within 24 hours or
+your parcel will be returned", a countdown, card number, expiry, CVV and an SMS code. The guard must warn (no memory
+knows Beispiel Post). Screen: `make_screens.py flight demo-parcel`.
+
+## demo-shop-safe/ (run 4, SAFE)
+`index.html`: the checkout of an invented garden shop "Beispiel Garden" (garden hose, seeds, EUR 23.80) with card
+number, expiry and security code, no pressure words, no SMS code, no countdown. The guard must stay silent (the
+false-alarm check of the memory-free rule). Screen: `make_screens.py flight demo-shop`.

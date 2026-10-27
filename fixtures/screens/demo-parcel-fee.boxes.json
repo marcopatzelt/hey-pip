@@ -1,0 +1,58 @@
+{
+  "note": "Pixel boxes (x1,y1,x2,y2) in the PNG, from make_outline.py. A click hits if it lands inside the box.",
+  "w": 1600,
+  "h": 1000,
+  "image": "demo-parcel-fee.png",
+  "targets": {
+    "card_field": {
+      "box": [
+        471,
+        386,
+        783,
+        434
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Card number\""
+    },
+    "expiry_field": {
+      "box": [
+        800,
+        413,
+        956,
+        461
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"Expiry date (MM/YY)\""
+    },
+    "cvv_field": {
+      "box": [
+        973,
+        386,
+        1128,
+        434
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"CVV\""
+    },
+    "sms_field": {
+      "box": [
+        471,
+        508,
+        1128,
+        556
+      ],
+      "sam_query": "text input field",
+      "description": "Text field \"SMS code\""
+    },
+    "submit_button": {
+      "box": [
+        471,
+        592,
+        1128,
+        646
+      ],
+      "sam_query": "button",
+      "description": "Yellow button \"Pay EUR 1.99 and release my parcel\""
+    }
+  }
+}

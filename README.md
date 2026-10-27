@@ -154,11 +154,15 @@ weights.
 - SAM 3.1 returns exact boxes for buttons and fields, so Pip's clicks land in the middle of the right one.
 - The open-weights models (Muse Glimmer, Muse Spark Open) can run on your own computer, so a private letter can stay
   there.
+- When a letter brings a "Good to know" tip, Muse Spark with web search checks the rule on official sites (EUR-Lex,
+  gesetze-im-internet.de, consumer centres) and Pip adds one sentence with the page and the date. The search query
+  never contains anything about you: it is a fixed text per topic, and answers are kept for 7 days.
 
 | Model | Its job in Pip | Status |
 |---|---|---|
 | **Muse Spark 1.3** | The brain, with reasoning and vision. Plans every step, reads letters into a strict and checked format, and writes Pip's plain sentences. | built |
 | **SAM 3.1** | The eyes for shapes. Finds the exact box of a button or field, and cuts the paper out of a phone photo. | built |
+| **Muse Spark + web search** | Checks the current rule behind a tip against official sources and shows the link. The rule built into Pip stays the ground truth; when the website says something else, Pip says both and asks you to check. The search query never contains anything about you. | built; live Oct 27: 4 of 6 topics got a web sentence with an official page (flight delay, objection period, withdrawal, deposit); for sick pay and university re-registration the search found no usable official text, so those tips keep the built-in rule only |
 | **Muse Voice Transcribe** | Hold Pip and say what you need. | built; microphone on Windows still to test |
 | **Muse Image** | Drew Pip and its poses. | used for the design |
 | **Muse Glimmer / Muse Spark Open** | Private mode: a letter is read by an open-weights model on your own computer or your own server. | built; tested against a mock server, live run pending |
@@ -176,7 +180,7 @@ sent. The full tables and the known weak spots are in [`eval/results.md`](eval/r
 | Send card held the *Submit* click when the user said no | 1 of 1 demo form; 2 of 2 real public test forms (a pizza order on httpbin.org and the Selenium web form, dry run: the card appeared, nothing was sent) |
 | Flight claim page, 2 steps, IBAN error fixed by Pip | 4 of 6 sent with full memory (IBAN typed without spaces 6 of 6, one send card each); cold 0 of 6 with 2 to 4 questions: without a stored boarding pass the required upload stops Pip |
 | Brief → "claim EUR 400, attach my boarding pass" | 1 of 1 sent: 10 steps, boarding pass picked in the file dialog, one send card |
-| Fake pages stopped by the guard (lookalike airline, lookalike insurer, "your computer is locked") | 4 of 4 runs with memory, before Pip typed anything (0 model steps, 0.1 s); cold, the airline lookalike is not recognised, but Pip refused to fill it |
+| Fake pages stopped by the guard (lookalike airline, lookalike insurer, "your computer is locked") | 4 of 4 runs with memory, before Pip typed anything (0 model steps, 0.1 s). Since Oct 27 also without memory: the airline lookalike cold 1 of 1 (0 model steps) and a fake parcel fee 2 of 2 (full and cold), from the page's own signs (card and code under pressure); a shop's checkout with card fields: 0 warnings in 2 runs |
 | False alarms on safe pages | 0 of 115 runs (the airline's own page with its IBAN field included) |
 | Sent after one approved send card, all tasks except the flight pages | 69 of 77 runs, in five memory conditions |
 | Click targets found from the picture alone (SAM 3.1 + Muse Spark) | 20 of 20 on 5 buttons × 4 runs; 28 of 32 on two busy pages; median 3 to 8 s per target, two targets 8.5 and 10.4 s (one run at a time) |

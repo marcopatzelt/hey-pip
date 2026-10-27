@@ -621,8 +621,8 @@ static TABLE: &[(&str, &str, &str)] = &[
     ),
     (
         "guard_source",
-        "Ich weiß nicht sicher, ob das Betrug ist, aber ich würde hier nichts eintippen.",
-        "I am not sure it is a scam, but I would not type anything here.",
+        "Ich bin nicht sicher, aber ich würde hier nichts eintippen.",
+        "I can't be sure, but I would not type anything here.",
     ),
     ("guard_from_letter", "aus deinem Brief vom {date}", "from your letter of {date}"),
     ("guard_from_you", "das hast du mir gesagt", "you told me"),
@@ -698,6 +698,28 @@ static TABLE: &[(&str, &str, &str)] = &[
         "Here is my draft: \"{draft}\" Open the contact page of {sender} and press Look at my screen.",
     ),
     ("tip_sender_unknown", "dem Absender", "the sender"),
+    // --- web lookup behind a "Good to know" tip (rules::lookup; the Rust rule stays the ground truth) ---
+    (
+        "tip_web_note",
+        "Die Webseite {title} sagt: {text} (geprüft am {date}). Bitte schau dort nach.",
+        "The website {title} says: {text} (checked {date}). Please check there.",
+    ),
+    (
+        "tip_web_differs",
+        "Die Regel, die ich kenne, sagt: {rule}; die Webseite {title} sagt: {web}. Bitte frag bei {org} nach.",
+        "The rule I know says {rule}; the website {title} says {web}. Please check with {org}.",
+    ),
+    // --- the guard without memory: card fields and a code under pressure (rules::guard) ---
+    (
+        "guard_payment_pressure",
+        "Diese Seite fragt nach deiner Kartennummer und einem Code und macht Druck. {org_line}",
+        "This page asks for your card number and a code and tries to rush you. {org_line}",
+    ),
+    (
+        "guard_payment_org",
+        "Sie nennt sich {org}, aber ich kann nicht prüfen, ob sie wirklich zu {org} gehört.",
+        "It uses the name {org}, but I can't check that it really belongs to {org}.",
+    ),
 ];
 
 /// Lookup. Unknown key -> the key itself (visible in tests, never panics).
@@ -782,6 +804,36 @@ mod tests {
             "Open U and send this message to I. Type it into the message field exactly: \"D\". Fill in my name and \
              insurance number from what you know about me, then press the send button."
         );
+    }
+
+    #[test]
+    fn guard_texts_never_judge_the_page() {
+        // Pip names warning signs and lets the user decide: no verdict words in any guard line.
+        const VERDICTS: &[&str] = &["scam", "betrug", "safe", "sicher ist", "guaranteed", "garantiert"];
+        for (k, de, en) in TABLE.iter().filter(|(k, ..)| k.starts_with("guard_")) {
+            for text in [de, en] {
+                let low = text.to_lowercase();
+                assert!(!VERDICTS.iter().any(|v| low.contains(v)), "{k}: {text}");
+            }
+        }
+        assert_eq!(t("guard_source", Lang::En), "I can't be sure, but I would not type anything here.");
+        let line = tf("guard_payment_pressure", Lang::En, &[("org_line", "")]);
+        assert!(line.contains("card number") && line.contains("code"), "{line}");
+    }
+
+    #[test]
+    fn web_lookup_texts_point_to_the_source_and_give_no_advice() {
+        const ADVICE: &[&str] = &["you must", "sue", "claim now", "lawyer", "du musst", "klag", "anwalt"];
+        for lang in [Lang::De, Lang::En] {
+            let note = tf("tip_web_note", lang, &[("title", "T"), ("text", "X"), ("date", "D")]);
+            let differs = tf("tip_web_differs", lang, &[("rule", "R"), ("title", "T"), ("web", "W"), ("org", "O")]);
+            for s in [&note, &differs] {
+                assert!(!s.contains('{'), "{s}");
+                let low = s.to_lowercase();
+                assert!(!ADVICE.iter().any(|a| low.contains(a)), "{s}");
+            }
+            assert!(differs.contains('R') && differs.contains('W') && differs.contains('O'));
+        }
     }
 
     #[test]

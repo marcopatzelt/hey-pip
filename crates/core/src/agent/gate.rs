@@ -228,6 +228,25 @@ pub(crate) fn is_attach_target(target: &str) -> bool {
     is_attach_like(target) && !is_send_target(target)
 }
 
+/// True if the target only turns the page of a form ("Next", "Continue", "Weiter"): never a send button.
+pub(crate) fn is_next_target(target: &str) -> bool {
+    let low = target.to_lowercase();
+    if is_send_target(&low) {
+        return false;
+    }
+    let words: Vec<&str> = low.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    words.iter().any(|w| matches!(*w, "next" | "continue" | "weiter" | "fortfahren" | "nächste" | "nächster"))
+        || ["go on", "next step", "nächster schritt"].iter().any(|p| low.contains(p))
+}
+
+/// True if the target is a taskbar button or a browser's app icon ("the Edge icon in the taskbar").
+pub(crate) fn is_taskbar_target(target: &str) -> bool {
+    let low = target.to_lowercase();
+    ["taskbar", "task bar", "taskleiste", "edge icon", "browser icon", "edge-symbol", "browser-symbol", "edge symbol"]
+        .iter()
+        .any(|w| low.contains(w))
+}
+
 /// True if the target deletes something (card title "löschen").
 pub(crate) fn is_delete_target(target: &str) -> bool {
     let low = target.to_lowercase();
@@ -755,5 +774,30 @@ mod attach_words_tests {
         ));
         assert!(!is_attach_like("the browser tab „Questionnaire“"));
         assert!(!is_attach_like("Your profile"));
+    }
+}
+
+#[cfg(test)]
+mod next_and_taskbar_tests {
+    use super::{is_next_target, is_taskbar_target};
+
+    #[test]
+    fn next_buttons_only_turn_the_page() {
+        assert!(is_next_target("the button „Next“ below the form"));
+        assert!(is_next_target("Weiter"));
+        assert!(is_next_target("Continue to step 2"));
+        assert!(!is_next_target("Send claim"));
+        assert!(!is_next_target("Weiter und absenden"));
+        assert!(!is_next_target("Upload boarding pass"));
+        assert!(!is_next_target("Nextcloud login"));
+    }
+
+    #[test]
+    fn taskbar_and_browser_icons() {
+        assert!(is_taskbar_target("the Edge icon „Microsoft Edge“ in the task bar"));
+        assert!(is_taskbar_target("das Edge-Symbol in der Taskleiste"));
+        assert!(is_taskbar_target("browser icon"));
+        assert!(!is_taskbar_target("the button „Next“"));
+        assert!(!is_taskbar_target("the browser tab „Claim“"));
     }
 }

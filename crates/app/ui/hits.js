@@ -24,15 +24,19 @@
    *                                            { x, y, w, h, bottom } (only used at the edge with nothing open)
    *   boxes: [rect | null]                     every other visible node (null = hidden)
    *   micDown: bool, viewport: { w, h }        holding the mic: the whole overlay keeps the mouse
+   *   acting: bool                             a run acts (progress pill, Stop): Pip's body takes no clicks
    * }
    * Peek never shrinks the rects while something is open: then Pip counts with his whole box.
+   * While a run acts, Pip flies right next to the target: his body (and the pointing arrow, never a rect) must not
+   * catch the agent's click on it (VM 27.10. 10:32:59, "Open form" rescued onto Pip). Only the bubble, the card,
+   * Stop and the pill take clicks then.
    */
   function cssRects(scene) {
     const out = [];
     const boxes = scene.boxes || [];
     if (scene.micDown && scene.viewport) out.push({ x: 0, y: 0, w: scene.viewport.w, h: scene.viewport.h });
     const pip = scene.pip;
-    if (pip && usable(pip.box)) {
+    if (pip && usable(pip.box) && !scene.acting) {
       const resting = pip.home && (pip.peek === "rest" || pip.peek === "hover");
       if (resting && !anyOpen(boxes) && usable(pip.head)) {
         const g = pip.head, m = HEAD_MARGIN[pip.peek];

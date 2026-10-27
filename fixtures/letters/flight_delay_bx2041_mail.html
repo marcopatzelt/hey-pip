@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Inbox – Beispiel Mail</title>
+<!-- Source of flight_delay_bx2041_mail.png (make_letters.py flight-variants): the delay notice of the INVENTED airline
+     "Beispiel Air" as an e-mail open in an invented web mail ("Beispiel Mail"), with the mail header and a reply quote
+     under it (Erika's own short question, quoted below the airline's answer). All names, numbers and hosts invented. -->
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 "Segoe UI", system-ui, Arial, sans-serif; color: #202124; background: #f6f8fc; }
+  .bar { height: 56px; display: flex; align-items: center; gap: 16px; padding: 0 20px; background: #fff; border-bottom: 1px solid #e0e3e7; }
+  .bar b { font-size: 20px; color: #3b5bdb; }
+  .search { margin-left: 40px; width: 560px; height: 38px; border-radius: 19px; background: #eef1f6; color: #6b7280; display: flex; align-items: center; padding: 0 18px; }
+  .wrap { display: grid; grid-template-columns: 220px 1fr; height: calc(100vh - 56px); }
+  .side { padding: 14px 10px; }
+  .side div { padding: 7px 14px; border-radius: 0 16px 16px 0; color: #444; }
+  .side .on { background: #d3e3fd; font-weight: 600; color: #111; }
+  .mail { background: #fff; margin: 10px 14px 0 0; border-radius: 12px 12px 0 0; padding: 22px 34px; overflow: hidden; }
+  h1 { font-size: 21px; font-weight: 500; margin: 0 0 16px; }
+  .from { display: flex; gap: 12px; align-items: center; margin-bottom: 4px; }
+  .avatar { width: 38px; height: 38px; border-radius: 50%; background: #c8102e; color: #fff; display: grid; place-items: center; font-weight: 700; }
+  .meta { color: #5f6368; font-size: 13px; }
+  .when { margin-left: auto; color: #5f6368; font-size: 13px; }
+  .body { margin: 14px 0 0 50px; max-width: 900px; }
+  .body p { margin: 0 0 8px; }
+  table { border-collapse: collapse; margin: 6px 0 10px; background: #f6f1f2; }
+  td { padding: 3px 14px; }
+  td:first-child { color: #5f6368; }
+  td:last-child { font-weight: 600; }
+  .quote { border-left: 3px solid #c7cbd1; padding-left: 12px; color: #5f6368; margin-top: 12px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="bar"><b>Beispiel Mail</b><div class="search">Search mail</div></div>
+<div class="wrap">
+  <div class="side"><div class="on">Inbox 3</div><div>Starred</div><div>Sent</div><div>Drafts</div><div>Trips</div></div>
+  <div class="mail">
+    <h1>Re: Beispiel Air – Information about your flight BX 2041</h1>
+    <div class="from"><div class="avatar">BX</div>
+      <div><b>Beispiel Air Customer Service</b> &lt;service@beispiel-air.example&gt;<div class="meta">to Erika Beispiel &lt;erika.beispiel@example.com&gt;</div></div>
+      <div class="when">Sun, 4 Oct 2026, 09:12</div></div>
+    <div class="body">
+      <p>Dear Ms Beispiel,</p>
+      <p>we are sorry that your flight arrived late. Here are the details of your journey:</p>
+      <table>
+        <tr><td>Passenger</td><td>Erika Beispiel</td></tr>
+        <tr><td>Booking reference</td><td>BX7Q2K</td></tr>
+        <tr><td>Flight</td><td>BX 2041</td></tr>
+        <tr><td>Route</td><td>Düsseldorf (DUS) → Tenerife South (TFS)</td></tr>
+        <tr><td>Date of flight</td><td>3 October 2026</td></tr>
+        <tr><td>Scheduled arrival</td><td>14:10</td></tr>
+        <tr><td>Actual arrival</td><td>18:20 (4 h 10 min late)</td></tr>
+      </table>
+      <p>You can submit a request at beispiel-air.example/claim. Please have your booking reference and your boarding pass ready.</p>
+      <p>Kind regards,<br>Your Beispiel Air customer service</p>
+      <div class="quote">
+        On Sat, 3 Oct 2026, 21:47, Erika Beispiel &lt;erika.beispiel@example.com&gt; wrote:<br>
+        Hello, my flight today from Düsseldorf was very late. What can I do? Erika Beispiel
+      </div>
+      <p class="meta" style="margin-top:28px">Erfundenes Beispiel für Tests. Alle Namen, Nummern und Adressen sind ausgedacht.</p>
+    </div>
+  </div>
+</div>
+</body>
+</html>

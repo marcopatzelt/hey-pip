@@ -39,6 +39,9 @@ pub struct Tip {
     pub url: &'static str,
     /// The deadline a brief tip is about (None for a letter tip).
     pub deadline_id: Option<i64>,
+    /// The current rule as an official website states it (Muse Spark + web search, `rules::lookup`), when the
+    /// letter pipeline checked it; its sentence is already appended to `text`. Never set by the pure functions.
+    pub web: Option<crate::meta::WebNote>,
 }
 
 /// When a rule fits.
@@ -315,7 +318,7 @@ fn fill_tip(rule: &TipRule, text: &str, args: &[(&str, &str)], deadline_id: Opti
     for (k, v) in args {
         out = out.replace(&format!("{{{k}}}"), v);
     }
-    Tip { id: rule.id, text: out, source: rule.source, url: rule.url, deadline_id }
+    Tip { id: rule.id, text: out, source: rule.source, url: rule.url, deadline_id, web: None }
 }
 
 /// "Monday, 2 November" / "Montag, 2. November".
