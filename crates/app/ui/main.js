@@ -25,7 +25,16 @@ let peekSecs = 10;         // PIP_PEEK_SECS from the app: quiet this long -> bac
 let S = {};
 const s = (k) => S[k] || k;
 let info = { x: 0, y: 0, w: innerWidth, h: innerHeight, scale: 1, windowed: false };
-const dpr = () => window.devicePixelRatio || 1;
+// Screen px per CSS px. With a page zoom (PIP_UI_SCALE, Linux) the webview may or may not fold the zoom into
+// devicePixelRatio: whichever of scale or scale*zoom it is closer to tells which, and the zoom is added if missing.
+/** Pip stops talking (a click on him, the bubble's ✕ or a bubble button). The task itself goes on. */
+const hush = () => invoke("hush").catch(() => {});
+const dpr = () => {
+  const d = window.devicePixelRatio || 1;
+  const z = Number.isFinite(info.ui_zoom) && info.ui_zoom > 0 ? info.ui_zoom : 1;
+  if (z === 1 || !Number.isFinite(info.scale)) return d;
+  return Math.abs(d - info.scale * z) <= Math.abs(d - info.scale) ? d : d * z;
+};
 
 const st = {
   pos: { x: innerWidth + 40, y: innerHeight - P - 24 },
@@ -540,6 +549,7 @@ function makeButton(label, primary, onClick, cls) {
   b.textContent = label;
   Bubble.attach(b, (via) => {
     jsLog("info", `button pressed: ${String(label).slice(0, 40)} (${via})`);
+    hush(); // an answer means "heard enough": the sentence still playing stops
     onClick();
   });
   return b;
@@ -668,7 +678,7 @@ function decorateStats(text) {
 el.bubble.addEventListener("click", (e) => {
   if (el.bubble.classList.contains("closable") && !e.target.closest("button")) hideBubble();
 });
-Bubble.attach(el.bClose, () => hideBubble());
+Bubble.attach(el.bClose, () => { hush(); hideBubble(); });
 
 /** Core / app buttons: "cmd:<type>" -> UserCommand, "app:<action>" -> app_action, "close" -> just close. */
 // A question without choices: a text field and one button that sends what was typed.
@@ -1276,6 +1286,7 @@ const HOLD_SLOP = 8;   // px the pointer may move before a press is no longer a 
 const press = { id: null, x: 0, y: 0, timer: 0, holding: false, used: false };
 function pipClick() {
   st.pipClickAt = performance.now();
+  hush();
   if (st.dragging) return;
   if (st.peek !== "up") setPeek(Peek.next(st.peek, "click"));
   if (st.paused) { invoke("wake").catch(() => {}); return; }

@@ -241,6 +241,9 @@ struct PageInfo {
     /// "peek" | "always"
     mode: &'static str,
     peek_secs: u64,
+    /// Page zoom the app set (`PIP_UI_SCALE`, Linux only; 1.0 elsewhere). The page folds it into its
+    /// devicePixelRatio when the webview does not (ui/main.js `dpr`).
+    ui_zoom: f64,
 }
 
 /// After a finished task Pip waits this long before his offer, so the "Done." line can be read.
@@ -544,6 +547,7 @@ fn overlay_info(ctx: tauri::State<'_, Shared>) -> PageInfo {
         screen: ctx.screen(),
         mode: mode_name(ctx.always_show.load(Ordering::SeqCst)),
         peek_secs: peek_secs_from(std::env::var("PIP_PEEK_SECS").ok().as_deref()),
+        ui_zoom: overlay::ui_scale(),
     }
 }
 
@@ -559,6 +563,13 @@ fn ui_ready(ctx: tauri::State<'_, Shared>) {
     if !ctx.ready.swap(true, Ordering::SeqCst) {
         ctx.inner().clone().start();
     }
+}
+
+/// "Be quiet": a click on Pip, the bubble's ✕ or one of its buttons cuts off what Pip is saying right now.
+/// Only the voice stops; a running task goes on (Stop and Esc stop that).
+#[tauri::command]
+fn hush(ctx: tauri::State<'_, Shared>) {
+    let _ = ctx.speaker.stop();
 }
 
 /// Click on the sleeping Pip.
@@ -642,6 +653,7 @@ pub fn run() -> Result<()> {
             ui_strings,
             open_knowledge,
             ui_ready,
+            hush,
             wake,
             focus_window,
             release_focus,
@@ -699,6 +711,14 @@ pub fn run() -> Result<()> {
                     }),
                 };
                 overlay::setup(&win, ctx.bus.clone(), windowed, mouse_stop)?;
+                // Bigger Pip and bubble on a big screen (PIP_UI_SCALE, e.g. 1.35): the page is zoomed, its
+                // CSS-px rects still map to screen pixels through the page's (zoom-aware) devicePixelRatio.
+                #[cfg(target_os = "linux")]
+                if (overlay::ui_scale() - 1.0).abs() > 0.001
+                    && let Err(e) = win.set_zoom(overlay::ui_scale())
+                {
+                    tracing::warn!("set_zoom: {e}");
+                }
             }
             match tray::setup(app.handle(), ctx.lang(), ctx.always_show.load(Ordering::SeqCst), ctx.backend.tips_off())
             {
@@ -2778,6 +2798,7 @@ mod tests {
             screen: OverlayInfo { x: 0, y: 0, w: 1920, h: 1032, scale: 1.0, windowed: false },
             mode: "peek",
             peek_secs: 10,
+            ui_zoom: 1.0,
         };
         let v = serde_json::to_value(info).unwrap();
         assert_eq!(

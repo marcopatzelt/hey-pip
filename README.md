@@ -237,6 +237,8 @@ with `cargo test --workspace`.
 | `PIP_DEMO_RESET=1` | Starts a fresh demo day (only if the memory is Erika's or empty) |
 | `PIP_MOCK=1` | Scripted demo without the API |
 | `PIP_MUTE=1` | No voice |
+| `PIP_UI_SCALE=1.35` | Linux: bigger Pip and bubble (page zoom, 0.5 to 3, default 1) |
+| `PIP_VOICE=en_US-lessac-medium` | Linux: Piper voice from `tools/piper/voices` (`PIP_PIPER=0`: system voice, `PIP_VOICE_PACE`: 1.08 = a little slower) |
 | `DEMO_NOW=2026-10-29T18:00` | Time travel for reminders |
 | `DEMO_MODE=0` | Allows real websites |
 | `PRIVATE_MODEL_BASE=http://127.0.0.1:8080/v1` | Private mode: an OpenAI-compatible endpoint with Muse Glimmer or Muse Spark Open |

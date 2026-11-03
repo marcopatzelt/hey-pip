@@ -6,6 +6,9 @@
 //! no round trip through tao's event loop), and logs every left press ("click" lines: cursor, hit rect, live
 //! click-through bit, the window under the cursor). A press on Pip's window that would still fall through is
 //! swallowed and sent again once the window takes clicks. The poll keeps tao's own flags in step.
+//! On Linux (X11/XWayland) the cursor is not known while it is over Wayland windows, so a cursor poll cannot work:
+//! the window's input shape is set to the hit rects instead (`linux_input`), and the X server sends clicks
+//! inside them to Pip and every other click to the window below.
 //! Fallback (`PIP_WINDOWED=1`): a 420x360 corner window that is always clickable.
 //! The same poll also notices a person moving the mouse on purpose while Pip acts (SPEC §0: move = stop):
 //! more than 120 px within 300 ms, or moving again at least 1 s after an earlier motion. A nudge is not a stop.
@@ -71,6 +74,15 @@ pub fn resolve_hit_rects(
         Some(o) if scale.is_finite() && (0.25..=8.0).contains(&scale) => css_to_phys(css, o, scale),
         _ => fallback,
     }
+}
+
+/// Page zoom for a bigger Pip and bubble (`PIP_UI_SCALE`, 0.5..=3, default 1.0). Only applied on Linux.
+pub fn ui_scale() -> f64 {
+    parse_ui_scale(std::env::var("PIP_UI_SCALE").ok().as_deref())
+}
+
+fn parse_ui_scale(v: Option<&str>) -> f64 {
+    v.and_then(|v| v.trim().parse::<f64>().ok()).filter(|z| z.is_finite() && (0.5..=3.0).contains(z)).unwrap_or(1.0)
 }
 
 /// The cursor on the screen (physical px). On Windows straight from the OS: no round trip through the event loop,
@@ -197,8 +209,13 @@ pub fn setup(win: &WebviewWindow, bus: Bus, windowed: bool, mouse_stop: MouseSto
         let _ = win.set_resizable(true);
         let _ = win.maximize();
     }
+    #[cfg(not(target_os = "linux"))]
     if !windowed {
         win.set_ignore_cursor_events(true)?;
+    }
+    #[cfg(target_os = "linux")]
+    if !windowed {
+        linux_input::start(win, bus.clone());
     }
     // The mouse hook writes the click-through bit itself; `want` is the state it (or the poll) wrote last.
     #[cfg(windows)]
@@ -230,7 +247,7 @@ pub fn setup(win: &WebviewWindow, bus: Bus, windowed: bool, mouse_stop: MouseSto
             if watch.feed(p, mouse_stop.watching(now), now) {
                 (mouse_stop.on_user_move)();
             }
-            if windowed {
+            if windowed || cfg!(target_os = "linux") {
                 continue;
             }
             let ignore = !inside_any(&bus.hit_rects(), p);
@@ -306,6 +323,95 @@ pub fn setup(win: &WebviewWindow, bus: Bus, windowed: bool, mouse_stop: MouseSto
         }
     });
     Ok(())
+}
+
+/// Linux click-through: the overlay's input shape is the union of the hit rects (window-local, logical px).
+/// The X server (XWayland on GNOME) then routes a press inside them to Pip and every other press to the window
+/// below; no cursor poll is needed. Updated whenever the rects or the window's place change, and again every
+/// second (anything else that touches the shape is undone).
+#[cfg(target_os = "linux")]
+mod linux_input {
+    use super::*;
+
+    /// Window-local rects in the window's logical px: (phys - origin) / scale, rounded outward.
+    pub fn local_rects(rects: &[PhysRect], origin: PhysPoint, scale: f64) -> Vec<(i32, i32, i32, i32)> {
+        let s = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        rects
+            .iter()
+            .filter(|r| r.w > 0 && r.h > 0)
+            .map(|r| {
+                let x0 = (f64::from(r.x - origin.x) / s).floor() as i32;
+                let y0 = (f64::from(r.y - origin.y) / s).floor() as i32;
+                let x1 = (f64::from(r.x + r.w - origin.x) / s).ceil() as i32;
+                let y1 = (f64::from(r.y + r.h - origin.y) / s).ceil() as i32;
+                (x0, y0, x1 - x0, y1 - y0)
+            })
+            .collect()
+    }
+
+    fn apply(win: &WebviewWindow, local: Vec<(i32, i32, i32, i32)>) {
+        let w = win.clone();
+        let r = win.run_on_main_thread(move || {
+            use gtk::cairo::{RectangleInt, Region};
+            use gtk::prelude::*;
+            let Ok(gw) = w.gtk_window() else { return };
+            // An empty region: no part of the window takes clicks.
+            let region = Region::create();
+            for (x, y, w, h) in &local {
+                let _ = region.union_rectangle(&RectangleInt::new(*x, *y, *w, *h));
+            }
+            gw.input_shape_combine_region(Some(&region));
+            // Children with their own X window (the webview) are clipped by the toplevel's shape; set the GDK
+            // window's too, which is what tao's own click-through toggles.
+            if let Some(gdk_win) = gw.window() {
+                gdk_win.input_shape_combine_region(&region, 0, 0);
+            }
+        });
+        if let Err(e) = r {
+            tracing::debug!("input shape: {e}");
+        }
+    }
+
+    pub fn start(win: &WebviewWindow, bus: Bus) {
+        let win = win.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut last: Option<Vec<(i32, i32, i32, i32)>> = None;
+            let mut logged = false;
+            let mut tick = tokio::time::interval(Duration::from_millis(33));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut n: u64 = 0;
+            loop {
+                tick.tick().await;
+                n += 1;
+                let (Ok(pos), Ok(scale)) = (win.inner_position(), win.scale_factor()) else { continue };
+                let local = local_rects(&bus.hit_rects(), PhysPoint { x: pos.x, y: pos.y }, scale);
+                if last.as_ref() != Some(&local) || n % 30 == 0 {
+                    if !logged || last.as_ref() != Some(&local) {
+                        tracing::debug!(?local, scale, x = pos.x, y = pos.y, "linux input shape");
+                    }
+                    if !logged {
+                        tracing::info!(scale, x = pos.x, y = pos.y, "linux click-through: input shape follows Pip's rects");
+                        logged = true;
+                    }
+                    apply(&win, local.clone());
+                    last = Some(local);
+                }
+            }
+        });
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn local_rects_undo_origin_and_scale() {
+            let r = [PhysRect { x: 110, y: 60, w: 30, h: 31 }];
+            assert_eq!(local_rects(&r, PhysPoint { x: 10, y: 0 }, 2.0), vec![(50, 30, 15, 16)]);
+            assert_eq!(local_rects(&r, PhysPoint { x: 0, y: 0 }, 1.0), vec![(110, 60, 30, 31)]);
+            assert!(local_rects(&[PhysRect { x: 0, y: 0, w: 0, h: 5 }], PhysPoint { x: 0, y: 0 }, 1.0).is_empty());
+        }
+    }
 }
 
 // ---------- click-through decisions (pure: the Windows mouse hook runs them, the tests feed fake events) ----------
@@ -1181,5 +1287,18 @@ mod tests {
         for i in 0..200 {
             assert!(!w.feed(PhysPoint { x: i * 20, y: 0 }, false, t0 + Duration::from_millis(33 * i as u64)));
         }
+    }
+}
+
+#[cfg(test)]
+mod ui_scale_tests {
+    use super::parse_ui_scale;
+
+    #[test]
+    fn ui_scale_defaults_and_bounds() {
+        assert_eq!(parse_ui_scale(None), 1.0);
+        assert_eq!(parse_ui_scale(Some(" 1.35 ")), 1.35);
+        assert_eq!(parse_ui_scale(Some("9")), 1.0);
+        assert_eq!(parse_ui_scale(Some("x")), 1.0);
     }
 }

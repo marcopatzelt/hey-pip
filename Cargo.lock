@@ -3586,6 +3586,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "cpal",
+ "gtk",
  "hound",
  "image",
  "pip-core",

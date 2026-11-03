@@ -44,5 +44,9 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Threading",
 ] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Click-through on Linux: the overlay's input shape is set to Pip's rects (the version tauri itself uses).
+gtk = "0.18"
+
 [dev-dependencies]
 tempfile.workspace = true
