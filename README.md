@@ -210,9 +210,9 @@ The model does not answer the same way every time; each number is one run, all f
 You need Windows 10 or 11 and a Meta Model API key. To build Pip yourself you need Rust 1.85 or newer.
 
 ```sh
-# 1. Put your key in .env (never committed). PIP_DEMO_PROFILE=1 adds the invented person Erika.
+# 1. Put your key in .env (never committed). Pip starts in personal mode: he meets you and learns about you.
+#    For coding or a demo, add PIP_MODE=demo: Pip then starts with the invented person Erika.
 echo MODEL_API_KEY=your-key>  .env
-echo PIP_DEMO_PROFILE=1>> .env
 
 # 2. Build (on Windows) ...
 cargo build --release -p pip-app
@@ -233,7 +233,8 @@ with `cargo test --workspace`.
 
 | Switch | What it does |
 |---|---|
-| `PIP_DEMO_PROFILE=1` | Adds the invented person Erika. Her story is set relative to today. |
+| `PIP_MODE=personal` | Default: Pip starts with the onboarding and learns about you |
+| `PIP_MODE=demo` | Pip starts with the invented person Erika (for coding and demos). Her story is set relative to today. `PIP_DEMO_PROFILE=1` does the same when `PIP_MODE` is not set |
 | `PIP_DEMO_RESET=1` | Starts a fresh demo day (only if the memory is Erika's or empty) |
 | `PIP_MOCK=1` | Scripted demo without the API |
 | `PIP_MUTE=1` | No voice |

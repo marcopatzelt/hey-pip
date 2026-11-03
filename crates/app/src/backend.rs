@@ -76,6 +76,21 @@ fn demo_reset_allowed(full_name: Option<&str>, name: Option<&str>) -> bool {
     }
 }
 
+/// Which person Pip starts with. `PIP_MODE=personal` (the default for everyone): Pip meets you with the onboarding
+/// and learns about you. `PIP_MODE=demo`: the invented person Erika, for coding and the video. Without `PIP_MODE`,
+/// the older switch `PIP_DEMO_PROFILE=1` still means demo.
+pub fn demo_profile_on() -> bool {
+    demo_profile_from(std::env::var("PIP_MODE").ok().as_deref(), env_flag("PIP_DEMO_PROFILE"))
+}
+
+fn demo_profile_from(mode: Option<&str>, legacy: bool) -> bool {
+    match mode.map(|m| m.trim().to_ascii_lowercase()).as_deref() {
+        Some("demo") => true,
+        Some("personal") => false,
+        _ => legacy,
+    }
+}
+
 pub fn env_flag(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
 }
@@ -210,7 +225,7 @@ impl Backend {
             profile_fallback: Mutex::default(),
         };
         // Before PIP_LANG below, so PIP_LANG still wins over the demo profile's language.
-        if env_flag("PIP_DEMO_PROFILE")
+        if demo_profile_on()
             && let (Some(cfg), Some(mem), Some(rules)) = (&config, &backend.memory, &backend.rules)
         {
             let dir = cfg.data_dir.join("demo-letters");
@@ -375,6 +390,14 @@ fn write_demo_form(dir: &std::path::Path) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mode_picks_erika_or_you() {
+        assert!(!demo_profile_from(None, false), "personal by default");
+        assert!(demo_profile_from(None, true));
+        assert!(demo_profile_from(Some(" Demo "), false));
+        assert!(!demo_profile_from(Some("personal"), true), "personal wins over the old switch");
+    }
 
     #[test]
     fn guard_turns_panic_into_error() {
