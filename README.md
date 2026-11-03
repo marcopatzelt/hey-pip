@@ -30,7 +30,10 @@
   <a href="docs/TECHNICAL.md">Technical details</a>
 </p>
 
-<!-- DEMO VIDEO: Marco adds the video/GIF here -->
+<p align="center">
+  <a href="https://youtu.be/8qG7ty4hl_M"><img src="design/readme/demo-video.jpg" alt="Pip demo video: Pip finds EUR 400 Erika is owed, fills in the claim form and waits for her yes. Click to watch on YouTube." width="100%"></a><br>
+  <sub><a href="https://youtu.be/8qG7ty4hl_M">Watch the 2-minute demo on YouTube</a></sub>
+</p>
 
 ---
 
