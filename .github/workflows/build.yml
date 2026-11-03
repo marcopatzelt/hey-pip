@@ -29,11 +29,21 @@ jobs:
         run: cargo test -p pip-core -p pip-platform -p pip-cli --locked
       - name: Build release (app + cli)
         run: cargo build --release --locked -p pip-app -p pip-cli
+      - name: Bundle the Piper voice (open-source neural TTS) next to Pip
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip -OutFile piper.zip
+          Expand-Archive piper.zip -DestinationPath target/release -Force
+          New-Item -ItemType Directory -Force target/release/piper/voices | Out-Null
+          $v = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx"
+          Invoke-WebRequest $v -OutFile target/release/piper/voices/en_US-lessac-medium.onnx
+          Invoke-WebRequest "$v.json" -OutFile target/release/piper/voices/en_US-lessac-medium.onnx.json
       - uses: actions/upload-artifact@v4
         with:
           name: pip-windows-x64
           path: |
             target/release/pip-app.exe
             target/release/pip-cli.exe
+            target/release/piper/**
             fixtures/**
           if-no-files-found: error

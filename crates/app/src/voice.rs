@@ -1,8 +1,8 @@
 //! Voice in: microphone (cpal, hold to talk) -> core::meta::pcm_f32_to_wav16k -> transcribe.
 //! Voice out: `Speaker` trait; `tts` crate (WinRT/SAPI on Windows, speech-dispatcher on Linux);
 //! Windows fallback: PowerShell System.Speech. `PIP_MUTE=1` silences Pip.
-//! Linux: English goes through Piper (open-source neural voice, `tools/piper`, see `linux_piper`) when it is
-//! installed; else the `tts` crate as before. `PIP_VOICE` picks the Piper voice, `PIP_PIPER=0` turns it off.
+//! Linux and Windows: English goes through Piper (open-source neural voice; `linux_piper`, `win_piper`) when it
+//! is installed; else the system voice as before. `PIP_VOICE` picks the Piper voice, `PIP_PIPER=0` turns it off.
 
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
@@ -150,8 +150,8 @@ impl Speaker for TtsSpeaker {
 }
 
 fn speaker_thread(rx: std_mpsc::Receiver<SpeakMsg>) {
-    #[cfg(target_os = "linux")]
-    let mut piper = linux_piper::Piper::start();
+    #[cfg(any(target_os = "linux", windows))]
+    let mut piper = piper_voice::Piper::start();
     let mut tts = match tts::Tts::default() {
         Ok(t) => Some(t),
         Err(e) => {
@@ -168,7 +168,7 @@ fn speaker_thread(rx: std_mpsc::Receiver<SpeakMsg>) {
     while let Ok(msg) = rx.recv() {
         match msg {
             SpeakMsg::Stop => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", windows))]
                 if let Some(p) = piper.as_mut() {
                     p.stop();
                 }
@@ -176,7 +176,7 @@ fn speaker_thread(rx: std_mpsc::Receiver<SpeakMsg>) {
                     let _ = t.stop();
                 }
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             SpeakMsg::Say(text, lang) if lang == Lang::En && piper.is_some() => {
                 let p = piper.as_mut().expect("piper");
                 if let Err(e) = p.say(&text) {
@@ -411,6 +411,143 @@ mod linux_piper {
                     std::env::temp_dir().join(format!("pip-voice-{}-{i}.wav", std::process::id())),
                 );
             }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+use linux_piper as piper_voice;
+#[cfg(windows)]
+use win_piper as piper_voice;
+
+/// Windows voice: Piper's own program (`piper\piper.exe` next to Pip.exe, voices in `piper\voices`), started once
+/// with `--json-input`: one JSON line per sentence on stdin (`text`, `output_file`), it answers with the WAV path.
+/// The text never goes on a command line. The WAV plays with PlaySound (async), cut off by the next sentence or a
+/// stop. No piper folder: the Windows voice speaks as before.
+#[cfg(windows)]
+mod win_piper {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::windows::process::CommandExt;
+    use std::path::PathBuf;
+    use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+
+    use anyhow::{Context, Result, bail};
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT};
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const DEFAULT_VOICE: &str = "en_US-lessac-medium";
+
+    pub struct Piper {
+        child: Child,
+        stdin: ChildStdin,
+        stdout: BufReader<ChildStdout>,
+        n: u64,
+    }
+
+    fn piper_dir() -> Option<PathBuf> {
+        if let Some(d) = std::env::var_os("PIP_PIPER_DIR") {
+            return Some(PathBuf::from(d));
+        }
+        let exe = std::env::current_exe().ok()?;
+        Some(exe.parent()?.join("piper"))
+    }
+
+    fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        s.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    impl Piper {
+        pub fn start() -> Option<Self> {
+            if std::env::var("PIP_PIPER").is_ok_and(|v| v == "0") {
+                return None;
+            }
+            match Self::try_start() {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    tracing::info!("piper voice not used: {e:#}");
+                    None
+                }
+            }
+        }
+
+        fn try_start() -> Result<Self> {
+            let dir = piper_dir().context("no piper folder")?;
+            let exe = dir.join("piper.exe");
+            if !exe.is_file() {
+                bail!("{} missing", exe.display());
+            }
+            let voice = std::env::var("PIP_VOICE").unwrap_or_else(|_| DEFAULT_VOICE.to_string());
+            if voice.contains(['/', '\\']) || voice.contains("..") {
+                bail!("bad PIP_VOICE");
+            }
+            let model = dir.join("voices").join(format!("{voice}.onnx"));
+            if !model.is_file() {
+                bail!("voice {voice} missing in {}", dir.display());
+            }
+            let length = std::env::var("PIP_VOICE_PACE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.08);
+            let mut child = Command::new(&exe)
+                .arg("--model")
+                .arg(&model)
+                .arg("--json-input")
+                .arg("--length_scale")
+                .arg(format!("{length:.2}"))
+                .arg("--output_dir")
+                .arg(std::env::temp_dir())
+                .current_dir(&dir)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .context("start piper")?;
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if let Ok(Some(st)) = child.try_wait() {
+                bail!("piper ended at once ({st})");
+            }
+            let stdin = child.stdin.take().context("piper stdin")?;
+            let stdout = BufReader::new(child.stdout.take().context("piper stdout")?);
+            tracing::info!(voice, "voice: piper");
+            Ok(Self { child, stdin, stdout, n: 0 })
+        }
+
+        pub fn stop(&mut self) {
+            // A null sound stops whatever PlaySound plays.
+            unsafe { PlaySoundW(std::ptr::null(), std::ptr::null_mut(), 0) };
+        }
+
+        pub fn say(&mut self, text: &str) -> Result<()> {
+            self.stop();
+            let text: String = text.chars().filter(|c| !c.is_control() || *c == ' ').collect();
+            if text.trim().is_empty() {
+                return Ok(());
+            }
+            self.n += 1;
+            let out = std::env::temp_dir().join(format!("pip-voice-{}-{}.wav", std::process::id(), self.n % 2));
+            let msg = serde_json::json!({ "text": text, "output_file": out.to_string_lossy() });
+            writeln!(self.stdin, "{msg}").context("write to piper")?;
+            self.stdin.flush().context("write to piper")?;
+            let mut line = String::new();
+            if self.stdout.read_line(&mut line).context("read from piper")? == 0 {
+                bail!("piper ended");
+            }
+            // piper prints the path just before it closes the file.
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            let path = wide(out.as_os_str());
+            let ok = unsafe { PlaySoundW(path.as_ptr(), std::ptr::null_mut(), SND_FILENAME | SND_ASYNC | SND_NODEFAULT) };
+            if ok == 0 {
+                bail!("PlaySound failed");
+            }
+            tracing::debug!(chars = text.chars().count(), "piper: speaking");
+            Ok(())
+        }
+    }
+
+    impl Drop for Piper {
+        fn drop(&mut self) {
+            self.stop();
+            let _ = self.child.kill();
+            let _ = self.child.wait();
         }
     }
 }

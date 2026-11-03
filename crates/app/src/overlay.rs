@@ -76,7 +76,7 @@ pub fn resolve_hit_rects(
     }
 }
 
-/// Page zoom for a bigger Pip and bubble (`PIP_UI_SCALE`, 0.5..=3, default 1.0). Only applied on Linux.
+/// Page zoom for a bigger Pip and bubble (`PIP_UI_SCALE`, 0.5..=3, default 1.0).
 pub fn ui_scale() -> f64 {
     parse_ui_scale(std::env::var("PIP_UI_SCALE").ok().as_deref())
 }

@@ -241,7 +241,7 @@ struct PageInfo {
     /// "peek" | "always"
     mode: &'static str,
     peek_secs: u64,
-    /// Page zoom the app set (`PIP_UI_SCALE`, Linux only; 1.0 elsewhere). The page folds it into its
+    /// Page zoom the app set (`PIP_UI_SCALE`, default 1.0). The page folds it into its
     /// devicePixelRatio when the webview does not (ui/main.js `dpr`).
     ui_zoom: f64,
 }
@@ -713,7 +713,6 @@ pub fn run() -> Result<()> {
                 overlay::setup(&win, ctx.bus.clone(), windowed, mouse_stop)?;
                 // Bigger Pip and bubble on a big screen (PIP_UI_SCALE, e.g. 1.35): the page is zoomed, its
                 // CSS-px rects still map to screen pixels through the page's (zoom-aware) devicePixelRatio.
-                #[cfg(target_os = "linux")]
                 if (overlay::ui_scale() - 1.0).abs() > 0.001
                     && let Err(e) = win.set_zoom(overlay::ui_scale())
                 {
