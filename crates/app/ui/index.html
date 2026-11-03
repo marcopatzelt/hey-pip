@@ -14,6 +14,12 @@
     <symbol id="i-clip" viewBox="0 0 24 24"><path d="M16.5 6.5v10a4.5 4.5 0 0 1-9 0V5a3 3 0 0 1 6 0v10.5a1.5 1.5 0 0 1-3 0V6.5H9v9a3 3 0 0 0 6 0V5a4.5 4.5 0 0 0-9 0v11.5a6 6 0 0 0 12 0v-10h-1.5Z" fill="currentColor"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6 6.4 5Z" fill="currentColor"/></symbol>
     <symbol id="i-letter" viewBox="0 0 24 24"><path d="M6 2h8l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm7 1.5V8h4.5L13 3.5ZM7 12v1.5h10V12H7Zm0 3.5V17h7v-1.5H7Z" fill="currentColor"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M12 5C6.5 5 2.7 9.4 1.5 12c1.2 2.6 5 7 10.5 7s9.3-4.4 10.5-7C21.3 9.4 17.5 5 12 5Zm0 11.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9Zm0-2.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" fill="currentColor"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M3 20.5 21.5 12 3 3.5 3 10l12 2-12 2v6.5Z" fill="currentColor"/></symbol>
+    <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-4 12.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26A7 7 0 0 0 12 2Zm-3 18v1a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-1H9Z" fill="currentColor"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-1.2 14.2-4.3-4.3 1.4-1.4 2.9 2.9 5.9-5.9 1.4 1.4-7.3 7.3Z" fill="currentColor"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M14.5 2.5a9.5 9.5 0 1 0 7 15.9A8 8 0 0 1 14.5 2.5Z" fill="currentColor"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="m9 5-1.4 1.4 5.6 5.6-5.6 5.6L9 19l7-7-7-7Z" fill="currentColor"/></symbol>
     <symbol id="i-cal" viewBox="0 0 24 24"><path d="M7 2v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7Zm-2 8h14v10H5V10Z" fill="currentColor"/></symbol>
   </svg>
 
@@ -60,25 +66,26 @@
 
     <section id="ask" class="card ask" hidden>
       <button id="ask-close" class="icon-btn" aria-label=""><svg><use href="#i-close"/></svg></button>
-      <h2 id="ask-title"></h2>
+      <header class="ask-head">
+        <img class="ask-avatar" src="pip/idle.png" alt="" aria-hidden="true">
+        <h2 id="ask-title"></h2>
+      </header>
       <form id="ask-form" autocomplete="off">
         <div class="ask-box">
           <textarea id="ask-input" rows="1"></textarea>
+          <button id="ask-mic" type="button" class="mic-btn"><svg><use href="#i-mic"/></svg><span class="sr"></span></button>
           <button id="ask-send" type="submit" class="send-arrow" aria-label="" disabled><svg viewBox="0 0 24 24"><path d="M4 12h13M12 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </div>
         <p id="ask-hint" class="ask-hint"></p>
         <div id="ask-chips" class="chips"></div>
-        <div class="buttons">
-          <button id="ask-mic" type="button" class="btn mic"><svg><use href="#i-mic"/></svg><span></span></button>
-        </div>
       </form>
-      <div class="links">
+      <nav class="links">
         <button id="ask-letter" type="button" class="link"><svg><use href="#i-letter"/></svg><span></span></button>
-        <button id="ask-deadlines" type="button" class="link"><svg><use href="#i-cal"/></svg><span></span></button>
-        <button id="ask-knows" type="button" class="link"><span></span></button>
-        <button id="ask-card" type="button" class="link"><span></span></button>
-        <button id="ask-pause" type="button" class="link quiet"><span></span></button>
-      </div>
+        <button id="ask-deadlines" type="button" class="link" hidden><svg><use href="#i-cal"/></svg><span></span></button>
+        <button id="ask-knows" type="button" class="link"><svg><use href="#i-brain"/></svg><span></span></button>
+        <button id="ask-card" type="button" class="link"><svg><use href="#i-check"/></svg><span></span></button>
+        <button id="ask-pause" type="button" class="link quiet"><svg><use href="#i-moon"/></svg><span></span></button>
+      </nav>
     </section>
 
     <p id="note" class="note" hidden aria-live="polite"></p>

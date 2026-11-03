@@ -968,16 +968,32 @@ function lookAtScreen() {
 
 function fillChips() {
   const chips = [
-    ["btn_look_screen", lookAtScreen],
-    ["chip_send_au", () => send({ type: "text", text: s("chip_send_au") })],
-    ["chip_last_letter", () => invoke("app_action", { action: "last_letter" }).catch(() => {})],
-    ["chip_deadlines", () => invoke("open_deadlines").catch(() => {})],
+    ["btn_look_screen", "i-eye", lookAtScreen],
+    ["chip_send_au", "i-send", () => send({ type: "text", text: s("chip_send_au") })],
+    ["chip_last_letter", "i-letter", () => invoke("app_action", { action: "last_letter" }).catch(() => {})],
+    ["chip_deadlines", "i-cal", () => invoke("open_deadlines").catch(() => {})],
   ];
-  $("ask-chips").replaceChildren(...chips.map(([key, go]) => {
+  const svgUse = (id, cls) => {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    if (cls) svg.setAttribute("class", cls);
+    svg.setAttribute("aria-hidden", "true");
+    const use = document.createElementNS(NS, "use");
+    use.setAttribute("href", `#${id}`);
+    svg.appendChild(use);
+    return svg;
+  };
+  $("ask-chips").replaceChildren(...chips.map(([key, icon, go]) => {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "chip";
-    b.textContent = s(key);
+    const ico = document.createElement("span");
+    ico.className = "ico";
+    ico.appendChild(svgUse(icon));
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = s(key);
+    b.append(ico, label, svgUse("i-arrow", "go"));
     onPress(b, () => { closeAsk(); go(); });
     return b;
   }));
@@ -1378,6 +1394,8 @@ function applyStaticText() {
   $("ask-hint").textContent = s("ask_enter_hint");
   $("ask-send").setAttribute("aria-label", s("btn_go"));
   el.askMic.querySelector("span").textContent = s("btn_mic");
+  el.askMic.title = s("btn_mic");
+  el.askMic.setAttribute("aria-label", s("btn_mic"));
   $("ask-letter").querySelector("span").textContent = s("btn_pick_letter");
   $("ask-deadlines").querySelector("span").textContent = s("tray_deadlines");
   $("ask-knows").querySelector("span").textContent = s("tray_knowledge");

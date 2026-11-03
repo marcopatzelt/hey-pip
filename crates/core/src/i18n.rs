@@ -61,7 +61,7 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("btn_yes", "Ja", "Yes"),
     ("btn_elsewhere", "Woanders", "Somewhere else"),
     // --- talking ---
-    ("ask_what", "Was soll ich tun?", "What should I do?"),
+    ("ask_what", "Wobei kann ich helfen?", "What can I help you with?"),
     ("thinking", "Ich schaue mir das an …", "Let me have a look …"),
     ("listening", "Ich höre zu …", "I'm listening …"),
     // --- acting / stop ---
@@ -365,7 +365,7 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("no_letter_known", "Ich habe noch keinen Brief von dir.", "I don't have a letter from you yet."),
     ("ask_placeholder", "Frag Pip, was du willst …", "Ask Pip anything…"),
     ("btn_go", "Senden ↵", "Send ↵"),
-    ("btn_mic", "Gedrückt halten und sprechen", "Hold and speak"),
+    ("btn_mic", "Gedrückt halten und sprechen", "Hold to talk"),
     ("btn_close", "Schließen", "Close"),
     ("btn_ok", "Gut", "OK"),
     ("drop_hint", "Lass den Brief los. Ich lese ihn.", "Let go of the letter. I'll read it."),
@@ -728,8 +728,8 @@ static TABLE: &[(&str, &str, &str)] = &[
     // --- 27.10.: the text box says how to send ---
     (
         "ask_enter_hint",
-        "Enter ↵ schickt es an Pip · Umschalt+Enter für eine neue Zeile · oder Mikrofon gedrückt halten",
-        "Press Enter ↵ to send · Shift+Enter for a new line · or hold the microphone",
+        "Enter zum Senden · Mikrofon gedrückt halten zum Sprechen",
+        "Press Enter to send, or hold the mic to talk",
     ),
 ];
 
